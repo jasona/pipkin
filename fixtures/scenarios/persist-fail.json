@@ -1,0 +1,13 @@
+{
+ "version": 1,
+ "name": "persist-fail",
+ "description": "Behaves exactly like normal; the storage write failure is toggled separately from Developer commands.",
+ "variants": [
+  {
+   "label": "normal story",
+   "steps": [
+    {"op": "include", "scenario": "normal"}
+   ]
+  }
+ ]
+}

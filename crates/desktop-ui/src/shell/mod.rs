@@ -1,0 +1,57 @@
+//! Workspace shell: navigation, header, composer chrome, inspector, overlays.
+
+pub mod actions;
+mod center;
+pub mod commands;
+pub mod controls;
+mod inspector;
+mod nav;
+mod overlays;
+mod workspace;
+
+pub use workspace::Workspace;
+
+use gpui::{
+    App, AppContext as _, Bounds, Entity, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+};
+
+use crate::model::Model;
+use crate::theme::Theme;
+
+/// One-time application setup: fonts, key bindings, theme global.
+pub fn init(cx: &mut App, model: &Entity<Model>) {
+    if let Err(e) = crate::assets::load_fonts(cx) {
+        log::error!("failed to load bundled fonts: {e:#}");
+    }
+    let prefs = model.read(cx).state.prefs.clone();
+    cx.set_global(Theme::new(
+        prefs.theme,
+        prefs.text_size,
+        prefs.reduced_motion,
+    ));
+    crate::text::init(cx);
+    crate::transcript::init(cx);
+    actions::bind_keys(cx);
+}
+
+/// Open the main Pi Desktop window.
+pub fn open_main_window(cx: &mut App, model: Entity<Model>) {
+    init(cx, &model);
+    let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
+    let m = model.clone();
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            app_id: Some("pi-desktop".into()),
+            window_min_size: Some(size(px(480.), px(480.))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Pi Desktop".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        move |window, cx| cx.new(|cx| Workspace::new(m.clone(), window, cx)),
+    )
+    .expect("open main window");
+    cx.activate(true);
+}

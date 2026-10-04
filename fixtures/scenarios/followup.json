@@ -1,0 +1,42 @@
+{
+ "version": 1,
+ "name": "followup",
+ "description": "Long-running (~20 s) script with three steer points; steering changes the remaining replies.",
+ "variants": [
+  {
+   "label": "long run with steer points",
+   "steps": [
+    {"op": "delay_ms", "ms": 250},
+    {"op": "accepted"},
+    {"op": "delay_ms", "ms": 200},
+    {"op": "stream", "text": "**Scripted demo response.** This is a long-running simulated task so you can practise steering, queueing and cancelling. I have not read your message:\n\n> {prompt}\n\n", "pace_ms": 90},
+    {"op": "stream", "text": "**Checkpoint 1.** Surveying the workspace before choosing an approach.\n\n", "pace_ms": 90},
+    {"op": "tool_start", "call": 1, "name": "bash", "input": "find crates -name '*.rs' | wc -l"},
+    {"op": "delay_ms", "ms": 900},
+    {"op": "tool_output", "call": 1, "text": "42\n"},
+    {"op": "tool_finish", "call": 1, "ok": true},
+    {"op": "stream", "text": "Survey done. My plan is to refactor module *A* first, then module *B*. **Steer me now if you would rather change course.**\n\n", "pace_ms": 90},
+    {"op": "await_steer", "timeout_ms": 4000},
+    {"op": "stream", "text": "**Steer received:** “{steer}”. Changing course: skipping the module *A* refactor and focusing on what you just asked instead (simulated).\n\n", "pace_ms": 90, "if_steered": true},
+    {"op": "stream", "text": "No steering received, so I'm continuing with the module *A* refactor.\n\n", "pace_ms": 90, "if_steered": false},
+    {"op": "tool_start", "call": 2, "name": "bash", "input": "cargo check -p desktop-core"},
+    {"op": "delay_ms", "ms": 1500},
+    {"op": "tool_output", "call": 2, "text": "    Checking desktop-core v0.0.1 (/home/jasona/coding/pi-desktop/crates/desktop-core)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.21s\n"},
+    {"op": "tool_finish", "call": 2, "ok": true},
+    {"op": "stream", "text": "**Checkpoint 2.** The type-check passes. Next is the longer part: updating call sites one by one.\n\n", "pace_ms": 90},
+    {"op": "await_steer", "timeout_ms": 4000},
+    {"op": "stream", "text": "Still honouring your steer (“{steer}”): the remaining call-site updates follow that direction.\n\n", "pace_ms": 90, "if_steered": true},
+    {"op": "stream", "text": "Updating call sites in the original order.\n\n", "pace_ms": 90, "if_steered": false},
+    {"op": "tool_start", "call": 3, "name": "bash", "input": "cargo test -p desktop-core"},
+    {"op": "delay_ms", "ms": 2000},
+    {"op": "tool_output", "call": 3, "text": "running 13 tests\n.............\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"},
+    {"op": "tool_finish", "call": 3, "ok": true},
+    {"op": "stream", "text": "**Checkpoint 3.** Wrapping up the remaining items.\n\n", "pace_ms": 90},
+    {"op": "await_steer", "timeout_ms": 3000},
+    {"op": "changes", "set": "fix_search"},
+    {"op": "stream", "text": "## Done\n\nThe long run finished. This was a **scripted demo**; nothing was changed. Steering, queued follow-ups and cancel all act on this same script.\n", "pace_ms": 90},
+    {"op": "complete"}
+   ]
+  }
+ ]
+}

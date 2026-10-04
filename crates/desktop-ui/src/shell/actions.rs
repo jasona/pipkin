@@ -1,0 +1,57 @@
+use gpui::{App, KeyBinding, actions};
+
+actions!(
+    pi,
+    [
+        OpenPalette,
+        NewConversation,
+        ToggleNav,
+        ToggleInspector,
+        FocusComposer,
+        FocusTranscript,
+        OpenPreferences,
+        RenameConversation,
+        CancelRun,
+        QueueFollowUp,
+        SteerRun,
+        JumpToLatest,
+        OpenModelMenu,
+        AttachFiles,
+        NextConversation,
+        PrevConversation,
+        CloseOverlay,
+        MenuUp,
+        MenuDown,
+        MenuConfirm,
+        Quit,
+        LogStats,
+    ]
+);
+
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("ctrl-k", OpenPalette, None),
+        KeyBinding::new("ctrl-shift-p", OpenPalette, None),
+        KeyBinding::new("ctrl-n", NewConversation, None),
+        KeyBinding::new("ctrl-b", ToggleNav, None),
+        KeyBinding::new("ctrl-i", ToggleInspector, None),
+        KeyBinding::new("ctrl-l", FocusComposer, None),
+        KeyBinding::new("ctrl-j", FocusTranscript, None),
+        KeyBinding::new("ctrl-,", OpenPreferences, None),
+        KeyBinding::new("f2", RenameConversation, None),
+        KeyBinding::new("ctrl-.", CancelRun, None),
+        KeyBinding::new("ctrl-enter", QueueFollowUp, Some("Composer")),
+        KeyBinding::new("ctrl-shift-enter", SteerRun, Some("Composer")),
+        KeyBinding::new("ctrl-down", JumpToLatest, None),
+        KeyBinding::new("ctrl-m", OpenModelMenu, None),
+        KeyBinding::new("ctrl-o", AttachFiles, None),
+        KeyBinding::new("alt-down", NextConversation, None),
+        KeyBinding::new("alt-up", PrevConversation, None),
+        KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new("escape", CloseOverlay, Some("Overlay")),
+        KeyBinding::new("escape", CloseOverlay, Some("Panel")),
+        KeyBinding::new("up", MenuUp, Some("Overlay")),
+        KeyBinding::new("down", MenuDown, Some("Overlay")),
+        KeyBinding::new("enter", MenuConfirm, Some("Overlay")),
+    ]);
+}

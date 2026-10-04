@@ -1,0 +1,23 @@
+{
+ "version": 1,
+ "name": "large",
+ "description": "Emits a very large diff (>2,000 changed lines) and a tool output larger than 1 MB.",
+ "variants": [
+  {
+   "label": "large diff and output",
+   "steps": [
+    {"op": "delay_ms", "ms": 250},
+    {"op": "accepted"},
+    {"op": "delay_ms", "ms": 150},
+    {"op": "stream", "text": "**Scripted demo response.** I did not read or act on your message:\n\n> {prompt}\n\nThis run produces a very large diff and a tool output over 1 MB; the core bounds the preview.\n\n"},
+    {"op": "tool_start", "call": 1, "name": "bash", "input": "make build-all VERBOSE=1"},
+    {"op": "delay_ms", "ms": 400},
+    {"op": "tool_output_gen", "call": 1, "bytes": 1300000},
+    {"op": "tool_finish", "call": 1, "ok": true},
+    {"op": "changes", "set": "large_diff"},
+    {"op": "stream", "text": "Build finished. The output was about 1.3 MB; only the first 8 KB is kept for display. The regenerated bindings produced a diff of more than 2,000 changed lines across five files.\n"},
+    {"op": "complete"}
+   ]
+  }
+ ]
+}

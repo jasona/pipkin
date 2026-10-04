@@ -1,0 +1,46 @@
+use gpui::actions;
+
+actions!(
+    composer,
+    [
+        Backspace,
+        Delete,
+        DeleteWordBack,
+        DeleteWordForward,
+        Left,
+        Right,
+        Up,
+        Down,
+        WordLeft,
+        WordRight,
+        SelectLeft,
+        SelectRight,
+        SelectUp,
+        SelectDown,
+        SelectWordLeft,
+        SelectWordRight,
+        Home,
+        End,
+        SelectHome,
+        SelectEnd,
+        DocStart,
+        DocEnd,
+        SelectDocStart,
+        SelectDocEnd,
+        PageUp,
+        PageDown,
+        SelectPageUp,
+        SelectPageDown,
+        SelectAll,
+        Copy,
+        Cut,
+        Paste,
+        Undo,
+        Redo,
+        /// Enter: submit (never while an IME composition is active).
+        Enter,
+        /// Shift+Enter: insert a newline.
+        Newline,
+        Escape,
+    ]
+);

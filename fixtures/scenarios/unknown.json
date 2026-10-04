@@ -1,0 +1,17 @@
+{
+ "version": 1,
+ "name": "unknown",
+ "description": "The acknowledgment is lost (Outcome unknown). Check status resolves it as accepted; the run then continues as normal. Never auto-resent.",
+ "variants": [
+  {
+   "label": "ack lost",
+   "steps": [
+    {"op": "delay_ms", "ms": 400},
+    {"op": "ack_lost"},
+    {"op": "await_status"},
+    {"op": "delay_ms", "ms": 300},
+    {"op": "include", "scenario": "normal"}
+   ]
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/desktop-core", "crates/desktop-ui", "crates/desktop-app"]
+exclude = ["zed"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+publish = false
+
+[workspace.dependencies]
+# GPUI is pre-1.0. Both crates are pinned to the same full Zed revision; see docs/decisions.md.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false, features = ["wayland", "font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false, features = ["wayland", "font-kit"] }
+
+[profile.release]
+debug = "line-tables-only"

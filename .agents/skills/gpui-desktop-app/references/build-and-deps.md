@@ -1,0 +1,13 @@
+# Build, dependencies, toolchain
+
+- Independent workspace at the app root with `exclude = ["zed"]`. Pin `gpui` and `gpui_platform` to the **same full Zed git rev** (`a84689073d296dfd39987bc7dd478e43ef76d83a`, gpui 0.2.2) with `default-features = false, features = ["wayland", "font-kit"]`. Use `gpui_platform::application()` (not APIs from other revs). Add `env_logger`.
+- Zed's `rust-toolchain.toml` says 1.98.1; the installed 1.99.0 built it cleanly, so we pinned 1.99.0 in our own `rust-toolchain.toml`. First `cargo check` resolved and compiled in ~1m16s without any root patches; release build ~2 min.
+- **Zed's `[patch.crates-io]` is NOT inherited** by your workspace. Our prototype ran without it and worked, but know what you skip (Zed Cargo.toml:1014-1039):
+  - `calloop` → zed-industries fork (rev 3759371). Reason (commit "Use fixed calloop"): upstream runs *all* ready futures per tick regardless of duration; futures over ~10 ms froze the editor for seconds to minutes (large diff). The fork bounds time per tick. `gpui_linux` uses calloop for its executor, so **apply this patch to any serious Linux GPUI app and re-measure**. (Not yet done here.)
+  - `async-task` → smol-rs git rev b4486cd: build-time/size win (~25% code size, ~35 s build), not correctness.
+  - `async-process`, `notify`, `windows-capture`, livekit crates, `tree-sitter-language`: not needed for a gpui-only app (tree-sitter-language only if you pull grammar crates).
+- Feature flags: gpui default `["font-kit","wayland","x11","windows-manifest"]`; `test-support` forces wayland+x11+proptest; `screen-capture` pulls `scap`; `inspector`, `profiler`, `leak-detection` are separate. Linux text uses `CosmicTextSystem` (`font-kit` is the macOS path).
+- System needs on Arch/Omarchy that were present: wayland-client, xkbcommon, vulkan loader+driver, fontconfig, freetype, cmake/clang (bundled SQLite via rusqlite `bundled`). `mold` was absent (default linker used).
+- Dependencies added: `pulldown-cmark` (default-features=false), `unicode-segmentation`, `async-channel`, `rusqlite` (bundled), `serde`/`serde_json`, `chrono` (clock feature), `anyhow`, `log`, `env_logger`; dev: `tempfile`, `gpui` with `test-support`.
+- Licensing: gpui/gpui_platform Apache-2.0. Zed `ui`, `markdown`, `editor`, `agent_ui` are GPL-3.0-or-later: **read them, don't import or paste**. Bundled assets: IBM Plex Sans + Lilex (OFL, copied from the Zed checkout), Lucide icons ISC (`lucide-static@1.51.0` from unpkg; fetch with `curl -L`, unpkg redirects). Record provenance in `assets/PROVENANCE.md`.
+- Tools in this environment: `cargo` output may be condensed by the user's `rtk` wrapper; `bc` and PIL are absent (use python3 for math).
