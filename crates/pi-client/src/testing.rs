@@ -58,6 +58,8 @@ struct MockState {
     connections: Vec<Arc<ConnState>>,
     requests: Vec<(RpcTarget, ServiceCall)>,
     next_attachment: u64,
+    /// When set, every handshake is answered with this `hello_error` (code, message).
+    reject_handshake: Option<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -140,6 +142,7 @@ impl MockPi {
                 connections: Vec::new(),
                 requests: Vec::new(),
                 next_attachment: 0,
+                reject_handshake: None,
             })),
         }
     }
@@ -151,6 +154,11 @@ impl MockPi {
             methods: methods.iter().map(|m| m.to_string()).collect(),
             state: state.map(|v| (v, 0)),
         });
+    }
+
+    /// Answer every handshake with a `hello_error`, as a server that cannot speak our protocol.
+    pub fn reject_handshake(&self, code: &str, message: &str) {
+        lock(&self.state).reject_handshake = Some((code.into(), message.into()));
     }
 
     pub fn set_handler(
@@ -273,7 +281,12 @@ fn serve(pi: MockPi, conn: Arc<ConnState>, mut stream: UnixStream) {
             match message {
                 ClientMessage::Hello { version } => {
                     said_hello = true;
-                    if version == PROTOCOL_VERSION {
+                    let rejected = lock(&pi.state).reject_handshake.clone();
+                    if let Some((code, message)) = rejected {
+                        handle.send(&ServerMessage::HelloError {
+                            error: ProtocolError { code, message },
+                        });
+                    } else if version == PROTOCOL_VERSION {
                         let server_id = lock(&pi.state).server_id.clone();
                         handle.send(&ServerMessage::Hello { server_id });
                     } else {

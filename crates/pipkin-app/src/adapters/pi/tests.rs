@@ -753,3 +753,21 @@ fn attach_gives_up_after_bounded_retries_and_other_errors_are_final() {
     ));
     assert_eq!(*attempts.lock().unwrap(), 1);
 }
+
+#[test]
+fn a_server_that_refuses_our_protocol_is_reported_as_incompatible_not_absent() {
+    let pi = mock(&[("s", 1)], vec![]);
+    pi.reject_handshake("version", "unsupported protocol version");
+    let env = start(pi, true);
+    wait_until("incompatible", || {
+        env.connections()
+            .iter()
+            .any(|c| matches!(c, Connection::Incompatible(m) if m.contains("version")))
+    });
+    assert!(!env.connections().contains(&Connection::Ready));
+    assert!(
+        !env.connections()
+            .iter()
+            .any(|c| matches!(c, Connection::Offline(m) if m.contains("no Pi server")))
+    );
+}

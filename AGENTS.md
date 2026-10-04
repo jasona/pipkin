@@ -12,7 +12,7 @@ Start with its "12 rules", then open only the reference file matching your task 
 - Keep `pipkin-core` free of GPUI. Every backend event carries `(conversation, generation, op)` and is stale-guarded. Render does no I/O or parsing.
 - `zed/` is a read-only reference checkout. Never edit or build inside it. Zed's GPL crates (`ui`, `markdown`, `editor`, `agent_ui`) are read, not copied.
 - Before finishing: `cargo test --workspace && cargo clippy --workspace --all-targets && cargo fmt --all --check` must pass.
-- **Native testing safety:** send synthetic input only through `scripts/guard.sh` (it refuses unless Pipkin is the active window). Do not move, resize, focus, or switch workspaces for windows you did not launch. Stay on the current workspace. Do not edit the user's Hyprland/Omarchy config. Do not install packages or change display scale without explicit approval.
+- **Native testing safety:** send synthetic input only through `scripts/guard.sh`. It pins the window you launched (`guard.sh pin <pid>`), refuses unless that exact window is active, accepts only ctrl/shift chords, named keys and plain text (no mouse, Super or Alt), and re-checks after every key. Run `scripts/test-guard.sh` after any change to it. Do not move, resize, focus, or switch workspaces for windows you did not launch. Stay on the current workspace. Do not edit the user's Hyprland/Omarchy config. Do not install packages or change display scale without explicit approval.
 - Scorecards separate measured / observed / failed / unverified. Never mark IME, screen reader, display scale, suspend/resume, cold boot, or display-presentation latency as passed without the real thing.
 - Keep the "Demo · simulated agent" marker; demo content must never imply real execution.
 

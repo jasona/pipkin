@@ -278,6 +278,9 @@ impl Worker {
             0 if !found.untrusted.is_empty() => {
                 Err(Connection::Failed(found.untrusted[0].1.to_string()))
             }
+            0 if !found.incompatible.is_empty() => Err(Connection::Incompatible(
+                found.incompatible[0].1.to_string(),
+            )),
             0 => Err(Connection::Offline(format!(
                 "no Pi server is running in {}. Start one with the Pi experimental server.",
                 dir.display()

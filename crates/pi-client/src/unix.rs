@@ -148,6 +148,9 @@ pub struct Discovery {
     /// Entries that look like server sockets but failed an access check. Reported so a caller
     /// can say "your Pi directory is insecure" instead of the misleading "no server running".
     pub untrusted: Vec<(PathBuf, Error)>,
+    /// Servers that refused our protocol version. Reported so a caller can say "incompatible"
+    /// instead of the misleading "no server running".
+    pub incompatible: Vec<(PathBuf, Error)>,
 }
 
 /// Find reachable servers by probing `<serverId>.sock` entries in `directory`. Entries that are
@@ -187,6 +190,10 @@ pub fn discover(directory: &Path, options: &ClientOptions) -> Result<Discovery> 
                 });
             }
             Err(error @ Error::Untrusted(_)) => found.untrusted.push((path, error)),
+            Err(error @ Error::Server { .. }) if matches!(&error, Error::Server { code, .. } if code == "version") =>
+            {
+                found.incompatible.push((path, error));
+            }
             Err(_) => {}
         }
     }

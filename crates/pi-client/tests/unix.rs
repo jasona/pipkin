@@ -157,6 +157,17 @@ fn discovery_of_a_missing_directory_is_empty() {
 }
 
 #[test]
+fn discovery_reports_a_server_that_refuses_our_protocol_version() {
+    let pi = pi();
+    pi.reject_handshake("version", "unsupported protocol version");
+    let fx = fixture(&pi, SERVER_ID);
+    let found = discover(&fx.root, &ClientOptions::new(SERVER_ID)).unwrap();
+    assert!(found.routes.is_empty() && found.untrusted.is_empty());
+    assert_eq!(found.incompatible.len(), 1);
+    assert!(matches!(&found.incompatible[0].1, Error::Server { code, .. } if code == "version"));
+}
+
+#[test]
 fn discovery_reports_untrusted_sockets_instead_of_hiding_them() {
     let fx = fixture(&pi(), SERVER_ID);
     chmod(&fx.root, 0o755);

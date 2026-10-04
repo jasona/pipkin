@@ -262,20 +262,21 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 | M1 real read path | **Met, with caveats** | Real handshake, trust checks, catalogue, Delta hydration, session listing, attach, `Transcript` subscription and switching all pass against a real Pi server (3 opt-in tests, run repeatedly). The app was launched against it and showed the real session list and an opened session |
 | M2 and later | Not started | |
 
-`cargo test --workspace`: 310 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
+`cargo test --workspace`: 312 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
 
 #### M1 caveats (what the real-server runs did NOT cover)
 
 - **Real transcripts with messages: verified from Pi's own code, not through a running server.** A running server has no provider, so its sessions stay empty. Instead `scripts/capture-pi-views.ts` drives Pi's durable harness with scripted faux responses (text, thinking, tool call with a real harness error result, model error, multi-turn, a run in progress) and writes real `ConversationView` values to `fixtures/pi/`, and, through the server's own path (the `Transcript` provider behind Chord's remote endpoint and a per-subscription TypeScript state encoder), real wire streams (`stream-*.json`: snapshot, updates, final state). Rust tests map the real views (the mapper's assumptions about kinds and shapes held) and replay the real streams through the decoder and replica; all converge to Pi's final state, including real path interning, splices, sets and deletes. Still unseen from a live server: streaming text partials (the faux provider emitted no `a`/`t` ops) and tool slots in `pi.live` (no real tool ran).
 - **Delayed-frame rejection is proven at the client and mock level**, not by injecting frames into the real server. On the real server we verified what a switch does: a fresh attachment id, the old subscription retired locally, and calls to the old route refused locally.
-- **GUI check was limited and passive** (a window screenshot, no input): session list, derived title and age, an opened empty session, no demo marker. Switching in the GUI, and the offline/failed/incompatible screens, were not looked at.
+- **GUI checks (screenshots; input only through `scripts/guard.sh`).** Seen against the real server: session list, derived title and age, an opened empty session, the read-only strip, and **switching between four real sessions** by keyboard (palette "Next/Previous conversation", including wrap-around and next-then-previous pairs): the highlight, header and empty-state followed every switch with no error and no log warnings. The re-attach race did not trigger at palette speed (each round trip is well over the 300 ms window), so it stays covered at the adapter level. Seen with no server, an insecure directory and a stub that refuses our protocol version: the offline, failed and incompatible messages. Not seen: the reconnecting state; click-based switching (the guard sends no mouse input by design). The window is translucent under the owner's Omarchy opacity rule, so captures can include faint content from windows behind it; crop captures and delete them after use.
 - Pi's `SessionSummary.createdAt` is in **milliseconds** (handled); the title time is shown in UTC.
 
 #### Findings from first contact with the real server
 
 1. **Pi server bug (report upstream):** re-attaching a session right after switching away from it fails with `internal_error: Internal server error`. Reproducible and deterministic with no pause (open A, open B, open A); with 300 ms or more between switches it never fails, so the session's worker is still retiring. The server swallows the real exception (no error sink is wired; nothing reaches stderr), so the cause is unconfirmed beyond that timing. **Pipkin's mitigation:** `PiBackend` retries `attach` on `internal_error` only, at 150/400/1000/2000 ms, logs each retry and then gives up with a visible error; other error codes are final. Attach only navigates, so the retry is safe. Covered by two mock tests and `real_server_switching_between_sessions`.
 2. The server-scope catalogue lists only `pi.session-directory`, `pi.session-management`, `pi.presentation-plugins`; `pi.models`, `pi.transcript`, `pi.agent-controller` appear after attach (session scope), as designed.
-3. **UI defects seen in real mode: fixed** (screenshot-verified): "New conversation" is disabled where creation cannot work (`Availability::new_conversation`); a core `read_only` reason (set by the controller in real mode) disables send, steer, queue and retry, and is shown as a "Read-only" strip and in the empty state; the model chip reads "No models available" and is disabled when there are none. This also fixed a core bug: `current_project()` returned `None` whenever no conversation was selected, even with a project selected.
+3. **Discovery hid incompatible servers (fixed):** a server answering the handshake with a version error was reported as "no Pi server is running"; `discover` now reports it separately and the adapter shows "Incompatible engine: ...".
+4. **UI defects seen in real mode: fixed** (screenshot-verified): "New conversation" is disabled where creation cannot work (`Availability::new_conversation`); a core `read_only` reason (set by the controller in real mode) disables send, steer, queue and retry, and is shown as a "Read-only" strip and in the empty state; the model chip reads "No models available" and is disabled when there are none. This also fixed a core bug: `current_project()` returned `None` whenever no conversation was selected, even with a project selected.
 
 #### What exists
 
@@ -301,7 +302,7 @@ cargo run -p pipkin-app --release -- --pi-dir /tmp/pipkin-pi/server \
 
 #### Housekeeping
 
-- `AGENTS.md` still references `scripts/guard.sh`, which does not exist. Native input testing was not done; do not send synthetic input without recreating a guard.
+- **`scripts/guard.sh`** now exists (the only sanctioned way to send synthetic keyboard input): pins the window you launched, refuses unless that exact window is active, ctrl/shift chords + named keys + plain text only, re-checks after every key. `scripts/test-guard.sh` tests it against stub `hyprctl`/`wtype` (33 checks; every weakened variant of the guard was confirmed to fail them). Usage: `guard.sh pin <pid>`, `guard.sh key ctrl+k`, `guard.sh text "..."`, `guard.sh unpin`; the launched window must be focused (the guard never focuses anything).
 - `docs/baseline.md` carries the old demo scorecard figures; they are historical.
 
 #### Next work, in order
