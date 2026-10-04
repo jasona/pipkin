@@ -11,7 +11,7 @@ cargo run -p pipkin-app --release -- --demo normal [--data-dir DIR] [--speed 1.0
 cargo test --workspace && cargo clippy --workspace --all-targets && cargo fmt --all --check
 ```
 
-Real mode needs a Pi server; `scripts/pi-test-server.sh` starts an isolated throwaway one (see the plan for the current blocker). The opt-in real-server tests are `cargo test -p pipkin-app real_pi -- --ignored`.
+Real mode needs a Pi server; `scripts/pi-test-server.sh` starts an isolated throwaway one (setup notes are in the plan's "Implementation status"). The opt-in real-server tests are `cargo test -p pipkin-app real_pi -- --ignored`.
 
 Scenarios: normal, followup, failure, unknown, stressed, large, persist-fail ([`docs/scenarios.md`](docs/scenarios.md)). Palette: Ctrl+K.
 

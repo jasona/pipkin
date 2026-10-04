@@ -151,3 +151,137 @@ fn real_server_session_lifecycle_through_the_adapter() {
     }
     backend.shutdown();
 }
+
+#[test]
+#[ignore = "needs a real Pi server: see the module docs"]
+fn real_server_switching_between_sessions() {
+    let (dir, id) = environment();
+    let socket = dir.join(format!("{id}.sock"));
+    let (client, _events) = unix::connect(&socket, ClientOptions::new(&id)).expect("handshake");
+    let create = || {
+        client
+            .request(
+                &server(&id),
+                &ServiceCall::new("pi.session-management", "create", vec![json!({})]),
+            )
+            .expect("create sent")
+            .wait_timeout(WAIT)
+            .expect("create result")
+            .expect("summary")["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_owned()
+    };
+    let (first, second) = (create(), create());
+    println!("sessions: {first} {second}");
+
+    // The raw client shows what the server does on a switch: a new attachment id, and the
+    // subscription bound to the old one is retired locally.
+    let attach = |session: &str| {
+        client
+            .request(
+                &server(&id),
+                &ServiceCall::new("pi.session-management", "attach", vec![json!(session)]),
+            )
+            .expect("attach sent")
+            .wait_timeout(WAIT)
+            .expect("attach result");
+        wait_until("attachment published", || {
+            client.attachment().is_some_and(|a| a.session_id == session)
+        });
+        client.attachment().unwrap()
+    };
+    let route_one = attach(&first);
+    let transcript_one = client
+        .subscribe(&route_one.rpc(), "pi.transcript", Mode::Singleton, WAIT)
+        .expect("transcript of the first session");
+    assert!(transcript_one.read(|r| r.state("state").is_some()).unwrap());
+    let route_two = attach(&second);
+    assert_ne!(
+        route_one.attachment_id, route_two.attachment_id,
+        "a switch gets a fresh attachment"
+    );
+    wait_until("old subscription retired", || transcript_one.is_retired());
+    // The route for the first session is refused locally; nothing is sent to the server.
+    let stale = client.request(
+        &route_one.rpc(),
+        &ServiceCall::new("pi.transcript", "x", vec![]),
+    );
+    assert!(
+        stale
+            .err()
+            .is_some_and(|e| e.to_string().contains("stale route"))
+    );
+
+    // Now through the adapter: open each session in turn, twice, and see each succeed.
+    let (tx, events) = async_channel::unbounded::<BackendEvent>();
+    let mut config = PiConfig::new(dir);
+    config.server_id = Some(id);
+    let backend = PiBackend::new(tx, config);
+    let lifecycle = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = {
+        let lifecycle = lifecycle.clone();
+        Box::new(move |e| lifecycle.lock().unwrap().push(e))
+    };
+    backend.start(sink);
+    wait_until("ready", || {
+        lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, LifecycleEvent::Connection(Connection::Ready)))
+    });
+    let catalog = lifecycle
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|e| {
+            if let LifecycleEvent::Catalog(b) = e {
+                Some(b.clone())
+            } else {
+                None
+            }
+        })
+        .expect("catalog");
+    let conversation_for = |session: &str| {
+        catalog
+            .conversations
+            .iter()
+            .find(|c| c.2.contains(&session[..8]))
+            .expect("listed")
+            .0
+    };
+    let (a, b) = (conversation_for(&first), conversation_for(&second));
+    assert_ne!(a, b);
+    // Diagnostic: pause between switches to test whether re-attaching races worker retirement.
+    let settle = std::env::var("PIPKIN_REAL_PI_SETTLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    for (round, conv) in [a, b, a, b].into_iter().enumerate() {
+        std::thread::sleep(Duration::from_millis(settle));
+        backend.request(BackendRequest::Open {
+            conversation: conv,
+            generation: round as u64 + 1,
+        });
+        let deadline = Instant::now() + WAIT;
+        let event = loop {
+            if let Ok(e) = events.try_recv() {
+                break e;
+            }
+            assert!(Instant::now() < deadline, "no open result in round {round}");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            (event.conversation, event.generation),
+            (conv, round as u64 + 1)
+        );
+        assert!(
+            matches!(event.kind, EventKind::Opened { .. }),
+            "round {round}: {:?}",
+            event.kind
+        );
+    }
+    backend.shutdown();
+}

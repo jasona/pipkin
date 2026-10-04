@@ -1,6 +1,6 @@
 # Rust Desktop Client for Pi: prototype to working product
 
-Updated: 2026-10-04. Status: implementation roadmap. M0 is done and M1 is built but unverified against a real Pi server; see "Implementation status" near the end of section 10 for exactly where to resume.
+Updated: 2026-10-04. Status: implementation roadmap. M0 is done and M1 is met against a real Pi server, with caveats; see "Implementation status" near the end of section 10 for exactly where to resume.
 
 ## 1. Continue the application that exists
 
@@ -254,54 +254,63 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done. M1 is built and passes against a mock server, but is NOT verified against a real Pi server.** That one gate is what stands between us and calling M1 finished. Nothing is committed yet; all of this work is uncommitted on `main` (see "Before you do anything" below).
+**Where we are: M0 is done. M1 is met against a real Pi server, with the caveats below.** Everything through the M1 code is committed and pushed; the later real-server work (attach retry, third real test, this doc) is not yet committed.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
-| M0 preserve and prepare | **Done** (one item open: source/version manifest) | Explicit `Mode`, `Connection` state, async `Backend::start(sink)`, namespaced storage v3, crash-safe submit journal v4 |
-| M1 real read path | **Built; real-server gate unrun** | `pi-client` crate and `PiBackend` pass 295 tests against `pi_client::testing::MockPi` and Pi's own CBOR/codec vectors. `real_pi` conformance tests exist but are `#[ignore]`d and have never run |
+| M0 preserve and prepare | **Done** (open: source/version manifest) | Explicit `Mode`, `Connection` state, async `Backend::start(sink)`, namespaced storage v3, crash-safe submit journal v4 |
+| M1 real read path | **Met, with caveats** | Real handshake, trust checks, catalogue, Delta hydration, session listing, attach, `Transcript` subscription and switching all pass against a real Pi server (3 opt-in tests, run repeatedly). The app was launched against it and showed the real session list and an opened session |
 | M2 and later | Not started | |
 
-`cargo test --workspace`: 295 pass, 2 ignored (the real-server tests). Clippy and fmt were clean at last run.
+`cargo test --workspace`: 297 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
+
+#### M1 caveats (what the real-server runs did NOT cover)
+
+- **Only empty transcripts were seen from the real server.** A new session has no messages, so the `ConversationView` mapper has never met real entries. Its entry kinds, message shapes and `pi.live` slots are inferred from Pi's source. A non-empty real transcript needs a deterministic provider: Pi has `packages/ai/src/providers/faux.ts`, but it is an in-process test library, so using it means scripting Pi's own test harness (see `coding-agent/test/experimental-agent-controller.test.ts` and `experimental-durable-support.ts`). That is M2-sized and was not started.
+- **Delayed-frame rejection is proven at the client and mock level**, not by injecting frames into the real server. On the real server we verified what a switch does: a fresh attachment id, the old subscription retired locally, and calls to the old route refused locally.
+- **GUI check was limited and passive** (a window screenshot, no input): session list, derived title and age, an opened empty session, no demo marker. Switching in the GUI, and the offline/failed/incompatible screens, were not looked at.
+- Pi's `SessionSummary.createdAt` is in **milliseconds** (handled); the title time is shown in UTC.
+
+#### Findings from first contact with the real server
+
+1. **Pi server bug (report upstream):** re-attaching a session right after switching away from it fails with `internal_error: Internal server error`. Reproducible and deterministic with no pause (open A, open B, open A); with 300 ms or more between switches it never fails, so the session's worker is still retiring. The server swallows the real exception (no error sink is wired; nothing reaches stderr), so the cause is unconfirmed beyond that timing. **Pipkin's mitigation:** `PiBackend` retries `attach` on `internal_error` only, at 150/400/1000/2000 ms, logs each retry and then gives up with a visible error; other error codes are final. Attach only navigates, so the retry is safe. Covered by two mock tests and `real_server_switching_between_sessions`.
+2. The server-scope catalogue lists only `pi.session-directory`, `pi.session-management`, `pi.presentation-plugins`; `pi.models`, `pi.transcript`, `pi.agent-controller` appear after attach (session scope), as designed.
+3. **UI defects seen in real mode (not yet fixed):** the "New conversation" button is shown enabled but does nothing (the core refuses local creation in real mode); the empty state says "No messages yet. Write a prompt below to begin" although prompts are refused; "Choose model" is empty because the test server has no providers. Each visible control should either work or show a clear unavailable state.
 
 #### What exists
 
-- **`crates/pi-client`** (no GPUI): strict CBOR subset (`cbor.rs`), framing, protocol v8 envelopes, Chord wire grammar and per-subscription Delta codecs, replica with sequence-gap detection (`chord.rs`, `delta.rs`), the connection state machine (`client.rs`: handshake, request correlation and cancel, hydration buffering, **stale-attachment fencing**, no reconnect or replay), Unix transport with trust checks (`unix.rs`: private dir and socket owned by us, no symlinks, `SO_PEERCRED` uid, `serverId` handshake, discovery that reports untrusted sockets instead of hiding them), and `testing.rs`, a mock Pi server that speaks the real wire (not evidence about the real engine).
-- **`crates/pipkin-app/src/adapters/pi/`**: `PiBackend` (worker thread: discover, connect, mirror the session directory into the catalog, open a session = attach + subscribe `pi.transcript` and `pi.models`, `Synced` live updates, reconnect with backoff that refreshes the open conversation), `transcript.rs` (pure `ConversationView` to transcript items; never panics; unknown kinds shown as notices), `session.rs` (stable conversation ids from session ids, derived titles, model catalogue), `real_pi.rs` (ignored conformance tests).
-- **Core additions**: `Mode`, `Connection`, `LifecycleEvent`, `RequestId` and the submit journal (`JournalIntent` before send, `intent_persisted`, `restore_unresolved`), `EventKind::{Synced, OpenFailed}`, `preview_output`.
-- **Storage**: schema v4 (namespaces, request journal), backup before migration.
-- **`scripts/pi-test-server.sh`**: starts a throwaway Pi experimental server with isolated dirs, `PI_OFFLINE=1`, no credentials.
-- Real mode is the default; `--pi-dir`, `--pi-server-id` choose the server. `--demo <scenario>` keeps the old simulator for regression tests only. The removed `UnavailableBackend` is superseded by the adapter's own offline states.
+- **`crates/pi-client`** (no GPUI): strict CBOR subset, framing, protocol v8 envelopes, Chord wire grammar and per-subscription Delta codecs, replica with sequence-gap detection, the connection state machine (handshake, request correlation and cancel, hydration buffering, **stale-attachment fencing**, no reconnect or replay), Unix transport with trust checks (private dir and socket owned by us, no symlinks, `SO_PEERCRED` uid, `serverId` handshake, discovery that reports untrusted sockets), and `testing.rs`, a mock Pi server that speaks the real wire.
+- **`crates/pipkin-app/src/adapters/pi/`**: `PiBackend` (worker thread: discover, connect, mirror the session directory into the catalog, open a session = attach + subscribe `pi.transcript` and `pi.models`, `Synced` live updates, reconnect with backoff that refreshes the open conversation, bounded attach retry), `transcript.rs` (pure `ConversationView` mapper; never panics; unknown kinds shown as notices), `session.rs` (stable conversation ids, derived titles, model catalogue), `real_pi.rs` (opt-in real-server tests).
+- **Core**: `Mode`, `Connection`, `LifecycleEvent`, `RequestId` and the submit journal, `EventKind::{Synced, OpenFailed}`, `preview_output`. **Storage**: schema v4, backup before migration.
+- **`scripts/pi-test-server.sh`**: throwaway Pi experimental server with isolated dirs, `PI_OFFLINE=1`, no credentials.
+- Real mode is the default; `--pi-dir`, `--pi-server-id` choose the server. `--demo <scenario>` keeps the simulator for regression tests only. This build is **read-only**: prompts are refused with "Sending prompts is not available yet".
 
-#### What is and is not verified
+#### How to run the real-server checks
 
-- **Verified (automated):** wire codec against Pi's published vectors; handshake, subscriptions, gaps, disconnects, malformed and oversized frames, cancel, fragmentation, stale-attachment drop; trust checks on real sockets; adapter behavior (catalog, open, live sync, switching, offline, incompatible, reconnect refresh, no replay) against the mock.
-- **Never run:** anything against a real Pi server. Anything in the GUI: the real-mode offline/connecting/ready screens, session list, opened transcript, the "Not sent" strip and unknown-outcome strip from the journal work. No native or visual check of any of this session's work.
-- **Known honest limits:** this build is read-only. Prompts are refused with "Sending prompts is not available yet" (the journal then records them `rejected`); no run state, queue, model selection, or attachments are wired. Session titles are derived (`Session <id> . <time>`) and there is one placeholder project, because Pi's session summaries carry only id and creation time.
+Needs the Pi checkout's dependencies (`npm ci` in `../pi`) and its generated model catalog (`npm run generate-models` in `../pi/packages/ai`, which makes unauthenticated GETs to public catalogs; both were done on this machine). Unix socket paths are limited to about 108 bytes, so keep the root short (for example `/tmp/pipkin-pi`, not a long scratch path).
 
-#### Blocker: getting a real Pi server running (needs the owner)
+```
+scripts/pi-test-server.sh /tmp/pipkin-pi          # terminal 1, foreground
+eval "$(scripts/pi-test-server.sh /tmp/pipkin-pi --print-env)"
+cargo test -p pipkin-app real_pi -- --ignored --nocapture     # terminal 2
+cargo run -p pipkin-app --release -- --pi-dir /tmp/pipkin-pi/server \
+  --pi-server-id 5f0c7b1e-2d4a-4f6b-9a3e-1c8d7e6f5a40 --data-dir /tmp/pipkin-app
+```
 
-The Pi checkout is `../pi` (`200387122`). `npm ci` was run there (approved) and succeeded; the server then failed at startup because Pi's generated model catalog (`packages/ai/src/providers/data/`, gitignored) does not exist. The only ways to create it are Pi's `npm run generate-models` (unauthenticated GETs to models.dev, openrouter.ai, ai-gateway.vercel.sh, integrate.api.nvidia.com) or `scripts/hydrate-model-catalog.ts` with a published `models.all.json` (offline). **The owner declined the network fetch in this session, so none of this was done and nothing was written to `../pi`.** I also had not yet checked whether the installed standalone `pi` ships usable catalog data (that search was interrupted). To resume:
+`PIPKIN_REAL_PI_SETTLE_MS=<ms>` adds a pause between switches in the switching test, to probe the server race.
 
-1. Decide how to produce the catalog: run `! cd ~/coding/pi/packages/ai && npm run generate-models`, or provide a `models.all.json` for the offline hydrate, or ask for a scratch copy of the checkout so `../pi` stays untouched.
-2. `scripts/pi-test-server.sh /tmp/pipkin-pi` in one terminal (foreground).
-3. In another: `eval "$(scripts/pi-test-server.sh /tmp/pipkin-pi --print-env)" && cargo test -p pipkin-app real_pi -- --ignored --nocapture`.
-4. Expect first-contact surprises: the server may need another generated artifact (plugin build needs `esbuild`'s postinstall, which `npm ci` skipped), and Pi's real `ConversationView` entry kinds, `SessionSummary.createdAt` units, and attach ordering are inferred from source, not observed. Fix what appears; keep the mock tests honest.
+#### Housekeeping
 
-M1's exit criterion is met only when those two tests pass against a real server and a launch of the app against it shows the real session list and an opened transcript.
-
-#### Before you do anything else
-
-- **Commit.** Nothing from M0 or M1 is committed. Suggested split: (1) M0 core/storage/journal, (2) `pi-client`, (3) the Pi adapter and scripts. `Cargo.lock` changed (new crate; `libc` was already locked).
-- `docs/baseline.md` still carries the old demo scorecard figures; they are historical.
-- `AGENTS.md` still references `scripts/guard.sh`, which does not exist in the repo (only `scripts/pi-test-server.sh` does). Native input testing was therefore not done; do not send synthetic input without recreating a guard.
+- `AGENTS.md` still references `scripts/guard.sh`, which does not exist. Native input testing was not done; do not send synthetic input without recreating a guard.
+- `docs/baseline.md` carries the old demo scorecard figures; they are historical.
 
 #### Next work, in order
 
-1. Close the M1 real-server gate above.
-2. **M0 leftovers:** build manifest recording the tested Pi revision and service-contract version; surface storage fallback/load failures in the UI; restore from backup.
-3. **M2 (first complete real workflow):** `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, the work listed in section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery enabled for real sessions. Also: steer and follow-up requests are not journaled yet.
-4. Known smaller gaps: `Synced` replaces all items on each change (fine for now; coalesce and reconcile by stable id in M2); unmatched `has_older` paging; keyed-service support in the replica exists but is untested against a real server.
+1. **Commit and push** the uncommitted real-server work.
+2. **Finish M1 properly:** get a non-empty real transcript through a faux-provider harness and verify the mapper against real entries; fix the three real-mode UI defects above; look at switching and the offline screens in the GUI; report the attach race to Pi.
+3. **M0 leftovers:** build manifest (tested Pi revision and service-contract version); surface storage fallback and load failures in the UI; restore from backup.
+4. **M2 (first complete real workflow):** `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery for real sessions, journaling of steer and follow-up requests.
+5. Smaller gaps: `Synced` replaces all items on each change (coalesce and reconcile by stable id in M2); no `has_older` paging; keyed-service replica support is untested against a real server.
 
 ## 11. Verification and release gates
 

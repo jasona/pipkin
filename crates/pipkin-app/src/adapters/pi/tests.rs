@@ -673,3 +673,83 @@ fn shutdown_returns_promptly_and_later_requests_are_harmless() {
     });
     env.no_event_within(100);
 }
+
+#[test]
+fn attach_retries_a_transient_internal_error_then_succeeds() {
+    let pi = mock(&[("s", 1)], vec![("s", view(&["hello"]))]);
+    let failures = Arc::new(Mutex::new(2u32));
+    let attempts = Arc::new(Mutex::new(0u32));
+    let (f, a) = (failures.clone(), attempts.clone());
+    // Replace the mock's attach: fail twice with the server's generic error, then behave.
+    pi.set_handler("pi.session-management", "attach", move |pi, conn, call| {
+        *a.lock().unwrap() += 1;
+        let mut left = f.lock().unwrap();
+        if *left > 0 {
+            *left -= 1;
+            return Err(pi_client::protocol::ProtocolError {
+                code: "internal_error".into(),
+                message: "Internal server error".into(),
+            });
+        }
+        let session_id = call.args[0].as_str().unwrap().to_owned();
+        conn.set_attachment(Some(pi_client::protocol::SessionTarget {
+            server_id: SERVER_ID.into(),
+            session_id,
+            attachment_id: "att-retry".into(),
+        }));
+        pi.publish("pi.transcript", vec![Op::Replace(view(&["hello"]))]);
+        Ok(None)
+    });
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let event = env.next_event();
+    let EventKind::Opened { items, .. } = event.kind else {
+        panic!("{event:?}")
+    };
+    assert_eq!(texts(&items), ["hello"]);
+    assert_eq!(*attempts.lock().unwrap(), 3, "two failures, then success");
+}
+
+#[test]
+fn attach_gives_up_after_bounded_retries_and_other_errors_are_final() {
+    // A persistent internal_error is retried a bounded number of times, then reported.
+    let pi = mock(&[("s", 1)], vec![]);
+    let attempts = Arc::new(Mutex::new(0u32));
+    let a = attempts.clone();
+    pi.set_handler("pi.session-management", "attach", move |_, _, _| {
+        *a.lock().unwrap() += 1;
+        Err(pi_client::protocol::ProtocolError {
+            code: "internal_error".into(),
+            message: "x".into(),
+        })
+    });
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let event = env.next_event();
+    assert!(
+        matches!(event.kind, EventKind::OpenFailed { ref message } if message.contains("Could not attach"))
+    );
+    assert_eq!(*attempts.lock().unwrap(), 5, "one try plus four retries");
+
+    // A different error code is not retried.
+    let pi = mock(&[("s", 1)], vec![]);
+    let attempts = Arc::new(Mutex::new(0u32));
+    let a = attempts.clone();
+    pi.set_handler("pi.session-management", "attach", move |_, _, _| {
+        *a.lock().unwrap() += 1;
+        Err(pi_client::protocol::ProtocolError {
+            code: "session_not_found".into(),
+            message: "gone".into(),
+        })
+    });
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    assert!(matches!(
+        env.next_event().kind,
+        EventKind::OpenFailed { .. }
+    ));
+    assert_eq!(*attempts.lock().unwrap(), 1);
+}

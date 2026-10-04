@@ -36,6 +36,14 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Messages handled per wakeup before remapping, so a burst becomes one refresh.
 const BATCH: usize = 256;
+/// Waits before each retry of an attach that failed with `internal_error`; at most this many
+/// retries.
+const ATTACH_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(150),
+    Duration::from_millis(400),
+    Duration::from_millis(1000),
+    Duration::from_millis(2000),
+];
 /// A subscription that keeps failing is not worth patching; resync through a reconnect.
 const MAX_RESUBSCRIBES: u32 = 3;
 
@@ -513,12 +521,30 @@ impl Live {
         // Drop the previous attachment's subscriptions first; the client retires them anyway.
         self.current = None;
         let attach = ServiceCall::new("pi.session-management", "attach", vec![json!(session_id)]);
-        let result = self
-            .client
-            .request(&self.server(), &attach)
-            .and_then(|pending| pending.wait_timeout(CALL_TIMEOUT));
-        if let Err(error) = result {
-            return fail(format!("Could not attach the session: {error}"));
+        // Pi's server can answer `internal_error` when a session is re-attached right after a
+        // client switched away from it (observed against the real server: the session's worker
+        // is still retiring). Attaching only navigates, it changes no session data, so a short
+        // bounded retry is safe. Every other failure is final.
+        let mut attempt = 0;
+        loop {
+            let result = self
+                .client
+                .request(&self.server(), &attach)
+                .and_then(|pending| pending.wait_timeout(CALL_TIMEOUT));
+            match result {
+                Ok(_) => break,
+                Err(Error::Server { ref code, .. })
+                    if code == "internal_error" && attempt < ATTACH_RETRY_DELAYS.len() =>
+                {
+                    log::warn!(
+                        "attach of {session_id} failed with internal_error; retrying (attempt {})",
+                        attempt + 1
+                    );
+                    thread::sleep(ATTACH_RETRY_DELAYS[attempt]);
+                    attempt += 1;
+                }
+                Err(error) => return fail(format!("Could not attach the session: {error}")),
+            }
         }
         // The route arrives out of band, before or after the response.
         let deadline = Instant::now() + ATTACH_TIMEOUT;
