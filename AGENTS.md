@@ -1,6 +1,6 @@
 # Pi Desktop (GPUI prototype): agent instructions
 
-Native Rust/GPUI desktop app for Omarchy/Hyprland/Wayland with a simulated Pi backend. Plan: `gpui-prototype-plan.md`. Status and gates: `docs/scorecard.md`. Run: `cargo run -p desktop-app --release -- --demo normal`.
+Native Rust/GPUI desktop app for Omarchy/Hyprland/Wayland with a simulated Pi backend. Plan: `docs/gpui-prototype-plan.md`. Status and gates: `docs/scorecard.md`. Run: `cargo run -p desktop-app --release -- --demo normal`.
 
 ## Read the skill first
 Before touching GPUI views, the composer/text input (IME), the transcript/list/selection code, persistence, the state core, or native testing, read the **`gpui-desktop-app` skill**:
