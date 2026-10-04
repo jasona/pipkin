@@ -53,6 +53,16 @@ impl Harness {
         for effect in outcome.effects {
             match effect {
                 Effect::Backend(request) => self.backend.request(request),
+                // The journal commits instantly here; the controller does it asynchronously.
+                Effect::JournalIntent {
+                    conversation,
+                    request,
+                    ..
+                } => {
+                    let outcome = self.state.intent_persisted(conversation, &request, Ok(()));
+                    self.exec(outcome);
+                }
+                Effect::JournalState { .. } => {}
                 Effect::SaveDraft {
                     conversation, rev, ..
                 } => self.state.draft_saved(conversation, rev, Ok(())),
@@ -158,6 +168,7 @@ fn submit_request(conv: u64, generation: u64, op: u64, text: &str) -> BackendReq
         conversation: ConversationId(conv),
         generation,
         op: OperationId(op),
+        request: RequestId(format!("test-{op}")),
         text: text.into(),
         attachments: vec![],
         model: Some("pi-sonnet".into()),
@@ -673,6 +684,37 @@ fn a_repeated_submit_is_counted_and_not_treated_as_the_original() {
         unseen.last().unwrap().kind,
         EventKind::StatusResolved { accepted: false }
     );
+}
+
+#[test]
+fn recovered_unresolved_request_is_never_resent_until_the_user_retries() {
+    let mut h = Harness::new("normal", false, EMPTY_CONVERSATION);
+    // A previous run journaled this prompt but died before it reached a terminal state.
+    let out = h.state.restore_unresolved(
+        EMPTY_CONVERSATION,
+        RequestId("previous-run-1".into()),
+        "half-sent prompt".into(),
+        vec![],
+    );
+    h.exec(out);
+    assert!(matches!(h.conv().run, RunState::OutcomeUnknown { .. }));
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(h.backend.submit_count(), 0, "recovery never resends");
+    assert!(h.rx.try_recv().is_err());
+
+    // The backend never saw it, so checking status proves non-acceptance...
+    h.dispatch(Command::CheckStatus);
+    h.pump_until("status resolved", |s| {
+        matches!(s.current().unwrap().run, RunState::Failed { .. })
+    });
+    assert_eq!(h.backend.submit_count(), 0);
+
+    // ...and only an explicit retry submits, exactly once, with the saved text.
+    assert!(h.state.availability().retry);
+    h.dispatch(Command::Retry);
+    h.run_to_idle();
+    assert_eq!(h.backend.submit_count(), 1);
+    assert_eq!(h.backend.submissions()[0].text, "half-sent prompt");
 }
 
 #[test]

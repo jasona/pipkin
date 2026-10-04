@@ -65,6 +65,8 @@ pub enum BackendRequest {
         conversation: ConversationId,
         generation: u64,
         op: OperationId,
+        /// Durable idempotency key, already journaled before this request is sent.
+        request: RequestId,
         text: String,
         attachments: Vec<Attachment>,
         model: Option<String>,
@@ -106,6 +108,16 @@ pub enum EventKind {
     OlderPage {
         items: Vec<TranscriptItem>,
         has_older: bool,
+    },
+    /// The backend's current view of an open conversation, replacing what is shown. Used for
+    /// replicated state that changes after the initial window (live output, other writers).
+    /// Ignored until the conversation has been opened.
+    Synced {
+        items: Vec<TranscriptItem>,
+    },
+    /// Opening the conversation failed. It stays unopened, so selecting it again retries.
+    OpenFailed {
+        message: String,
     },
     Accepted,
     /// The submission was refused before any work began.
@@ -155,6 +167,53 @@ pub enum Effect {
     SaveConversation {
         conversation: ConversationId,
     },
+    /// Durably record a submission's immutable payload. The controller must report the commit
+    /// with `AppState::intent_persisted`; until then nothing is sent and the draft is kept.
+    JournalIntent {
+        conversation: ConversationId,
+        request: RequestId,
+        text: String,
+        attachments: Vec<Attachment>,
+        model: Option<String>,
+    },
+    JournalState {
+        conversation: ConversationId,
+        request: RequestId,
+        state: JournalState,
+    },
+}
+
+/// Lifecycle of a journaled request after its intent is recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalState {
+    /// The acknowledgment was lost; whether the engine accepted it is unknown.
+    Unknown,
+    Accepted,
+    Rejected,
+    Completed,
+    Failed,
+    Cancelled,
+    /// Replaced by a newer request for the same conversation during recovery.
+    Superseded,
+}
+
+impl JournalState {
+    /// No further reconciliation is needed once a request reaches a terminal state.
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, JournalState::Unknown | JournalState::Accepted)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JournalState::Unknown => "unknown",
+            JournalState::Accepted => "accepted",
+            JournalState::Rejected => "rejected",
+            JournalState::Completed => "completed",
+            JournalState::Failed => "failed",
+            JournalState::Cancelled => "cancelled",
+            JournalState::Superseded => "superseded",
+        }
+    }
 }
 
 /// Fine-grained change notices so views can splice instead of rebuilding.

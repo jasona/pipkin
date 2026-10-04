@@ -4072,6 +4072,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-client"
+version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "libc",
+ "log",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4123,6 +4134,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "log",
+ "pi-client",
  "pipkin-core",
  "pipkin-ui",
  "rusqlite",

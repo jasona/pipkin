@@ -35,6 +35,17 @@ impl Model {
         self.finish(outcome, cx);
     }
 
+    /// Run a state change that produces an `Outcome` (effects and notes) outside a command.
+    pub fn mutate(&mut self, f: impl FnOnce(&mut AppState) -> Outcome, cx: &mut Context<Self>) {
+        let outcome = f(&mut self.state);
+        self.finish(outcome, cx);
+    }
+
+    pub fn set_connection(&mut self, connection: Connection, cx: &mut Context<Self>) {
+        let outcome = self.state.set_connection(connection);
+        self.finish(outcome, cx);
+    }
+
     pub fn draft_saved(
         &mut self,
         conversation: ConversationId,

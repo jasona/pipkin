@@ -106,6 +106,10 @@ impl DemoBackend {
         }
     }
 
+    pub fn bootstrap(&self) -> Bootstrap {
+        self.fixtures.bootstrap()
+    }
+
     /// Scenario that will answer the next Submit.
     pub fn scenario(&self) -> String {
         self.shared.scenario.lock().unwrap().clone()
@@ -135,8 +139,9 @@ impl DemoBackend {
 }
 
 impl Backend for DemoBackend {
-    fn bootstrap(&self) -> Bootstrap {
-        self.fixtures.bootstrap()
+    fn start(&self, sink: LifecycleSink) {
+        sink(LifecycleEvent::Catalog(self.bootstrap()));
+        sink(LifecycleEvent::Connection(Connection::Ready));
     }
 
     fn request(&self, request: BackendRequest) {

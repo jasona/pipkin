@@ -1,0 +1,659 @@
+//! Map Pi's replicated `ConversationView` onto Pipkin's transcript items.
+//!
+//! Pure and total: the input is data from another process, so no shape may panic, and nothing
+//! unrecognised is silently dropped or passed off as assistant text; it becomes a visible
+//! notice. Item ids are derived from engine entry ids, so the same entry keeps the same id
+//! across remaps and the transcript can reconcile instead of rebuilding.
+
+use std::collections::HashMap;
+
+use pipkin_core::{
+    Delivery, ItemId, ItemKind, LOCAL_ITEM_BASE, NoticeLevel, ToolCall, ToolStatus, TranscriptItem,
+    preview_output,
+};
+use serde_json::Value;
+
+/// Slots reserved per entry for the items one entry may produce.
+const SLOTS_PER_ENTRY: u64 = 1024;
+/// Live (not yet durable) items live below the local-item range, above any entry-derived id.
+const LIVE_BASE: u64 = LOCAL_ITEM_BASE / 2;
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Mapped {
+    pub items: Vec<TranscriptItem>,
+    /// A run is in progress (`pi.live.run` is present).
+    pub busy: bool,
+    /// Entries shown as "unsupported" notices.
+    pub unsupported: usize,
+}
+
+struct Builder {
+    items: Vec<TranscriptItem>,
+    tools: HashMap<String, usize>,
+    unsupported: usize,
+}
+
+fn text_of(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .map(|b| match b.get("type").and_then(Value::as_str) {
+                Some("text") => b
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+                Some("image") => "[image]".to_owned(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn entry_base(entry: &Value) -> u64 {
+    let raw = match entry.get("id") {
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+        Some(Value::String(s)) => s.parse::<u64>().unwrap_or_else(|_| fnv(s)),
+        _ => 0,
+    };
+    // Keep every derived id below the live range.
+    (raw % (LIVE_BASE / SLOTS_PER_ENTRY)) * SLOTS_PER_ENTRY
+}
+
+fn fnv(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+fn seconds(message: &Value) -> i64 {
+    message
+        .get("timestamp")
+        .and_then(Value::as_i64)
+        .map_or(0, |ms| ms / 1000)
+}
+
+impl Builder {
+    fn push(&mut self, id: u64, at: i64, kind: ItemKind) -> usize {
+        self.items.push(TranscriptItem {
+            id: ItemId(id),
+            at,
+            kind,
+        });
+        self.items.len() - 1
+    }
+
+    fn notice(&mut self, id: u64, at: i64, level: NoticeLevel, text: String) {
+        self.push(id, at, ItemKind::Notice { text, level });
+    }
+
+    fn tool(&mut self, id: u64, at: i64, call_id: &str, name: &str, input: String) {
+        let index = self.push(
+            id,
+            at,
+            ItemKind::Tool(ToolCall {
+                call_ref: None,
+                name: name.to_owned(),
+                input,
+                output: String::new(),
+                truncated: false,
+                full_len: 0,
+                status: ToolStatus::Running,
+            }),
+        );
+        self.tools.insert(call_id.to_owned(), index);
+    }
+
+    fn set_tool_output(&mut self, call_id: &str, output: &str, status: ToolStatus) -> bool {
+        let Some(&index) = self.tools.get(call_id) else {
+            return false;
+        };
+        if let ItemKind::Tool(tool) = &mut self.items[index].kind {
+            let (preview, truncated) = preview_output(output);
+            tool.output = preview;
+            tool.truncated = truncated;
+            tool.full_len = output.len();
+            tool.status = status;
+        }
+        true
+    }
+
+    /// Items for one assistant message's content blocks, in order.
+    fn assistant(&mut self, base: u64, at: i64, message: &Value, streaming: bool) {
+        let mut slot = 0u64;
+        let next = |slot: &mut u64| {
+            let id = base + (*slot).min(SLOTS_PER_ENTRY - 1);
+            *slot += 1;
+            id
+        };
+        let mut text = String::new();
+        let mut text_id = None;
+        let flush =
+            |b: &mut Builder, text: &mut String, text_id: &mut Option<u64>, streaming: bool| {
+                if let Some(id) = text_id.take() {
+                    b.push(
+                        id,
+                        at,
+                        ItemKind::Assistant {
+                            text: std::mem::take(text),
+                            streaming,
+                        },
+                    );
+                }
+            };
+        let blocks = message
+            .get("content")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for block in &blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if text_id.is_none() {
+                        text_id = Some(next(&mut slot));
+                    }
+                    text.push_str(block.get("text").and_then(Value::as_str).unwrap_or(""));
+                }
+                Some("thinking") => {
+                    flush(self, &mut text, &mut text_id, false);
+                    let id = next(&mut slot);
+                    let redacted = block
+                        .get("redacted")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let body = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                    let label = if redacted || body.is_empty() {
+                        "Thinking (not shown)".to_owned()
+                    } else {
+                        format!("Thinking\n{body}")
+                    };
+                    self.notice(id, at, NoticeLevel::Info, label);
+                }
+                Some("toolCall") => {
+                    flush(self, &mut text, &mut text_id, false);
+                    let id = next(&mut slot);
+                    let call_id = block.get("id").and_then(Value::as_str).unwrap_or("");
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let input = block
+                        .get("arguments")
+                        .map(|a| serde_json::to_string(a).unwrap_or_default())
+                        .unwrap_or_default();
+                    self.tool(id, at, call_id, name, input);
+                }
+                other => {
+                    flush(self, &mut text, &mut text_id, false);
+                    let id = next(&mut slot);
+                    self.unsupported += 1;
+                    self.notice(
+                        id,
+                        at,
+                        NoticeLevel::Info,
+                        format!("[unsupported content: {}]", other.unwrap_or("unknown")),
+                    );
+                }
+            }
+        }
+        // Only the final text block of a streaming partial is still growing.
+        flush(self, &mut text, &mut text_id, streaming);
+        if message.get("stopReason").and_then(Value::as_str) == Some("error") {
+            let id = next(&mut slot);
+            let reason = message
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .unwrap_or("The model run ended with an error.");
+            self.notice(id, at, NoticeLevel::Error, reason.to_owned());
+        }
+    }
+
+    fn message(&mut self, base: u64, index: u64, message: &Value) {
+        let at = seconds(message);
+        let id = base + index.min(SLOTS_PER_ENTRY - 1);
+        match message.get("role").and_then(Value::as_str) {
+            Some("user") => {
+                self.push(
+                    id,
+                    at,
+                    ItemKind::User {
+                        text: text_of(message.get("content").unwrap_or(&Value::Null)),
+                        attachments: Vec::new(),
+                        delivery: Delivery::Sent,
+                        steer: false,
+                    },
+                );
+            }
+            // Instructions and tool definitions for the model, not conversation.
+            Some("system") => {}
+            Some("assistant") => self.assistant(base, at, message, false),
+            Some("toolResult") => {
+                let call_id = message
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let output = text_of(message.get("content").unwrap_or(&Value::Null));
+                let status = if message
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    ToolStatus::Failed
+                } else {
+                    ToolStatus::Ok
+                };
+                if !self.set_tool_output(call_id, &output, status) {
+                    // A result whose call is not visible (compacted away): keep it, labelled.
+                    let name = message
+                        .get("toolName")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
+                    self.tool(id, at, call_id, name, String::new());
+                    self.set_tool_output(call_id, &output, status);
+                }
+            }
+            other => {
+                self.unsupported += 1;
+                self.notice(
+                    id,
+                    at,
+                    NoticeLevel::Info,
+                    format!("[unsupported message role: {}]", other.unwrap_or("unknown")),
+                );
+            }
+        }
+    }
+}
+
+/// Map a `ConversationView` value.
+pub fn map_view(view: &Value) -> Mapped {
+    let mut b = Builder {
+        items: Vec::new(),
+        tools: HashMap::new(),
+        unsupported: 0,
+    };
+    let empty = Vec::new();
+    let entries = view
+        .get("entries")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    for entry in entries {
+        // A head marker only selects which entries are active; it carries no content.
+        if entry.get("head").is_some() || !entry.is_object() {
+            continue;
+        }
+        let base = entry_base(entry);
+        match entry.get("model").and_then(Value::as_array) {
+            Some(messages) if !messages.is_empty() => {
+                for (i, message) in messages.iter().enumerate() {
+                    b.message(base, i as u64, message);
+                }
+            }
+            _ => {
+                if entry.get("data").is_some() {
+                    let kind = entry
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    b.unsupported += 1;
+                    b.notice(base, 0, NoticeLevel::Info, format!("[{kind}]"));
+                }
+            }
+        }
+    }
+
+    let live = view.get("docs").and_then(|d| d.get("pi.live"));
+    let busy = live
+        .and_then(|l| l.get("run"))
+        .is_some_and(|r| !r.is_null());
+    if let Some(generation) = live.and_then(|l| l.get("generation"))
+        && let Some(partial) = generation.get("message")
+        && partial.is_object()
+    {
+        b.assistant(LIVE_BASE, 0, partial, true);
+    }
+    if let Some(slots) = live.and_then(|l| l.get("tools")).and_then(Value::as_array) {
+        for (i, slot) in slots.iter().enumerate() {
+            let call_id = slot.get("callId").and_then(Value::as_str).unwrap_or("");
+            let name = slot.get("name").and_then(Value::as_str).unwrap_or("tool");
+            if !b.tools.contains_key(call_id) {
+                b.tool(LIVE_BASE + 512 + i as u64, 0, call_id, name, String::new());
+            }
+            let output = slot.get("output").and_then(Value::as_str).unwrap_or("");
+            match slot.get("status").and_then(Value::as_str) {
+                // A finished slot with a result entry is already represented by that entry.
+                Some("done") if slot.get("entry").is_some() => {}
+                // Done with no result entry: the tool faulted or was orphaned.
+                Some("done") => {
+                    b.set_tool_output(call_id, output, ToolStatus::Failed);
+                }
+                _ => {
+                    b.set_tool_output(call_id, output, ToolStatus::Running);
+                }
+            }
+        }
+    }
+    Mapped {
+        items: b.items,
+        busy,
+        unsupported: b.unsupported,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn user(id: u64, text: &str) -> Value {
+        json!({ "id": id, "conversationId": 1, "kind": "pi.message",
+                "model": [{ "role": "user", "content": text, "timestamp": 1_700_000_000_000i64 }] })
+    }
+
+    fn assistant(id: u64, content: Value) -> Value {
+        json!({ "id": id, "conversationId": 1, "kind": "pi.message",
+                "model": [{ "role": "assistant", "content": content, "stopReason": "stop", "timestamp": 1_700_000_005_000i64 }] })
+    }
+
+    fn view(entries: Vec<Value>) -> Value {
+        json!({ "conversation": { "id": 1 }, "entries": entries, "docs": {} })
+    }
+
+    fn kinds(m: &Mapped) -> Vec<&ItemKind> {
+        m.items.iter().map(|i| &i.kind).collect()
+    }
+
+    #[test]
+    fn maps_user_and_assistant_text() {
+        let m = map_view(&view(vec![
+            user(1, "fix the bug"),
+            assistant(
+                2,
+                json!([{ "type": "text", "text": "Looking " }, { "type": "text", "text": "now." }]),
+            ),
+        ]));
+        assert_eq!(m.items.len(), 2);
+        assert!(
+            matches!(&m.items[0].kind, ItemKind::User { text, delivery: Delivery::Sent, .. } if text == "fix the bug")
+        );
+        assert_eq!(m.items[0].at, 1_700_000_000);
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Assistant { text, streaming: false } if text == "Looking now.")
+        );
+        assert!(!m.busy);
+    }
+
+    #[test]
+    fn user_content_blocks_keep_text_and_mark_images() {
+        let entry = json!({ "id": 1, "kind": "k", "model": [{ "role": "user", "timestamp": 0,
+            "content": [{ "type": "text", "text": "see " }, { "type": "image", "data": "AAAA", "mimeType": "image/png" }] }] });
+        let m = map_view(&view(vec![entry]));
+        assert!(matches!(&m.items[0].kind, ItemKind::User { text, .. } if text == "see [image]"));
+    }
+
+    #[test]
+    fn tool_calls_pair_with_their_results() {
+        let m = map_view(&view(vec![
+            assistant(
+                2,
+                json!([
+                    { "type": "text", "text": "Reading." },
+                    { "type": "toolCall", "id": "c1", "name": "read_file", "arguments": { "path": "a.rs" } },
+                    { "type": "toolCall", "id": "c2", "name": "bash", "arguments": { "cmd": "false" } },
+                ]),
+            ),
+            json!({ "id": 3, "kind": "pi.message", "model": [{ "role": "toolResult", "toolCallId": "c1", "toolName": "read_file",
+                "content": [{ "type": "text", "text": "fn main() {}" }], "isError": false, "timestamp": 0 }] }),
+            json!({ "id": 4, "kind": "pi.message", "model": [{ "role": "toolResult", "toolCallId": "c2", "toolName": "bash",
+                "content": [{ "type": "text", "text": "exit 1" }], "isError": true, "timestamp": 0 }] }),
+        ]));
+        let tools: Vec<&ToolCall> = m
+            .items
+            .iter()
+            .filter_map(|i| {
+                if let ItemKind::Tool(t) = &i.kind {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(
+            (tools[0].name.as_str(), tools[0].status),
+            ("read_file", ToolStatus::Ok)
+        );
+        assert_eq!(tools[0].output, "fn main() {}");
+        assert_eq!(tools[0].input, r#"{"path":"a.rs"}"#);
+        assert_eq!(
+            (tools[1].name.as_str(), tools[1].status),
+            ("bash", ToolStatus::Failed)
+        );
+        // A result adds no item of its own when its call is visible.
+        assert_eq!(m.items.len(), 3);
+    }
+
+    #[test]
+    fn an_unmatched_tool_result_is_kept_and_labelled() {
+        let m = map_view(&view(vec![
+            json!({ "id": 9, "kind": "k", "model": [{ "role": "toolResult",
+            "toolCallId": "gone", "toolName": "bash", "content": "late", "isError": false, "timestamp": 0 }] }),
+        ]));
+        assert!(
+            matches!(&m.items[0].kind, ItemKind::Tool(t) if t.name == "bash" && t.output == "late")
+        );
+    }
+
+    #[test]
+    fn thinking_is_visible_and_redacted_thinking_is_labelled() {
+        let m = map_view(&view(vec![assistant(
+            2,
+            json!([
+                { "type": "thinking", "thinking": "consider the cache" },
+                { "type": "thinking", "thinking": "", "redacted": true, "thinkingSignature": "opaque" },
+                { "type": "text", "text": "Done." },
+            ]),
+        )]));
+        assert!(
+            matches!(&m.items[0].kind, ItemKind::Notice { text, level: NoticeLevel::Info } if text == "Thinking\nconsider the cache")
+        );
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Notice { text, .. } if text == "Thinking (not shown)")
+        );
+        assert!(matches!(&m.items[2].kind, ItemKind::Assistant { text, .. } if text == "Done."));
+    }
+
+    #[test]
+    fn text_split_by_a_tool_call_becomes_two_messages() {
+        let m = map_view(&view(vec![assistant(
+            2,
+            json!([
+                { "type": "text", "text": "before" },
+                { "type": "toolCall", "id": "c", "name": "t", "arguments": {} },
+                { "type": "text", "text": "after" },
+            ]),
+        )]));
+        let shape: Vec<&str> = kinds(&m)
+            .iter()
+            .map(|k| match k {
+                ItemKind::Assistant { .. } => "assistant",
+                ItemKind::Tool(_) => "tool",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(shape, ["assistant", "tool", "assistant"]);
+    }
+
+    #[test]
+    fn an_errored_run_shows_its_reason() {
+        let entry = json!({ "id": 2, "kind": "k", "model": [{ "role": "assistant", "content": [], "stopReason": "error",
+            "errorMessage": "provider unavailable", "timestamp": 0 }] });
+        let m = map_view(&view(vec![entry]));
+        assert!(
+            matches!(&m.items[0].kind, ItemKind::Notice { text, level: NoticeLevel::Error } if text == "provider unavailable")
+        );
+    }
+
+    #[test]
+    fn head_markers_are_skipped_and_system_messages_are_not_conversation() {
+        let marker = json!({ "id": 5, "kind": "pi.head", "head": 3, "data": {} });
+        let system = json!({ "id": 1, "kind": "k", "model": [{ "role": "system", "content": "be terse", "timestamp": 0 }] });
+        let m = map_view(&view(vec![marker, system, user(6, "hi")]));
+        assert_eq!(m.items.len(), 1);
+        assert_eq!(m.unsupported, 0);
+    }
+
+    #[test]
+    fn unknown_entries_and_content_stay_visible() {
+        let odd = json!({ "id": 7, "kind": "pi.compaction", "data": { "summary": "x" } });
+        let block = assistant(8, json!([{ "type": "hologram" }]));
+        let role = json!({ "id": 9, "kind": "k", "model": [{ "role": "oracle", "timestamp": 0 }] });
+        let m = map_view(&view(vec![odd, block, role]));
+        assert_eq!(m.items.len(), 3);
+        assert_eq!(m.unsupported, 3);
+        assert!(
+            matches!(&m.items[0].kind, ItemKind::Notice { text, .. } if text == "[pi.compaction]")
+        );
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Notice { text, .. } if text.contains("hologram"))
+        );
+        assert!(
+            matches!(&m.items[2].kind, ItemKind::Notice { text, .. } if text.contains("oracle"))
+        );
+    }
+
+    #[test]
+    fn large_tool_output_is_bounded_but_reports_its_size() {
+        let big = "x".repeat(40_000);
+        let m = map_view(&view(vec![
+            assistant(
+                2,
+                json!([{ "type": "toolCall", "id": "c", "name": "bash", "arguments": {} }]),
+            ),
+            json!({ "id": 3, "kind": "k", "model": [{ "role": "toolResult", "toolCallId": "c", "toolName": "bash",
+                "content": [{ "type": "text", "text": big }], "isError": false, "timestamp": 0 }] }),
+        ]));
+        let ItemKind::Tool(t) = &m.items[0].kind else {
+            panic!()
+        };
+        assert!(
+            t.truncated
+                && t.full_len == 40_000
+                && t.output.len() <= pipkin_core::TOOL_OUTPUT_PREVIEW_BYTES
+        );
+    }
+
+    #[test]
+    fn live_partial_streams_as_the_last_item() {
+        let mut v = view(vec![user(1, "go")]);
+        v["docs"] = json!({ "pi.live": {
+            "run": { "taskId": 1, "inputs": [1] },
+            "generation": { "attempt": 1, "message": { "role": "assistant", "stopReason": "stop", "timestamp": 0,
+                "content": [{ "type": "text", "text": "Working on" }] } },
+        }});
+        let m = map_view(&v);
+        assert!(m.busy);
+        assert_eq!(m.items.len(), 2);
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Assistant { text, streaming: true } if text == "Working on")
+        );
+        assert!(m.items[1].id.0 >= LIVE_BASE && m.items[1].id.0 < LOCAL_ITEM_BASE);
+    }
+
+    #[test]
+    fn running_tool_slots_show_progress_and_faulted_slots_show_failure() {
+        let mut v = view(vec![assistant(
+            2,
+            json!([
+                { "type": "toolCall", "id": "run", "name": "bash", "arguments": {} },
+                { "type": "toolCall", "id": "dead", "name": "grep", "arguments": {} },
+                { "type": "toolCall", "id": "fin", "name": "ls", "arguments": {} },
+            ]),
+        )]);
+        v["docs"] = json!({ "pi.live": { "tools": [
+            { "callId": "run", "name": "bash", "status": "running", "output": "building…" },
+            { "callId": "dead", "name": "grep", "status": "done" },
+            { "callId": "fin", "name": "ls", "status": "done", "entry": 9 },
+        ]}});
+        let m = map_view(&v);
+        let tool = |n: &str| -> &ToolCall {
+            m.items
+                .iter()
+                .find_map(|i| match &i.kind {
+                    ItemKind::Tool(t) if t.name == n => Some(t),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            (tool("bash").status, tool("bash").output.as_str()),
+            (ToolStatus::Running, "building…")
+        );
+        assert_eq!(tool("grep").status, ToolStatus::Failed);
+        // Finished with a result entry that is not in this view yet: stays as the call shows.
+        assert_eq!(tool("ls").status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn a_tool_slot_without_a_visible_call_still_appears() {
+        let mut v = view(vec![]);
+        v["docs"] = json!({ "pi.live": { "tools": [{ "callId": "x", "name": "bash", "status": "running", "output": "hi" }] }});
+        let m = map_view(&v);
+        assert!(matches!(&m.items[0].kind, ItemKind::Tool(t) if t.output == "hi"));
+    }
+
+    #[test]
+    fn ids_are_stable_across_remaps_and_unique_within_a_transcript() {
+        let entries = vec![
+            user(10, "a"),
+            assistant(
+                11,
+                json!([{ "type": "text", "text": "x" }, { "type": "toolCall", "id": "c", "name": "t", "arguments": {} }]),
+            ),
+            user(12, "b"),
+        ];
+        let first = map_view(&view(entries.clone()));
+        let second = map_view(&view(entries));
+        assert_eq!(first, second);
+        let mut ids: Vec<u64> = first.items.iter().map(|i| i.id.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), first.items.len());
+        assert!(ids.iter().all(|id| *id < LOCAL_ITEM_BASE));
+        // Appending entries never renumbers earlier items.
+        let more = map_view(&view(vec![
+            user(10, "a"),
+            assistant(11, json!([{ "type": "text", "text": "x" }])),
+            user(12, "b"),
+            user(13, "c"),
+        ]));
+        assert_eq!(more.items[0].id, first.items[0].id);
+    }
+
+    #[test]
+    fn hostile_and_malformed_shapes_never_panic() {
+        for v in [
+            json!(null),
+            json!([]),
+            json!("view"),
+            json!({ "entries": "nope" }),
+            json!({ "entries": [null, 1, "x", [], {}] }),
+            json!({ "entries": [{ "id": "not-a-number", "model": [null, 3, "m", { "role": 7 }, { "role": "user" }] }] }),
+            json!({ "entries": [{ "id": u64::MAX, "model": [{ "role": "user", "content": { "x": 1 } }] }] }),
+            json!({ "entries": [], "docs": { "pi.live": { "tools": [null, 1, { "status": 5 }], "generation": { "message": 3 } } } }),
+            json!({ "entries": [{ "id": 1, "model": [{ "role": "assistant", "content": [null, 1, { "type": 3 }, { "type": "toolCall" }] }] }] }),
+        ] {
+            let _ = map_view(&v);
+        }
+    }
+
+    #[test]
+    fn a_huge_entry_id_stays_in_range() {
+        let m = map_view(&view(vec![user(u64::MAX, "x")]));
+        assert!(m.items[0].id.0 < LOCAL_ITEM_BASE);
+    }
+}

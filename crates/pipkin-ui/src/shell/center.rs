@@ -26,7 +26,7 @@ impl Workspace {
         let c = &t.colors;
         let nav_docked = self.nav_docked(window);
         let insp_docked = self.inspector_docked(window, cx);
-        let (title, project, has_conv) = {
+        let (title, project, has_conv, demo, banner) = {
             let s = self.state(cx);
             (
                 s.current().map(|c| c.title.clone()),
@@ -34,6 +34,8 @@ impl Workspace {
                     .map(|p| format!("{} · {}", p.name, p.path))
                     .unwrap_or_default(),
                 s.current().is_some(),
+                s.mode == Mode::Demo,
+                s.connection.banner(),
             )
         };
         let this = cx.entity();
@@ -104,12 +106,7 @@ impl Workspace {
                             .child(project),
                     ),
             )
-            .child(chip(
-                "Demo · simulated agent",
-                c.text_muted,
-                c.bg_active,
-                cx,
-            ))
+            .children(demo.then(|| chip("Demo · simulated agent", c.text_muted, c.bg_active, cx)))
             .child(insp_toggle);
 
         let body = if has_conv {
@@ -135,7 +132,7 @@ impl Workspace {
                     div()
                         .text_size(t.small_size())
                         .text_color(c.text_faint)
-                        .child("Create one with Ctrl+N."),
+                        .child(banner.unwrap_or_else(|| "Create one with Ctrl+N.".into())),
                 )
                 .into_any_element()
         };
@@ -159,7 +156,17 @@ impl Workspace {
     fn render_bottom(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let c = &t.colors;
-        let (run, queue, draft_save, attachments, avail, models, model_id, retry_hint) = {
+        let (
+            run,
+            queue,
+            draft_save,
+            attachments,
+            avail,
+            models,
+            model_id,
+            retry_hint,
+            intent_error,
+        ) = {
             let s = self.state(cx);
             let cv = s.current().unwrap();
             (
@@ -171,6 +178,7 @@ impl Workspace {
                 s.models.clone(),
                 s.prefs.model.clone(),
                 cv.last_submission.is_some(),
+                cv.intent_error.clone(),
             )
         };
         let _ = (retry_hint, models.len());
@@ -183,6 +191,27 @@ impl Workspace {
 
         // ---- status strip
         let status: Option<gpui::AnyElement> = match &run {
+            // The prompt could not be recorded, so it was not sent; it is still in the composer.
+            RunState::Idle if intent_error.is_some() => Some(strip(
+                cx,
+                "circle-alert",
+                c.danger,
+                "Not sent",
+                intent_error.as_deref().unwrap_or_default(),
+                vec![
+                    Btn::new("dismiss-intent-error")
+                        .icon("x")
+                        .aria("Dismiss")
+                        .compact()
+                        .on_click({
+                            let this = this.clone();
+                            move |_, cx| {
+                                this.update(cx, |t, cx| t.dispatch(Command::DismissFailure, cx))
+                            }
+                        })
+                        .into_any_element(),
+                ],
+            )),
             RunState::Idle | RunState::Submitting { .. } => None,
             RunState::Running { .. } => Some(strip(
                 cx,
@@ -217,7 +246,7 @@ impl Workspace {
                 "circle-help",
                 c.warning,
                 "Outcome unknown",
-                "The connection dropped before the prompt was acknowledged. It will not be resent automatically.",
+                "The app or connection stopped before the prompt was acknowledged. It will not be resent automatically.",
                 vec![
                     Btn::new("check-status")
                         .icon("refresh-cw")

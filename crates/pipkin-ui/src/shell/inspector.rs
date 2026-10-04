@@ -59,6 +59,7 @@ impl Workspace {
         self.refresh_diff_rows(cx);
         let t = cx.theme().clone();
         let c = &t.colors;
+        let demo = self.state(cx).mode == Mode::Demo;
         let (changes, selected) = {
             let s = self.state(cx);
             match s.current() {
@@ -89,11 +90,19 @@ impl Workspace {
                 div()
                     .id("inspector-title")
                     .role(Role::Heading)
-                    .aria_label("Workspace changes, demo")
+                    .aria_label(if demo {
+                        "Workspace changes, demo"
+                    } else {
+                        "Workspace changes"
+                    })
                     .flex_1()
                     .truncate()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Workspace changes · Demo"),
+                    .child(if demo {
+                        "Workspace changes · Demo"
+                    } else {
+                        "Workspace changes"
+                    }),
             )
             .when(temp, |d| {
                 let this = this.clone();

@@ -24,6 +24,12 @@ pub struct ConversationState {
     pub selected_change: Option<usize>,
     /// Text of the last submission, kept for explicit retry.
     pub last_submission: Option<(String, Vec<Attachment>)>,
+    /// A submission waiting for its journal commit. While set, nothing else can be submitted.
+    pub pending_intent: Option<PendingIntent>,
+    /// Why the last submission could not be recorded; its draft was kept.
+    pub intent_error: Option<String>,
+    /// Request behind the live (or unresolved) operation, for journal updates.
+    current_request: Option<RequestId>,
     streaming_item: Option<usize>,
 }
 
@@ -45,6 +51,9 @@ impl ConversationState {
             changes: Vec::new(),
             selected_change: None,
             last_submission: None,
+            pending_intent: None,
+            intent_error: None,
+            current_request: None,
             streaming_item: None,
         }
     }
@@ -65,6 +74,10 @@ pub struct AppState {
     pub selected: Option<ConversationId>,
     pub search: String,
     pub prefs: Prefs,
+    pub mode: Mode,
+    pub connection: Connection,
+    request_prefix: String,
+    next_request: u64,
     next_op: u64,
     next_local_item: u64,
     next_queue: u64,
@@ -72,6 +85,7 @@ pub struct AppState {
     now: i64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Bootstrap {
     pub projects: Vec<Project>,
     pub models: Vec<ModelInfo>,
@@ -102,6 +116,10 @@ impl AppState {
             selected,
             search: String::new(),
             prefs,
+            mode: Mode::Demo,
+            connection: Connection::Ready,
+            request_prefix: "req".into(),
+            next_request: 1,
             next_op: 1,
             next_local_item: LOCAL_ITEM_BASE,
             next_queue: 1,
@@ -152,14 +170,64 @@ impl AppState {
         v
     }
 
+    /// Merge the backend's catalog into state. Existing conversations keep their local state.
+    pub fn apply_catalog(&mut self, boot: Bootstrap) -> Outcome {
+        let mut out = Outcome::default();
+        self.projects = boot.projects;
+        self.models = boot.models;
+        self.now = self.now.max(boot.now);
+        for (id, project, title, at) in boot.conversations {
+            if self.conv_mut(id).is_none() {
+                self.conversations
+                    .push(ConversationState::new(id, project, title, at));
+                self.next_conversation = self.next_conversation.max(id.0 + 1);
+            }
+        }
+        if self.prefs.model.is_none() {
+            self.prefs.model = self.models.first().map(|m| m.id.clone());
+        }
+        out.notes.push(Note::ConversationsChanged);
+        out
+    }
+
+    /// Select the remembered (or first) conversation, if nothing is selected, so its history loads.
+    pub fn select_initial(&mut self) -> Outcome {
+        if self.selected.is_some() {
+            return Outcome::default();
+        }
+        let id = self
+            .prefs
+            .selected_conversation
+            .filter(|id| self.conversation(*id).is_some())
+            .or_else(|| self.conversations.first().map(|c| c.id));
+        match id {
+            Some(id) => self.dispatch(Command::SelectConversation(id)),
+            None => Outcome::default(),
+        }
+    }
+
+    pub fn set_connection(&mut self, connection: Connection) -> Outcome {
+        let mut out = Outcome::default();
+        if self.connection != connection {
+            self.connection = connection;
+            out.notes.push(Note::Other);
+        }
+        out
+    }
+
     pub fn availability(&self) -> Availability {
+        // Every action below reaches the backend, so none is offered until it is connected.
+        if !self.connection.is_ready() {
+            return Availability::default();
+        }
         let Some(c) = self.current() else {
             return Availability::default();
         };
         let has_text = !c.draft.text.trim().is_empty();
         let attachments_ok = c.draft.attachments.iter().all(|a| a.error.is_none());
         let ready = has_text && attachments_ok;
-        let idle = matches!(c.run, RunState::Idle | RunState::Failed { .. });
+        let idle =
+            matches!(c.run, RunState::Idle | RunState::Failed { .. }) && c.pending_intent.is_none();
         Availability {
             submit: idle && ready,
             steer: matches!(c.run, RunState::Running { .. }) && has_text,
@@ -173,6 +241,7 @@ impl AppState {
             ),
             check_status: matches!(c.run, RunState::OutcomeUnknown { .. }),
             retry: c.last_submission.is_some()
+                && c.pending_intent.is_none()
                 && (matches!(c.run, RunState::Failed { .. })
                     || matches!(
                         c.items.last().map(|i| &i.kind),
@@ -183,6 +252,18 @@ impl AppState {
                     )),
             load_older: c.has_older && !c.loading_older,
         }
+    }
+
+    /// Prefix that makes request IDs unique across restarts (the controller supplies entropy;
+    /// the core never reads a clock or random source).
+    pub fn set_request_prefix(&mut self, prefix: String) {
+        self.request_prefix = prefix;
+    }
+
+    fn alloc_request(&mut self) -> RequestId {
+        let id = RequestId(format!("{}-{}", self.request_prefix, self.next_request));
+        self.next_request += 1;
+        id
     }
 
     fn alloc_op(&mut self) -> OperationId {
@@ -252,6 +333,10 @@ impl AppState {
                 out.notes.push(Note::SelectionChanged);
                 out.effects.push(Effect::SavePrefs(self.prefs.clone()));
             }
+            // Real sessions are created and renamed by the engine; a local-only row would be
+            // simulated success.
+            Command::NewConversation | Command::RenameConversation(..)
+                if self.mode == Mode::Real => {}
             Command::NewConversation => {
                 let Some(project) = self.current_project().map(|p| p.id) else {
                     return out;
@@ -387,23 +472,16 @@ impl AppState {
                     let id = self.selected.unwrap();
                     let c = self.conv_mut(id).unwrap();
                     if let Some((text, atts)) = c.last_submission.clone() {
-                        // Drop the rejected prompt row before resubmitting.
-                        if let Some(ItemKind::User {
-                            delivery: Delivery::Rejected,
-                            ..
-                        }) = c.items.last().map(|i| &i.kind)
-                        {
-                            c.items.pop();
-                            out.notes.push(Note::ItemsReset(id));
-                        }
-                        c.run = RunState::Idle;
-                        out.merge(self.submit(id, text, atts));
+                        out.merge(self.submit(id, text, atts, IntentOrigin::Retry));
                     }
                 }
             }
             Command::DismissFailure => {
                 if let Some(id) = self.selected {
                     let c = self.conv_mut(id).unwrap();
+                    if c.intent_error.take().is_some() {
+                        out.notes.push(Note::Other);
+                    }
                     if matches!(c.run, RunState::Failed { .. }) {
                         c.run = RunState::Idle;
                         out.notes.push(Note::Other);
@@ -489,41 +567,146 @@ impl AppState {
         let id = self.selected.unwrap();
         let c = self.conv_mut(id).unwrap();
         let text = c.draft.text.trim_end().to_string();
-        let atts = std::mem::take(&mut c.draft.attachments);
-        c.draft.text.clear();
-        let mut out = self.reset_draft(id);
-        out.merge(self.submit(id, text, atts));
+        let atts = c.draft.attachments.clone();
+        self.submit(id, text, atts, IntentOrigin::Draft)
+    }
+
+    /// First half of a submission: record the intent. The draft stays and nothing is sent until
+    /// `intent_persisted` reports the commit.
+    fn submit(
+        &mut self,
+        id: ConversationId,
+        text: String,
+        atts: Vec<Attachment>,
+        origin: IntentOrigin,
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        if self.conv_mut(id).unwrap().pending_intent.is_some() {
+            return out;
+        }
+        let request = self.alloc_request();
+        let model = self.prefs.model.clone();
+        let c = self.conv_mut(id).unwrap();
+        c.intent_error = None;
+        c.pending_intent = Some(PendingIntent {
+            request: request.clone(),
+            origin,
+            text: text.clone(),
+            attachments: atts.clone(),
+            model: model.clone(),
+        });
+        out.effects.push(Effect::JournalIntent {
+            conversation: id,
+            request,
+            text,
+            attachments: atts,
+            model,
+        });
+        out.notes.push(Note::Other);
         out
     }
 
-    fn submit(&mut self, id: ConversationId, text: String, atts: Vec<Attachment>) -> Outcome {
+    /// The journal reported the outcome of a `JournalIntent`. On success the draft is cleared
+    /// (if the user has not edited it since) and the request is sent; on failure the draft is
+    /// kept and nothing is sent.
+    pub fn intent_persisted(
+        &mut self,
+        id: ConversationId,
+        request: &RequestId,
+        result: Result<(), String>,
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        let Some(c) = self.conv_mut(id) else {
+            return out;
+        };
+        if c.pending_intent.as_ref().map(|p| &p.request) != Some(request) {
+            return out; // stale or duplicate acknowledgment
+        }
+        let intent = c.pending_intent.take().unwrap();
+        if let Err(e) = result {
+            c.intent_error = Some(format!(
+                "Could not save the prompt before sending, so it was not sent: {e}"
+            ));
+            if intent.origin == IntentOrigin::Queue {
+                let qid = QueueId(self.next_queue);
+                self.next_queue += 1;
+                self.conv_mut(id).unwrap().queue.insert(
+                    0,
+                    QueuedPrompt {
+                        id: qid,
+                        text: intent.text,
+                    },
+                );
+            }
+            out.notes.push(Note::Other);
+            return out;
+        }
+        out.merge(self.dispatch_intent(id, intent));
+        out
+    }
+
+    /// Second half of a submission, after the intent is durable.
+    fn dispatch_intent(&mut self, id: ConversationId, intent: PendingIntent) -> Outcome {
         let mut out = Outcome::default();
         let op = self.alloc_op();
-        let model = self.prefs.model.clone();
         let now = self.now;
         let c = self.conv_mut(id).unwrap();
+        let mut clear_draft = false;
+        match intent.origin {
+            IntentOrigin::Draft => {
+                // Keep anything the user typed after pressing send.
+                clear_draft = c.draft.text.trim_end() == intent.text
+                    && c.draft
+                        .attachments
+                        .iter()
+                        .map(|a| &a.path)
+                        .eq(intent.attachments.iter().map(|a| &a.path));
+                if clear_draft {
+                    c.draft.text.clear();
+                    c.draft.attachments.clear();
+                }
+            }
+            IntentOrigin::Retry => {
+                // Drop the rejected prompt row before resubmitting.
+                if let Some(ItemKind::User {
+                    delivery: Delivery::Rejected,
+                    ..
+                }) = c.items.last().map(|i| &i.kind)
+                {
+                    c.items.pop();
+                    out.notes.push(Note::ItemsReset(id));
+                }
+                c.run = RunState::Idle;
+            }
+            IntentOrigin::Queue => {}
+        }
         c.run = RunState::Submitting { op };
-        c.last_submission = Some((text.clone(), atts.clone()));
+        c.last_submission = Some((intent.text.clone(), intent.attachments.clone()));
+        c.current_request = Some(intent.request.clone());
         c.updated_at = now;
         c.streaming_item = None;
         let generation = c.generation;
         self.push_item(
             id,
             ItemKind::User {
-                text: text.clone(),
-                attachments: atts.clone(),
+                text: intent.text.clone(),
+                attachments: intent.attachments.clone(),
                 delivery: Delivery::Pending,
                 steer: false,
             },
             &mut out,
         );
+        if clear_draft {
+            out.merge(self.reset_draft(id));
+        }
         out.effects.push(Effect::Backend(BackendRequest::Submit {
             conversation: id,
             generation,
             op,
-            text,
-            attachments: atts,
-            model,
+            request: intent.request,
+            text: intent.text,
+            attachments: intent.attachments,
+            model: intent.model,
         }));
         out.effects
             .push(Effect::SaveConversation { conversation: id });
@@ -574,7 +757,10 @@ impl AppState {
         // Operation-scoped events must match the live operation.
         let scoped = !matches!(
             ev.kind,
-            EventKind::Opened { .. } | EventKind::OlderPage { .. }
+            EventKind::Opened { .. }
+                | EventKind::OlderPage { .. }
+                | EventKind::Synced { .. }
+                | EventKind::OpenFailed { .. }
         );
         if scoped && ev.op != c.run.op() {
             return out;
@@ -592,6 +778,26 @@ impl AppState {
                 c.changes = changes;
                 out.notes.push(Note::ItemsReset(id));
             }
+            EventKind::OpenFailed { message } => {
+                if !c.opened {
+                    c.items = vec![TranscriptItem {
+                        id: ItemId(LOCAL_ITEM_BASE - 1),
+                        at: 0,
+                        kind: ItemKind::Notice {
+                            text: message,
+                            level: NoticeLevel::Error,
+                        },
+                    }];
+                    out.notes.push(Note::ItemsReset(id));
+                }
+            }
+            EventKind::Synced { items } => {
+                if c.opened {
+                    c.items = items;
+                    c.streaming_item = None;
+                    out.notes.push(Note::ItemsReset(id));
+                }
+            }
             EventKind::OlderPage { items, has_older } => {
                 let n = items.len();
                 c.loading_older = false;
@@ -608,6 +814,7 @@ impl AppState {
                 if let RunState::Submitting { op } = c.run {
                     c.run = RunState::Running { op };
                     mark_last_user(c, Delivery::Sent, &mut out, id);
+                    journal(c, id, JournalState::Accepted, &mut out);
                 }
             }
             EventKind::SteerAccepted => {
@@ -615,6 +822,7 @@ impl AppState {
             }
             EventKind::Rejected { reason } => {
                 if let RunState::Submitting { .. } = c.run {
+                    journal(c, id, JournalState::Rejected, &mut out);
                     mark_last_user(c, Delivery::Rejected, &mut out, id);
                     c.run = RunState::Failed {
                         message: reason.clone(),
@@ -642,6 +850,7 @@ impl AppState {
             EventKind::AckLost => {
                 if let RunState::Submitting { op } = c.run {
                     c.run = RunState::OutcomeUnknown { op };
+                    journal(c, id, JournalState::Unknown, &mut out);
                     mark_last_user(c, Delivery::Unknown, &mut out, id);
                     out.notes.push(Note::Other);
                 }
@@ -650,8 +859,10 @@ impl AppState {
                 if let RunState::OutcomeUnknown { op } = c.run {
                     if accepted {
                         c.run = RunState::Running { op };
+                        journal(c, id, JournalState::Accepted, &mut out);
                         mark_last_user(c, Delivery::Sent, &mut out, id);
                     } else {
+                        journal(c, id, JournalState::Rejected, &mut out);
                         mark_last_user(c, Delivery::Rejected, &mut out, id);
                         c.run = RunState::Failed {
                             message: "The engine never received the prompt.".into(),
@@ -734,6 +945,7 @@ impl AppState {
             }
             EventKind::Completed => {
                 c.run = RunState::Idle;
+                journal(c, id, JournalState::Completed, &mut out);
                 self.finish_streaming(id, &mut out);
                 out.merge(self.after_settled(id));
             }
@@ -741,6 +953,7 @@ impl AppState {
                 c.run = RunState::Failed {
                     message: message.clone(),
                 };
+                journal(c, id, JournalState::Failed, &mut out);
                 self.finish_streaming(id, &mut out);
                 self.push_item(
                     id,
@@ -760,6 +973,7 @@ impl AppState {
                         | RunState::Submitting { .. }
                 ) {
                     c.run = RunState::Idle;
+                    journal(c, id, JournalState::Cancelled, &mut out);
                     self.finish_streaming(id, &mut out);
                     self.push_item(
                         id,
@@ -794,7 +1008,7 @@ impl AppState {
             return Outcome::default();
         }
         let next = c.queue.remove(0);
-        self.submit(id, next.text, vec![])
+        self.submit(id, next.text, vec![], IntentOrigin::Queue)
     }
 
     // ------------------------------------------------------------- persistence
@@ -821,6 +1035,36 @@ impl AppState {
         }
     }
 
+    /// Restore a journaled request that never reached a terminal state before the last exit.
+    /// Whether the engine accepted it is unknown, so the conversation enters `OutcomeUnknown`
+    /// and the user decides (check status, then retry). Nothing is resent here. If the
+    /// conversation already has an older unresolved request, that one is superseded.
+    pub fn restore_unresolved(
+        &mut self,
+        id: ConversationId,
+        request: RequestId,
+        text: String,
+        attachments: Vec<Attachment>,
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        if self.conv_mut(id).is_none() {
+            return out;
+        }
+        let op = self.alloc_op();
+        let c = self.conv_mut(id).unwrap();
+        if let Some(previous) = c.current_request.replace(request) {
+            out.effects.push(Effect::JournalState {
+                conversation: id,
+                request: previous,
+                state: JournalState::Superseded,
+            });
+        }
+        c.run = RunState::OutcomeUnknown { op };
+        c.last_submission = Some((text, attachments));
+        out.notes.push(Note::Other);
+        out
+    }
+
     pub fn restore_conversation(
         &mut self,
         id: ConversationId,
@@ -838,6 +1082,22 @@ impl AppState {
             self.next_conversation = self.next_conversation.max(id.0 + 1);
         }
     }
+}
+
+/// Record a journal transition for the conversation's current request. Terminal states end
+/// the association, so a later event can never rewrite a settled request.
+fn journal(c: &mut ConversationState, id: ConversationId, state: JournalState, out: &mut Outcome) {
+    let Some(request) = c.current_request.clone() else {
+        return;
+    };
+    if state.is_terminal() {
+        c.current_request = None;
+    }
+    out.effects.push(Effect::JournalState {
+        conversation: id,
+        request,
+        state,
+    });
 }
 
 fn mark_last_user(c: &mut ConversationState, d: Delivery, out: &mut Outcome, id: ConversationId) {
@@ -868,6 +1128,16 @@ fn find_tool(
             ItemKind::Tool(t) if t.call_ref == Some((op, call)) => Some((i, t)),
             _ => None,
         })
+}
+
+/// Bound a tool output to the preview size, never splitting a character. Returns the preview
+/// and whether anything was cut.
+pub fn preview_output(text: &str) -> (String, bool) {
+    if text.len() <= TOOL_OUTPUT_PREVIEW_BYTES {
+        return (text.to_owned(), false);
+    }
+    let cut = floor_boundary(text, TOOL_OUTPUT_PREVIEW_BYTES);
+    (text[..cut].to_owned(), true)
 }
 
 fn floor_boundary(s: &str, mut i: usize) -> usize {

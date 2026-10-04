@@ -251,3 +251,64 @@ impl Default for Prefs {
         }
     }
 }
+
+/// Which backend the application was composed with. Real mode must never show simulated data
+/// or report simulated success.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Demo,
+    Real,
+}
+
+/// Engine connection lifecycle, independent of per-conversation run and save states.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Connection {
+    Connecting,
+    #[default]
+    Ready,
+    Reconnecting,
+    Offline(String),
+    Incompatible(String),
+    Failed(String),
+}
+
+impl Connection {
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Connection::Ready)
+    }
+
+    /// Short user-facing label; `None` when nothing needs saying.
+    pub fn banner(&self) -> Option<String> {
+        match self {
+            Connection::Ready => None,
+            Connection::Connecting => Some("Connecting to the Pi engine…".into()),
+            Connection::Reconnecting => Some("Connection lost. Reconnecting…".into()),
+            Connection::Offline(why) => Some(format!("Offline: {why}")),
+            Connection::Incompatible(why) => Some(format!("Incompatible engine: {why}")),
+            Connection::Failed(why) => Some(format!("Engine failed: {why}")),
+        }
+    }
+}
+
+/// Where a submission came from, which decides what happens once its intent is durable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntentOrigin {
+    /// The composer draft. It is cleared only after the intent is durable.
+    Draft,
+    /// Explicit retry of a rejected or failed submission.
+    Retry,
+    /// The next client-side queued prompt (demo only; the engine owns the queue in real mode).
+    Queue,
+}
+
+/// A submission whose intent is being made durable. Nothing is sent and the draft is untouched
+/// until the journal acknowledges the commit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingIntent {
+    pub request: RequestId,
+    pub origin: IntentOrigin,
+    pub text: String,
+    pub attachments: Vec<Attachment>,
+    pub model: Option<String>,
+}

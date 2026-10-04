@@ -12,7 +12,9 @@ fn main() {
         Ok(options) => options,
         Err(message) => {
             eprintln!("pipkin: {message}");
-            eprintln!("usage: pipkin [--demo <scenario>] [--data-dir <path>] [--speed <factor>]");
+            eprintln!(
+                "usage: pipkin [--pi-dir <path>] [--pi-server-id <uuid>] [--data-dir <path>]\n       pipkin --demo <scenario> [--data-dir <path>] [--speed <factor>]"
+            );
             std::process::exit(2);
         }
     };
