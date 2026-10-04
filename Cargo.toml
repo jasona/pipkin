@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pipkin-core", "crates/pipkin-ui", "crates/pipkin-app"]
+members = ["crates/pipkin-core", "crates/pipkin-ui", "crates/pipkin-app", "crates/pi-client"]
 exclude = ["zed"]
 
 [workspace.package]
