@@ -1,12 +1,17 @@
 # Pipkin (GPUI prototype)
 
-Single-pass prototype per [`docs/gpui-prototype-plan.md`](docs/gpui-prototype-plan.md): native Rust/GPUI app with a simulated Pi backend.
+Native Rust/GPUI desktop client for Pi. Started as a single-pass prototype ([`docs/gpui-prototype-plan.md`](docs/gpui-prototype-plan.md)); now being wired to a real Pi engine per [`docs/rust-desktop-client-plan.md`](docs/rust-desktop-client-plan.md). **Start there: its "Implementation status" section says where work stands and how to resume.**
 
 ```sh
 # system: Wayland compositor, Vulkan driver, fontconfig, xkbcommon; Rust 1.99.0 (rust-toolchain.toml)
+# real mode (default): read-only client for a running Pi experimental server
+cargo run -p pipkin-app --release -- [--pi-dir DIR] [--pi-server-id UUID] [--data-dir DIR]
+# simulated agent, for regression and demos only
 cargo run -p pipkin-app --release -- --demo normal [--data-dir DIR] [--speed 1.0]
 cargo test --workspace && cargo clippy --workspace --all-targets && cargo fmt --all --check
 ```
+
+Real mode needs a Pi server; `scripts/pi-test-server.sh` starts an isolated throwaway one (see the plan for the current blocker). The opt-in real-server tests are `cargo test -p pipkin-app real_pi -- --ignored`.
 
 Scenarios: normal, followup, failure, unknown, stressed, large, persist-fail ([`docs/scenarios.md`](docs/scenarios.md)). Palette: Ctrl+K.
 

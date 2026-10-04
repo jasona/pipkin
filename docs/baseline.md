@@ -13,6 +13,6 @@ Recorded 2026-10-03 (step 1, native foundation).
 | System libs | wayland-client 1.26.0, xkbcommon 1.13.2, vulkan 1.4.357, fontconfig 2.18.3 |
 | Window | native Wayland (`xwayland: False`), app_id `pipkin`, 1440x960 |
 
-Launch: `cargo run -p pipkin-app --release` (set `RUST_LOG=info` for adapter logs).
+Launch the demo: `cargo run -p pipkin-app --release -- --demo normal`. Without `--demo` the app starts in real mode, which has no engine adapter yet and shows an offline state (set `RUST_LOG=info` for adapter logs).
 
 Capture caveat: Omarchy's default window-opacity rule makes the app translucent, so other windows ghost through captures. Not an app setting.

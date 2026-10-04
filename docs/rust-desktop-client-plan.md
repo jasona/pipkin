@@ -1,397 +1,338 @@
-# Rust Desktop Client for Pi
+# Rust Desktop Client for Pi: prototype to working product
 
-Planning date: 2026-10-03
+Updated: 2026-10-04. Status: implementation roadmap. M0 is done and M1 is built but unverified against a real Pi server; see "Implementation status" near the end of section 10 for exactly where to resume.
 
-Status: Proposed plan. Framework selection and visual direction require validation before implementation.
+## 1. Continue the application that exists
 
-## Recommendation and assumptions
+Build the real Pi client inside the existing **Pipkin Rust/GPUI application**. Retain its composer, virtualized transcript, selection model, themes, workspace, command registry, pure state core, draft writer, and deterministic demo scenarios. The next work is engine integration and production correctness, followed by product completion and platform qualification.
 
-Build a **native Rust desktop client around pi’s existing agent engine**, with a restrained visual identity, excellent text interaction, and recovery designed into every operation.
+The [prototype plan](gpui-prototype-plan.md) records the original build scope. Its opening “application not yet built” status is historical: the code, [architecture](architecture.md), [continuation map](continuation-map.md), and [scorecard](scorecard.md) establish the implemented baseline. This document supersedes the original product plan's framework competition, three visual studies, and disposable RPC prototype milestones. Continue the direction in [DESIGN.md](DESIGN.md).
 
-The recommended starting point is **GPUI for the interface, a framework-independent Rust application core, and pi running in a separate managed process**. Validate GPUI on all three platforms before committing to it.
+GPUI has a **conditional go on the tested Omarchy/Hyprland/Wayland machine**, not general platform approval. Preserve the exact GPUI revision in [Cargo.toml](../Cargo.toml), `a84689073d296dfd39987bc7dd478e43ef76d83a`, and the recorded Rust toolchain until a deliberate dependency change is justified. Close the outstanding text, accessibility, scaling, and lifecycle checks during integration. Reopen the framework decision only if an essential requirement cannot be met at a bounded maintenance cost.
 
-This plan assumes individual developers working locally first. The desktop interface and application logic would be Rust; pi’s existing TypeScript engine would remain responsible for models, tools, and extensions.
+The product remains a local developer workspace:
 
-“Near error-less” should become measurable requirements: no silent data loss, no automatic duplication of uncertain operations, understandable failures, and tested recovery.
+**Open a real project → create or resume a conversation → send a prompt → observe actual model/tool work → inspect workspace changes → steer, queue, or stop → reopen without losing context or duplicating work.**
 
-## 1. Define the product around one complete workflow
+First ship an Omarchy/Wayland daily-use alpha. Broader Linux, macOS, and Windows support remain explicit later qualification tracks. Defer cloud/team features, a marketplace, a full editor, an embedded terminal, and automatic patch reversion. Provide external editor and terminal launching in the local workflow.
 
-The central workflow is:
+## 2. Source-grounded starting point
 
-**Open a project → describe work → understand progress → inspect changes → continue or stop → return later without losing context.**
+This revision reviewed Pipkin at `807391929ba7a409b1406d60da60ec64a4065103` and the adjacent Pi checkout at `200387122ca450d6387f033949423114a270b96c`. These identify inspected baselines, not a shipped compatibility promise. Record the tested engine revision and service-contract version in a build manifest before integration.
 
-The interface should always answer:
+Pi is a separate repository, currently available at `../../pi` relative to this document. The links below point into that checkout; they are not Pipkin package directories or runtime dependencies. A clean build must obtain a pinned engine artifact/source independently of that directory layout. The continuation map's statement that engine sources are absent from this workspace is still true for Pipkin itself; adjacent sources were available for this review.
 
-- Which project and conversation am I working in?
-- What is pi doing?
-- Does it need something from me?
-- What changed?
-- What can I safely do next?
+### What the prototype actually implements
 
-Make the first release excellent at that workflow. Include project switching, conversations, streaming responses, tool activity, model selection, attachments, steering, follow-ups, cancellation, search, change inspection, and recovery.
+| Existing code | Preserve | Production gap |
+| --- | --- | --- |
+| [Core state](../crates/pipkin-core/src/state.rs), [commands/events](../crates/pipkin-core/src/protocol.rs) | Commands → effects, shared availability, generation guards, stopping/unknown/save states | No connection lifecycle or capability state; operations and items use process-local counters; create/rename and queue management are local |
+| [Backend port](../crates/pipkin-core/src/backend.rs) | Application-level boundary independent of GPUI and transport | Synchronous `bootstrap()` and fire-and-forget `request()` need asynchronous initialization, errors, shutdown, and richer snapshots |
+| [Controller](../crates/pipkin-app/src/controller.rs) | Bounded event channel and token coalescing | Always constructs `DemoBackend`, restores demo conversations, installs demo globals; no engine host or real startup path |
+| [Storage](../crates/pipkin-app/src/storage.rs) | Versioned SQLite, single bounded writer, commit acknowledgments | Drafts persist text only, keyed by numeric conversation ID; no durable request journal, attachments, or real-session namespace; fallback/load failures are logged rather than fully represented in UI |
+| [Composer](../crates/pipkin-ui/src/text/), [transcript](../crates/pipkin-ui/src/transcript/) | Editing, Markdown/code, document-level selection, virtualization, anchoring | Real IME and screen-reader gaps; real backend content, bounded caches, and large-output retrieval still need integration |
+| [Workspace](../crates/pipkin-ui/src/shell/) | Navigation, overlays, themes, model menu, tool and diff views | Models/projects/diffs are fixtures; search matches loaded conversation titles; attachments are file references, not delivered model content |
+| [Demo adapter](../crates/pipkin-app/src/adapters/demo.rs), [scenarios](../fixtures/scenarios/) | Deterministic regression backend and fault scenarios | Demonstrates client behavior only; cannot establish real deduplication, tool execution, or reconnect correctness |
 
-Defer team collaboration, cloud synchronization, an extension marketplace, a full code editor, and an embedded terminal until the core experience meets its quality targets. Provide “Open in editor” and “Open terminal here” early.
+The scorecard reports 135 passing prototype tests and partial native verification. It records roughly 140 MB idle RSS, 175–218 ms warm window mapping, and p95 input-handler-to-paint of 4.8 ms. These are historical prototype measurements: window mapping is not usable startup, paint submission is not display presentation, and engine memory is not included. Re-measure the integrated application.
 
-## 2. Build on the actual repository, with explicit integration milestones
+### What Pi already supplies, and what it does not
 
-This checkout already contains useful foundations:
+Inspect these contracts before changing either repository:
 
-| Existing foundation | Implication for the desktop client |
-|---|---|
-| JSONL subprocess RPC | Useful for an early interaction prototype |
-| Experimental client/server protocol | Better foundation for independently running sessions |
-| Durable session runtime | Existing ownership, persistence, and recovery mechanisms |
-| Session directory and management services | Starting point for conversation navigation |
-| Model and agent-controller services | Existing operations for prompting, steering, follow-ups, and cancellation |
-| Replicated transcript state | Starting point for live rendering |
+| Pi source | Available baseline | Required continuation |
+| --- | --- | --- |
+| [Protocol](../../pi/packages/protocol/README.md), [client](../../pi/packages/client/README.md) | Protocol v8 framed CBOR, server/session routes, attachment fencing; Chord service snapshots and updates | Experimental, no compatibility guarantee; peer authentication is not implemented; Rust must implement the required Chord semantics as well as envelopes |
+| [Session contracts](../../pi/packages/coding-agent/src/experimental/services/sessions.ts) | List, create, remove, attach, detach | Summaries expose server/session IDs and creation time, not title/cwd/activity; creation options lack project cwd; add project metadata and rename |
+| [Agent controller](../../pi/packages/coding-agent/src/experimental/services/agent-controller.ts) and [provider](../../pi/packages/coding-agent/src/experimental/services/agent-controller-provider.ts) | Prompt, steer, follow-up, cancel queued entry, abort, compact, wait for known prompt ID | No client idempotency key or lookup by client request ID; distinguish operation acceptance from settlement; define stop/queue semantics |
+| [Models](../../pi/packages/coding-agent/src/experimental/services/models.ts) | Provider/model identity, catalog, selection, thinking levels, refresh | Native credential onboarding and auth status contract; model selection is session service state, not a field on `prompt()` |
+| [Transcript](../../pi/packages/coding-agent/src/experimental/services/transcript.ts), [service overview](../../pi/packages/coding-agent/src/experimental/services/README.md) | Durable conversation view, including active entries and live/inbox/agent/usage documents | Complete history before reset/compaction needs paging over durable entries; root conversation only, no tree/subagent navigation contract |
+| [Durable runtime](../../pi/packages/durable/README.md) | Worker-owned execution and persistence | Verify process/power-loss guarantees; package experimental server/worker paths, which are currently excluded from published packages and standalone binaries |
 
-However, the experimental server is currently excluded from published packages and standalone binaries. Its transcript contains active context rather than all historical entries; history paging and several conversation operations remain unfinished. These are backend deliverables, not desktop features that can simply be switched on. See the [service implementation overview](../packages/coding-agent/src/experimental/services/README.md).
+Do not assume the demo's `Token`, `ToolStarted`, or `StatusResolved` variants exist on the wire. Pi publishes replicated service state. The adapter must translate that state and its revisions into stable presentation updates.
 
-Recommended integration strategy:
+## 3. Architecture and ownership
 
-- Use existing RPC only for a disposable early prototype if it accelerates UI validation.
-- Make the durable service architecture the production target.
-- Package a tested engine version with the desktop application.
-- Establish an explicit desktop service contract and capability negotiation.
-- Reject incompatible engines with an actionable message.
-- Add support for independently installed engines later, if users need it.
-
-Avoid maintaining two production backends during the first release.
-
-## 3. Select the UI framework through a working prototype
-
-**GPUI is the leading candidate.** Its custom rendering and Rust interface suit a polished developer application. Its current documentation covers macOS, Windows, Wayland, and X11, but also explicitly warns about breaking changes before 1.0. Pin the chosen version or revision. See the [GPUI documentation](https://github.com/zed-industries/zed/tree/main/crates/gpui).
-
-Compare alternatives against the same demanding screen:
-
-| Candidate | Reason to consider it | Main question to resolve |
-|---|---|---|
-| **GPUI** | Precise custom interface, rich developer-tool interactions | Can the selected revision satisfy the full platform and accessibility matrix? |
-| **Iced** | Rust state-driven architecture; GPU and software renderers | Can text interaction, accessibility, and custom components meet the required standard? |
-| **Slint** | Declarative interface with documented accessibility semantics | Does its text and document interaction fit this application? |
-| **Tauri** | Strong web interface ecosystem with a Rust host | Is a web-based interface acceptable? |
-
-Iced documents both GPU rendering and a software alternative. Slint exposes accessibility roles, properties, and actions. Tauri uses different system webviews across platforms, which adds a browser-engine test matrix. Sources: [Iced](https://github.com/iced-rs/iced), [Slint accessibility](https://docs.slint.dev/latest/docs/slint/reference/common/), and [Tauri webviews](https://v2.tauri.app/reference/webview-versions/).
-
-Give framework validation two weeks. Build a real composer, streaming transcript, searchable conversation list, diff pane, menus, and dialogs.
-
-**Pass criteria:** correct international text input, cross-message selection, keyboard navigation, screen-reader interaction, large transcripts, fractional scaling, suspend/resume, and acceptable rendering on target hardware. A framework that fails an essential requirement does not pass because its screenshots look good.
-
-## 4. Establish a visual direction before expanding the interface
-
-Proposed direction: **a quiet, precise workspace with strong typography and unusually clear information hierarchy**.
-
-The distinguishing features should be the conversation’s readability, the relationship between actions and results, and the quality of every interaction.
-
-Develop three visual studies using identical realistic content. Select one, then record its typography, colors, spacing, component behavior, and motion rules.
-
-The design system should include:
-
-- Equally finished light and dark themes.
-- Warm or cool neutral surfaces with one restrained accent.
-- Semantic colors for running, waiting, completed, and failed states, always accompanied by text or shape.
-- Comfortable reading typography and a coordinated monospace face.
-- Consistent spacing, control heights, borders, icons, and focus indicators.
-- Short, purposeful transitions with reduced-motion support.
-- Standard and compact density settings.
-- Long labels, empty states, loading states, and errors designed alongside normal states.
-
-Use native window controls and platform conventions. Keep product structure consistent across platforms without forcing macOS shortcuts or window behavior onto Linux and Windows.
-
-Judge designs with long code blocks, failed tools, missing credentials, narrow windows, and large text—not just an empty conversation.
-
-## 5. Use a simple, adaptable workspace
-
-Organize the main window into three areas:
-
-| Area | Contents | Default behavior |
-|---|---|---|
-| Navigation | Projects, recent conversations, search | Collapsible; preserves selection |
-| Conversation | Messages, grouped tool activity, composer | Primary focus |
-| Inspector | Changes, files, run details | Opens when relevant or requested |
-
-Narrow windows show the conversation with navigation and inspection available as temporary panels. Wide windows support simultaneous conversation and diff review. Avoid a large minimum width that makes the app awkward in a tiled desktop.
-
-Keep settings out of the primary workflow. Put model selection near the composer, with advanced configuration available on demand.
-
-Use one action registry for menus, command search, buttons, and shortcuts. Each action has the same availability rules and explanation everywhere. Keybindings remain configurable.
-
-Search results should distinguish projects, conversations, and messages. Opening a result should reveal its context and provide a predictable way back.
-
-## 6. Make the composer and transcript exceptional
-
-These are the most frequently used components and deserve disproportionate engineering effort.
-
-### Composer requirements
-
-- Multiline editing, undo/redo, selection, and configurable send behavior.
-- Correct input-method composition for languages such as Chinese and Japanese.
-- File references and attachment previews with clear size/type errors.
-- Persistent drafts per conversation.
-- Discoverable slash commands.
-- Explicit controls for “Steer current work” and “Queue follow-up.”
-- Clear distinction between queued, submitted, accepted, and completed.
-- Draft preservation when sending fails.
-
-### Transcript requirements
-
-- Render only visible content while preserving selection and accessibility.
-- Incremental Markdown and syntax highlighting.
-- Stable scroll position while new content arrives.
-- Follow new output only when the user is already following it.
-- A visible “Jump to latest” control.
-- Tool summaries that expand into inputs, output, timing, and errors.
-- Searchable historical content, including content before compaction.
-- Bounded rendering of extremely large outputs with an option to inspect the complete result.
-
-For example, scrolling upward to inspect an earlier command must never be interrupted by new tokens pulling the viewport downward.
-
-Change inspection must distinguish **workspace changes** from **changes attributable to a particular run**. Until attribution exists, label the former honestly. Do not provide an “Undo run” action without reliable snapshots and conflict handling.
-
-## 7. Separate presentation, application state, and execution
-
-Use the following architecture:
+Keep the three existing crates. Add transport and host modules under `pipkin-app` first; extract a reusable `pi-client` crate once the conformance harness establishes a useful boundary. Do not split storage, platform, and testing into new crates merely to match the old suggested layout.
 
 ```mermaid
-flowchart TB
-    UI["Rust desktop interface"]
-    CORE["Rust application core"]
-    LOCAL["Local drafts, preferences, search cache"]
-    CLIENT["Rust service client"]
-    HOST["Managed pi engine process"]
-    ENGINE["Durable sessions, providers, tools, extensions"]
-    OS["Platform integration"]
-
-    UI --> CORE
-    CORE --> LOCAL
-    CORE --> CLIENT
-    CORE --> OS
-    CLIENT <-->|"Authenticated local transport"| HOST
-    HOST --> ENGINE
+flowchart LR
+    UI["Existing GPUI workspace"] --> Core["pipkin-core: commands and state"]
+    Core --> Controller["pipkin-app: effects and lifecycle"]
+    Controller --> Store["Desktop SQLite: drafts, request journal, preferences, cache"]
+    Controller --> Demo["DemoBackend: explicit demo mode"]
+    Controller --> Adapter["PiBackend: service mapping and reconciliation"]
+    Adapter --> Client["Rust protocol and Chord subset"]
+    Client <-->|"Authenticated local connection"| Engine["Managed Pi server and session workers"]
+    Engine --> Durable["Authoritative history, queues, models, tools, extensions"]
 ```
 
-The application core should remain independent of GPUI. It owns commands, state transitions, reconciliation, and presentation models. Rendering components should not directly spawn processes, mutate session storage, or interpret transport frames.
+Proposed modules, not existing implementations:
 
-Suggested Rust workspace boundaries:
+- `adapters/pi/`: map Pi contracts into core snapshots/events and commands.
+- `pi_client/`: framing, handshake, routing, service calls, subscriptions, replica decoding.
+- `engine_host/`: resolve/launch the pinned engine, readiness, discovery, shutdown, bounded recovery.
+- `workspace_changes/`: read-only project Git status/diff service unless Pi gains that capability.
+- Integration fixtures/harness: real engine with fake providers, transport faults, process termination.
 
-- `pipkin-app`: application entry point and composition.
-- `pipkin-ui`: screens and reusable components.
-- `pipkin-core`: commands and state machines.
-- `pi-client`: protocol and service bindings.
-- `desktop-storage`: drafts, preferences, and disposable indexes.
-- `desktop-platform`: windows, credentials, dialogs, notifications, and process lifecycle.
-- `desktop-test-support`: fake engine, fixtures, and fault injection.
+Ownership rules:
 
-Start with fewer crates if boundaries are not yet meaningful. Avoid creating a generic plugin framework or dependency container before there is a concrete need.
+1. Pi owns session identity, authoritative history, model configuration, submitted input, queued input, and execution state. The desktop never writes worker-owned databases.
+2. Pipkin owns project bookmarks, drafts, unsent attachment metadata, preferences, request intents, UI selection/scroll state, and rebuildable offline/search caches. A cached transcript is explicitly stale when disconnected.
+3. The core remains free of GPUI and wire types. Views dispatch commands; controller tasks execute effects. Rendering does no process, storage, transport, or parsing work.
+4. Local IDs may remain internal handles, but must map to stable, namespaced engine identities. Preserve `(conversation, generation, op)` guards and add server/session/attachment routing and replica revision checks.
+5. Background queues, frame sizes, pending requests, output previews, parsing work, and caches have explicit bounds. Overflow must cause backpressure or a visible resync/error; never silently lose authoritative state updates.
 
-Use bounded asynchronous work queues. Keep filesystem access, decoding, indexing, and large text processing off the UI thread.
+Use one production backend: the durable Pi service architecture. Keep the demo adapter as a test/development backend. Do not add a second production implementation based on legacy JSONL RPC to bypass missing service work.
 
-## 8. Treat the service contract as a first-class deliverable
+## 4. Make the backend port suitable for real services
 
-The current protocol uses framed CBOR envelopes, while Chord owns service calls, subscriptions, snapshots, and state updates. Implementing the envelope alone will not produce a working Rust client. See the [protocol overview](../packages/protocol/README.md).
+Evolve the application contract before connecting live tools. Keep demo behavior working through the same port.
 
-The Rust client needs a deliberately bounded implementation of those service semantics, tested against the TypeScript implementation.
+| Application capability | Required change |
+| --- | --- |
+| Startup | Replace blocking complete bootstrap with asynchronous connection/catalog/session initialization. Show connecting, ready, reconnecting, offline, incompatible, and failed states independently of run/save states |
+| Projects and conversations | Add open/register project and backend create/rename operations with pending/success/failure results. Map one desktop conversation to one Pi Session/root conversation initially; defer branching/subagent navigation |
+| Opening and switching | Hydrate history **and** run/queue/model state. Detach or retire subscriptions deliberately. Pi currently has one selected Session attachment per client connection: start with one active attachment and rehydrate on switch; do not imply continuous live updates for detached sessions |
+| History | Use opaque backend cursors and stable item IDs, not `before: Option<ItemId>` arithmetic. Add page request identity, loading/error/retry, deduplication, and cancellation on switch |
+| Submit and steer | Persist request identity and immutable payload before transport. Correlate acknowledgments to the exact submission/steering item, not the latest user row |
+| Follow-ups | Add backend enqueue/remove requests and authoritative queue snapshots. Preserve text, attachments, and agreed model semantics; handle `already_consumed` races |
+| Status | Replace `StatusResolved { accepted: bool }` with pending/running/completed/failed/cancelled/definitely-not-accepted/unknown outcomes and durable operation identity |
+| Replicated output | Upsert by stable message/tool IDs and revisions. Reconcile optimistic rows with authoritative entries; snapshot replacement and replay must not append duplicate tokens or tools |
+| Models/capabilities | Derive action availability from engine capabilities, connection state, model/auth readiness, and core run state. A menu change updates `Models.select()` and waits for authoritative state |
+| Changes and large results | Real asynchronous diff refresh and bounded full-output retrieval/export; loading, stale, unavailable, and error states |
 
-Required contract work includes:
+Expand the core for unknown content kinds, thinking/usage/error information, compaction boundaries, and pending input as supported by the inspected `ConversationView`. Preserve unsupported content visibly instead of misrepresenting it as plain assistant text. Keep transport-specific decoding in the adapter.
 
-- Protocol and application-service version checks.
-- Capability discovery.
-- Typed requests, responses, and errors.
-- Snapshot hydration before applying incremental updates.
-- Detection of missing, stale, or invalid updates.
-- Reattachment and resynchronization.
-- Stable request identity and operation-status lookup.
-- Historical transcript paging.
-- Project directory, conversation title, and activity metadata.
-- Provider authentication operations.
-- Explicit extension interaction capabilities.
+### Resolve queue and cancellation semantics explicitly
 
-Generate cross-language fixtures from shared schemas where practical. Test integer boundaries, Unicode, nullability, malformed payloads, frame fragmentation, and resource limits.
+The prototype's `after_settled()` starts the next in-memory prompt and its Stop action retains queued work. Pi's `followUp()` already queues durable input; its documented `abort()` withdraws queued input as well as aborting active work.
 
-Preserve the existing server/session/attachment identity checks. A delayed response from one conversation must never update another.
+For real mode, make Pi the sole queue executor and remove client-side automatic dequeue/submission from that path. Preserve the intended Stop behavior by adding an engine operation that stops active work while retaining and pausing the queue, plus explicit queue resumption. If the engine contract instead keeps “stop and clear queue,” label it exactly and deliberately revise the product behavior before exposing it. Never wire `abort()` to a button promising queue preservation. Test completion/stop/enqueue/remove races and reconnect with pending entries.
 
-## 9. Design recovery around uncertain outcomes
+Steering and queue additions need independent request IDs even when attached to one run. A stale acceptance must not mark another prompt delivered. Do not silently discard attachments from queued or steering input as the current text-only queue path does.
 
-The hardest failure is not “request failed.” It is:
+## 5. Establish the engine contract and Rust client
 
-**The user sends a prompt → pi accepts it → the connection drops before the acknowledgment arrives.**
+Pin the engine and document a bounded desktop service contract. Application capabilities need their own versions; matching the envelope version alone is insufficient.
 
-Blindly retrying may start the work twice. The current client documentation explicitly says disconnected requests may still complete and are not automatically replayed. See the [client behavior](../packages/client/README.md).
+Implement in dependency order:
 
-The production design should:
+1. Engine build/run artifact with server, coordinator, workers, runtime dependencies, and required assets included. Publish a machine-readable version/capability manifest and readiness result. Source-only `PI_EXPERIMENTAL=1` scripts are a development entry point, not the shipping launcher.
+2. Authenticated local transport, restrictive endpoint permissions, expected `serverId` validation, and explicit profile discovery. A random attachment ID or matching server ID is not authentication. Start with Unix sockets; implement equivalent access control before other platforms ship.
+3. Length-prefixed CBOR framing and strict-JSON validation using Pi's fixtures, including fragmentation, coalescing, bounds, unknown fields, numeric limits, and malformed input. Negotiate compatible limits; return actionable mismatch errors.
+4. The required Chord service catalogue/control calls, method invocation, errors, subscription lifecycle, initial snapshots, sequencing, and Delta path dictionaries/codecs. Hydrate before releasing buffered updates. Missing revisions invalidate the replica and trigger reattachment/resnapshot.
+5. Typed bindings for SessionDirectory, SessionManagement, Models, AgentController, Transcript, and the new desktop-required history/metadata/status/auth capabilities. Missing optional capabilities disable the affected action with a reason.
+6. Reconnect using a fresh authenticated connection and attachment generation; restore subscriptions and reconcile requests. Dispose retired subscriptions and bound retries. No automatic mutation replay.
 
-- Persist a client-generated request ID before sending.
-- Have the engine durably deduplicate that ID within a defined scope.
-- Return the existing operation when the same request is repeated.
-- Allow the client to query its status after reconnecting.
-- Keep an explicit “Outcome unknown” state until reconciliation succeeds.
+The Rust conformance suite must exchange generated valid/invalid fixtures with Pi's TypeScript implementation and then attach to a real test server. A successful hello frame is not a completed integration milestone.
 
-Request deduplication does **not** guarantee exactly-once external tool effects. A shell command may partially execute before crashing. Recovery must distinguish replay-safe work from work requiring inspection.
+Backend deliverables owned in the Pi repository:
 
-Define separate connection, operation, and persistence states. Avoid a single collection of flags such as `loading`, `busy`, and `error`.
+- Project cwd on session creation, canonical session metadata, title/rename, updated activity, and documented missing/moved project behavior. Existing session metadata on disk does not make it available through the service DTOs.
+- Durable client request deduplication and lookup for prompt/steer/follow-up and other retryable mutations; operation and queue status sufficient for reconnect.
+- Authoritative history paging, stable identity/cursor semantics through compaction and live appends, and access to complete stored tool results where available.
+- Stop/pause/resume queue semantics from Section 4, plus an authoritative settlement signal.
+- Provider authentication/status and the initial native extension interaction contract.
 
-| Failure | Required behavior |
-|---|---|
-| Interface crash | Restore drafts and reconnect to surviving work |
-| Engine crash | Restart within limits; inspect durable state before continuing |
-| Connection loss | Preserve content, show connection state, reconcile before retrying |
-| Provider throttling | Explain the wait; display engine retry status |
-| Disk full | Stop claiming content is saved; preserve memory state and offer export |
-| Invalid update | Discard the replica and request a fresh snapshot |
-| Cancellation delay | Show “Stopping” until the engine confirms settlement |
-| Repeated crash | Enter recovery mode with diagnostics and optional features disabled |
-| Interrupted update | Keep a bootable previous application version |
+Implement these as real service changes, with TypeScript contract tests and matching Rust fixtures. Do not fabricate status by searching prompt text or inspecting private SQLite tables from Pipkin.
 
-Backoff and retries need ceilings. Recovery must not become an invisible restart loop.
+## 6. Make submission and recovery crash-safe
 
-## 10. Make persistence ownership unambiguous
+The critical trace is: **submit → engine accepts → connection or UI dies before acknowledgment**. The prototype's unknown state is useful presentation, but its operation IDs restart at 1 and its pending submission is not durable.
 
-Pi owns authoritative conversations and execution state. The desktop owns drafts, layout, preferences, and rebuildable search caches.
+Required submission sequence:
 
-Never let the desktop write directly into a session database that an engine worker owns.
+1. Assign a globally unique client request ID scoped to an engine profile and session. Capture text, attachment content/reference semantics, model configuration, and mutation kind.
+2. Transactionally persist that intent before clearing the recoverable draft or sending anything. If persistence fails, keep the draft and disable dispatch with a visible reason.
+3. Engine acceptance atomically records the deduplication key with the durable submission. Reusing the same key/payload returns the same operation; reusing it with different content fails. Define retention and expired-key behavior.
+4. Record the engine operation/entry ID and reconcile the optimistic row. Keep “accepted” distinct from “completed.”
+5. On timeout/disconnect/restart, look up the same request. Unknown stays unknown; “not found” only means safe to resubmit when the server can prove non-acceptance within the deduplication contract. A lost receipt or expired record is not that proof.
+6. Mark settlement durably and retain enough reconciliation state to prevent duplicate acceptance across desktop or engine restarts.
 
-For desktop persistence:
+Request deduplication does not guarantee exactly-once shell/network/file effects. A tool can partially execute before failure. Explain partial completion and require inspection before an explicit new run. Separate a rejected submission retry from restarting a failed run that may already have changed files.
 
-- Use transactional writes and a single coordinated writer.
-- Apply versioned migrations with tested failure handling.
-- Back up data before destructive migrations.
-- Debounce draft saves with a bounded interval and flush on relevant lifecycle events.
-- Display a save failure when persistence fails.
-- Rebuild derived caches instead of treating them as authoritative.
+| Failure | Required result |
+| --- | --- |
+| UI crash before send | Journal/draft recovers; no unrecorded dispatch |
+| UI crash or connection loss after acceptance | Reattach and recover the same operation without duplicate prompt/tool execution |
+| Engine crash | Bounded restart, inspect durable runtime state, show recovered/interrupted status; no blind prompt replay |
+| Stale or missing replica update | Reject stale route/generation, resnapshot after gaps, preserve reading position where IDs survive |
+| Cancellation delay or disconnect | Remain stopping/unknown until authoritative settlement; transport request cancellation is not agent cancellation |
+| Provider retry/auth failure | Show engine retry/error state; client does not invent its own duplicate run retry |
+| Storage full/corrupt/incompatible | Explicit unsaved/recovery mode, preserve memory text, offer export; do not claim a temporary fallback database is durable user storage |
+| Repeated host crash | Stop restart loop, surface diagnostics and recovery actions |
 
-Define separate guarantees for process crashes and power loss. The durable runtime documents that its SQLite configuration may lose the newest commits on host or power failure; stronger promises require storage changes and corresponding tests. See the [durable storage documentation](../packages/durable/README.md).
+## 7. Complete durable desktop state and engine lifecycle
 
-Application rollback and database rollback must be designed together. An older binary must not open an incompatible migrated database.
+Upgrade storage with tested migrations and backups. Keep demo history out of engine storage and namespace **all** session-scoped desktop data by backend/profile/server/session. The existing `demo_conversations` table alone does not isolate numeric draft IDs and selection preferences.
 
-## 11. Preserve pi’s extension model without overstating compatibility
+Persist draft text and attachments together; track add/remove changes in revisions and restore missing-file validation on reopen. Include selected model intent only where it cannot conflict with authoritative session settings. Persist request intents and recoverable UI state. Queue contents come from Pi; offline unsubmitted drafts must never masquerade as accepted queue entries.
 
-Pi extensions are a major product feature. Keep engine-side extensions in the engine process.
+Keep the single writer and commit-acknowledged save state. Surface preference and metadata write failures, startup read failures, and fallback mode. Support retry/export from failed-save state; flush latest dirty revisions on switching and orderly exit without blocking rendering. Preserve unsent input on rejected commands even if a newer draft already exists. Refuse incompatible newer schemas; coordinate application rollback with database compatibility. Test process-crash durability separately from host/power failure.
 
-Map supported interactions into native controls:
+Engine lifecycle policy for the first release:
 
-- Selection, confirmation, text input, and multiline editing.
-- Notifications and status messages.
-- Structured tool output.
-- Commands exposed through a defined desktop presentation contract.
+- Use one managed local engine profile with worker ownership retained by Pi. Closing the desktop detaches the UI and flushes desktop state; active engine work can survive and be reattached on relaunch.
+- Provide a distinct quit/stop-engine action with active-work disclosure. Shut down only processes owned by this profile; never kill an unrelated installed Pi instance.
+- Coordinate launch/attach across multiple windows or app launches with a lock and verified endpoint. Do not spawn duplicate engines or sessions after readiness timeouts.
+- Launch with explicit executable, argument array, cwd, and environment. Do not depend on interactive shell startup files. Detect missing tools and invalid cwd before dispatch.
+- Keep stdout/stderr bounded and redacted, readiness timed, shutdown orderly, crash restart capped. Exercise desktop-icon launch, sleep/resume, stale sockets, and orphaned worker recovery.
+- Bundle the tested engine for release. External development engine overrides are explicit and version checked; general independently installed engine support can follow later.
 
-Terminal-specific custom interfaces do not automatically translate into desktop widgets. Existing RPC explicitly degrades or omits several terminal UI methods. See the [extension UI limitations](../packages/coding-agent/docs/rpc-extension-ui.md).
+Read-only offline history comes from a rebuildable cache marked with last synchronization time. Draft editing remains available offline; executing/queueing requires a ready, reconciled connection.
 
-Publish a compatibility matrix and show unsupported capabilities clearly. A plugin requiring an unsupported interaction must not leave the application waiting indefinitely.
+## 8. Connect every existing surface to actual work
 
-Avoid loading arbitrary extension code into the Rust interface process. Add richer desktop extension surfaces only after the initial presentation contract proves sufficient.
+### Projects, conversations, history, and search
 
-## 12. Make platform support an acceptance matrix
+Use a native folder picker and real cwd validation. Support non-Git projects and moved/deleted directories. Add engine-backed create/rename and recover their outcomes; do not retain `SaveConversation` as the authoritative real-session mutation.
 
-“Cross-platform” must mean tested installations and daily workflows.
+Open existing Pi sessions and hydrate active operations as well as transcript content. Preserve draft, scroll anchor, selection, and tool expansion when switching. Initial alpha may attach one session at a time; engine work continues while detached. Add separate connections/subscriptions later only when background live observation is implemented and bounded.
 
-| Platform | Required coverage |
-|---|---|
-| Omarchy/Arch | Hyprland/Wayland, tiled resizing, fractional scaling, portals, clipboard, notifications, missing keyring, Intel/AMD/NVIDIA |
-| Other Linux | GNOME Wayland, KDE Wayland, an X11 configuration, declared distribution/library baseline |
-| Windows | Native process management, named-pipe authentication, Unicode/long paths, per-monitor DPI, sleep/resume, signed installer |
-| macOS | Apple Silicon, declared Intel support policy, native menus, Keychain, VoiceOver, signing and notarization |
+History paging must reach entries before compaction, avoid duplicates at the live/history boundary, and preserve stable IDs. Keep mounted views and cached pages bounded through repeated traversal. Search project/conversation metadata first, then indexed historical messages; clearly disclose partial/offline coverage. Opening a result loads its context and offers a predictable return path.
 
-Additional requirements:
+### Models, credentials, and attachments
 
-- Test drag-and-drop, external editor launching, and opening folders on every platform.
-- Detect missing development tools with specific remedies.
-- Define how the engine receives environment variables when launched from a desktop icon.
-- Do not depend on an interactive shell startup file executing successfully.
-- Support meaningful read-only/offline access to existing conversations and drafts.
-- Distinguish native Windows projects from any future WSL integration.
-- Use explicit process ownership so closing a window and quitting the engine have predictable behavior.
+Populate the model menu from Pi's catalog using `(provider, modelId)`, including model/thinking configuration and credential readiness. Serialize selection with prompt dispatch or extend the engine request contract so a send uses the intended configuration. Never display a local model preference as confirmed engine state.
 
-On Linux, provide a maintained Arch package definition plus a practical distribution format for other supported systems. Validate sandboxed packaging separately because it changes project and tool access.
+Reuse Pi's established credential mechanism initially; add native setup/status flows without copying secrets into drafts/preferences or logs. Missing credentials, expired login, no models, and provider failures need actionable states. Routine tests use fake providers, not credentials or paid requests.
 
-## 13. Build trust and accessibility into normal use
+The inspected prompt contract accepts message text and optional encoded images; it does **not** accept arbitrary filesystem attachments. Define each attachment type: project file reference rendered into the prompt, bounded text content inclusion, or validated image content. Preview what is sent, enforce type/size limits, revalidate files at send time, preserve payload semantics for reconciliation, and report inaccessible/changed files. Add transport/blob support if larger payloads require it; do not silently truncate or pretend a selected file was delivered.
 
-Pi currently runs with its host process’s permissions; it does not supply a built-in filesystem/process/network permission boundary. See the [repository documentation](../README.md).
+### Tools and workspace changes
 
-The desktop should therefore:
+Render actual tool identity, arguments, progress, output, errors, and settlement from engine state. Keep the existing bounded preview but provide retrieval/export of complete results when supported. Treat streamed output and Markdown as untrusted content; no automatic remote image fetches or command execution from rendered text.
 
-- Authenticate local connections.
-- Use restrictive socket permissions or named-pipe access controls.
-- Keep provider credentials in an appropriate secure store or the engine’s established credential mechanism.
-- Explain the execution environment accurately.
-- Enforce any promised isolation in the execution layer.
-- Treat generated Markdown, links, file paths, and tool output as untrusted content.
-- Avoid automatically fetching remote images embedded in responses.
-- Redact credentials and sensitive content from diagnostics.
+Replace fixture diffs with an asynchronous read-only workspace service. Inspect staged, unstaged, untracked, renamed/deleted, and binary files; bound large patches and handle non-Git/missing repositories. Refresh on tool settlement and debounced filesystem changes, with explicit refresh/error/stale states. Use argument arrays and validated paths for Git/editor/terminal calls.
 
-Accessibility is a release gate: complete keyboard operation, visible focus, scalable text, high contrast, reduced motion, and tested screen-reader workflows.
+Keep the label **Workspace changes**: these can include user edits and unrelated work. Do not claim run attribution or offer “Undo run” without snapshots and conflict handling. Patch application/reversion is deferred; actual Pi tools may still edit project files as part of requested work.
 
-GPUI currently documents AccessKit integration, but the application still must provide correct roles, stable identities, labels, and actions. Framework support is only the starting point. See the [GPUI accessibility implementation](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/_accessibility.rs).
+### Extensions, commands, and interaction quality
 
-## 14. Set measurable quality targets
+Keep extension execution in Pi. Define native selection, confirmation, input/editor prompts, notifications, and status interactions with stable request IDs, cancellation, timeouts, and disconnect behavior. Pi's current presentation-local slash commands and TUI facets are not automatically remote desktop capabilities. Publish a compatibility matrix; unsupported terminal-only interactions fail visibly instead of hanging a run. Do not load arbitrary extension code into GPUI.
 
-Establish reference machines and datasets during the prototype. These are proposed targets, not benchmark claims:
+Continue one command/availability registry for buttons, menus, shortcuts, and palette. Add real project/auth/reconnect actions, configurable keybindings and send behavior, external editor/terminal launching, and release-appropriate settings. Keep demo labeling and developer scenario actions only in explicit demo mode; real mode must never fall back to simulated success.
 
-| Area | Initial acceptance target |
-|---|---|
-| Warm launch | Usable interface within 1 second |
-| Cold launch | Usable interface within 2.5 seconds, independent of provider availability |
-| Input responsiveness | p95 input-to-paint below 50 ms |
-| Scrolling | p95 frame time within a 60 Hz frame budget on reference hardware |
-| Large history | Responsive navigation through a 10,000-message paged fixture |
-| Memory | Initial desktop-process budget below 250 MB on a defined idle fixture; measure engine separately |
-| Draft recovery | No acknowledged saved draft lost in the crash test matrix |
-| Duplicate submission | No duplicate operation acceptance in disconnect/retry tests |
-| Stability | Target at least 99.9% crash-free launches during a sufficiently sized beta |
-| Usability | At least 90% unassisted completion of core tasks in representative testing |
+## 9. Close prototype gates while integration proceeds
 
-Monitor bounded memory under long streams, not only idle memory. Establish separate limits for attachment decoding, output buffering, and search indexes.
+Use [scorecard.md](scorecard.md) as the baseline of measured, observed, failed, and unverified results. Do not turn an unverified entry into a pass because integration builds.
 
-Measure reliability through consented diagnostics and controlled testing. Do not collect prompts, code, or tool output by default.
+- Correct composer caret/IME candidate geometry, including `invalidate_character_coordinates()` where required; test actual compose/commit/cancel and no premature Enter-send with a configured IME.
+- Expose composer text, caret, and selection to accessibility; complete an actual screen-reader workflow through navigation, composer, transcript, tools, and run status. An inspected AT-SPI tree is insufficient.
+- Verify both themes, enlarged text, visible focus, reduced motion, narrow layouts, 125%/150% scaling, minimize/restore, and suspend/resume on the actual compositor.
+- Measure display presentation separately from frame submission, usable startup separately from window mapping, true cold startup separately from partially evicted caches, and desktop memory separately from engine/worker memory.
+- Re-test offscreen selection, history prepend, tool expansion, resize anchoring, and repeated traversal under real service updates. Coalesce expensive Markdown/highlight work, cancel obsolete parses, and bound caches without breaking selection.
+- Review the pinned dependency patches noted in [decisions.md](decisions.md) and the GPUI skill. Document which are necessary for the selected revision and validate any adopted patch; avoid unmeasured dependency churn.
 
-## 15. Use a test strategy that attacks failure boundaries
+The initial targets remain warm usable UI ≤1 s, cold ≤2.5 s, p95 input-to-presentation <50 ms, p95 scrolling within 16.7 ms at 60 Hz, and desktop idle RSS <250 MB on the recorded reference fixture. Provider readiness must not block initial usable UI. Record sample sizes, workloads, engine resource budgets, and any revised targets before judging the result.
 
-Build the fake engine and fault controls alongside the first working client.
+## 10. Delivery sequence and acceptance criteria
 
-Required layers:
+Each milestone produces a runnable build, targeted tests, and an updated integration scorecard. Dependencies determine order; dates should be estimated after M1 exposes the protocol and backend work. The old six-to-nine-month estimate assumed a different staffing/platform scope and is not a new commitment.
 
-- **Core tests:** state transitions, command availability, reconciliation, cancellation, and persistence.
-- **Protocol conformance:** Rust and TypeScript exchange the same valid and invalid fixtures.
-- **Property tests and fuzzing:** framing, decoding, state updates, and malformed content.
-- **Process tests:** kill either process before and after acknowledgment, during persistence, and during reconnect.
-- **Storage tests:** disk full, migration interruption, corruption, and backup restoration.
-- **Interface tests:** keyboard, focus, selection, large text, theme changes, and stable scrolling.
-- **Native platform tests:** real installers, real window systems, real screen readers, and representative GPUs.
-- **Soak tests:** long-running sessions, repeated attach/detach, large outputs, and many project switches.
+| Milestone | Work and primary ownership | Exit criterion |
+| --- | --- | --- |
+| **M0 — Preserve and prepare** | Pipkin: explicit real/demo composition, namespaced storage migration, asynchronous backend lifecycle, source/version manifest, retained demo regression suite | Existing demo remains deterministic; real mode starts with honest connecting/unavailable states and cannot show fixtures as real data |
+| **M1 — Real read path** | Pi: runnable pinned host, auth and metadata contract. Rust: protocol/Chord conformance, attach, Models/Transcript hydration | From a clean developer setup, authenticate to a real Pi test server, list/open a session, render its actual state, switch and reject delayed old-attachment updates; no live provider required |
+| **M2 — First complete real workflow** | Pi + Pipkin: project/session creation, model selection, prompt/tool streaming, journal/dedup/status, engine lifecycle, actual read-only diffs | In a temporary project, a real Pi engine with a deterministic test provider executes a file-changing tool; Pipkin displays the output/diff and reopens the same history. Drop acknowledgment and kill/relaunch UI without accepting the prompt twice |
+| **M3 — Daily-use execution and recovery** | Pi + Pipkin: authoritative steering/queue/stop, reconnect/status settlement, credentials, attachments, persistence failures | Steer, queue/remove, stop, resume, switch, and restart work correctly; attachments survive and reach the intended input path; engine/UI/disconnect/storage fault matrix passes |
+| **M4 — Complete local product** | Pipkin + required Pi services: pre-compaction history, search, complete tool results, supported extension dialogs, editor/terminal actions, offline cache; close native gates | The core workflow is usable without demo data; 10,000-message traversal remains bounded; real IME/screen reader/scaling/lifecycle checks pass; unsupported features are explicit |
+| **M5 — Distributable Wayland alpha** | Packaging/platform: bundled engine/runtime, desktop integration, clean install, upgrades/rollback, diagnostics, soak tests | A clean supported Omarchy/Arch installation runs the workflow from a desktop launcher without adjacent source checkouts; upgrade and recovery preserve acknowledged drafts/history |
+| **M6 — Broader release** | Platform qualification and beta | Each advertised OS passes installation, text/accessibility, graphics, process/storage recovery, and update tests; measured beta reliability and usability targets are met |
 
-Use deterministic fake providers in routine CI. Keep any live-provider verification separate and explicitly controlled.
+M2 is the first genuinely functioning client, not the end of the product work. M3–M5 are required before calling it a reliable daily-use local application. Native accessibility/platform work begins at M0 and remains a release gate, rather than being postponed to M6.
 
-Run the repository’s required checks for TypeScript changes, and Rust formatting, linting, unit, integration, and platform checks for the client. Make severe data-loss, security, accessibility, and recovery defects release blockers.
+### First implementation batch
 
-## 16. Deliver through milestones with exit criteria
+1. Capture current demo checks and record the two repository revisions; update the continuation map to the verified contract inventory when implementation begins.
+2. Add explicit backend selection and lifecycle/capability state, keep the current demo path, and remove hard-coded demo dependencies from real-mode composition.
+3. Design and migrate stable session namespaces, full drafts, and request intents before any live mutation path is enabled.
+4. Build the engine test launcher and Rust framing/Chord fixture harness; implement authenticated attach and a real read-only transcript/model path.
+5. Land Pi project metadata and idempotent submission/status contracts with tests, then connect submit and recovery.
+6. Demonstrate one real tool edit, actual diff, reconnect, and relaunch in a disposable project, using a fake provider. Keep live-provider verification separate and explicitly controlled.
 
-For roughly four experienced engineers, a product designer, and dedicated platform QA capacity, budget **six to nine months** for the stated quality level. Re-estimate after the framework and protocol spikes.
+### Implementation status (updated 2026-10-04; read this first when resuming)
 
-| Phase | Approximate duration | Exit criterion |
-|---|---|---|
-| Product and technical validation | 2–3 weeks | Framework decision, visual studies, platform results, protocol gap list |
-| Runtime and contract foundation | 4–6 weeks | Packaged engine, authenticated transport, typed client, recovery harness |
-| Complete working workflow | 4–5 weeks | Open project, prompt, inspect tools, cancel, close, reopen |
-| Product depth and visual system | 5–7 weeks | History, search, attachments, changes, settings, supported extension UI |
-| Resilience and platform hardening | 5–7 weeks | Fault matrix, accessibility, installers, upgrades, performance gates |
-| Private beta and release preparation | 4–6 weeks | Usability targets, stable recovery, support documentation, release evidence |
+**Where we are: M0 is done. M1 is built and passes against a mock server, but is NOT verified against a real Pi server.** That one gate is what stands between us and calling M1 finished. Nothing is committed yet; all of this work is uncommitted on `main` (see "Before you do anything" below).
 
-Some design and platform work can overlap. Do not defer Windows, accessibility, or recovery until the final phase.
+| Milestone | State | Evidence |
+| --- | --- | --- |
+| M0 preserve and prepare | **Done** (one item open: source/version manifest) | Explicit `Mode`, `Connection` state, async `Backend::start(sink)`, namespaced storage v3, crash-safe submit journal v4 |
+| M1 real read path | **Built; real-server gate unrun** | `pi-client` crate and `PiBackend` pass 295 tests against `pi_client::testing::MockPi` and Pi's own CBOR/codec vectors. `real_pi` conformance tests exist but are `#[ignore]`d and have never run |
+| M2 and later | Not started | |
 
-Maintain separate ownership for interface quality, engine/protocol integration, and platform/reliability work. Each milestone should produce something installable and reviewable.
+`cargo test --workspace`: 295 pass, 2 ignored (the real-server tests). Clippy and fmt were clean at last run.
 
-## 17. Start with these concrete deliverables
+#### What exists
 
-The first ten working days should produce:
+- **`crates/pi-client`** (no GPUI): strict CBOR subset (`cbor.rs`), framing, protocol v8 envelopes, Chord wire grammar and per-subscription Delta codecs, replica with sequence-gap detection (`chord.rs`, `delta.rs`), the connection state machine (`client.rs`: handshake, request correlation and cancel, hydration buffering, **stale-attachment fencing**, no reconnect or replay), Unix transport with trust checks (`unix.rs`: private dir and socket owned by us, no symlinks, `SO_PEERCRED` uid, `serverId` handshake, discovery that reports untrusted sockets instead of hiding them), and `testing.rs`, a mock Pi server that speaks the real wire (not evidence about the real engine).
+- **`crates/pipkin-app/src/adapters/pi/`**: `PiBackend` (worker thread: discover, connect, mirror the session directory into the catalog, open a session = attach + subscribe `pi.transcript` and `pi.models`, `Synced` live updates, reconnect with backoff that refreshes the open conversation), `transcript.rs` (pure `ConversationView` to transcript items; never panics; unknown kinds shown as notices), `session.rs` (stable conversation ids from session ids, derived titles, model catalogue), `real_pi.rs` (ignored conformance tests).
+- **Core additions**: `Mode`, `Connection`, `LifecycleEvent`, `RequestId` and the submit journal (`JournalIntent` before send, `intent_persisted`, `restore_unresolved`), `EventKind::{Synced, OpenFailed}`, `preview_output`.
+- **Storage**: schema v4 (namespaces, request journal), backup before migration.
+- **`scripts/pi-test-server.sh`**: starts a throwaway Pi experimental server with isolated dirs, `PI_OFFLINE=1`, no credentials.
+- Real mode is the default; `--pi-dir`, `--pi-server-id` choose the server. `--demo <scenario>` keeps the old simulator for regression tests only. The removed `UnavailableBackend` is superseded by the adapter's own offline states.
 
-1. A product brief covering users, primary workflows, release scope, and exclusions.
-2. Three visual studies using realistic pi transcripts and failure states.
-3. One working GPUI prototype on Omarchy/Arch, Windows, and macOS.
-4. A framework scorecard covering text, accessibility, graphics, and packaging.
-5. A desktop service contract proposal with the current backend gaps identified.
-6. A Rust client exchanging real messages with pi.
-7. A failure demonstration: disconnect after submission and recover without blindly resending.
-8. A measured performance baseline and platform support matrix.
-9. An implementation backlog ordered by dependency and risk.
-10. Architecture decisions documenting framework choice, process lifecycle, persistence ownership, and update strategy.
+#### What is and is not verified
 
-The first milestone is complete when **the proposed interface feels excellent on every target platform and the integration can recover honestly from an interrupted operation**.
+- **Verified (automated):** wire codec against Pi's published vectors; handshake, subscriptions, gaps, disconnects, malformed and oversized frames, cancel, fragmentation, stale-attachment drop; trust checks on real sockets; adapter behavior (catalog, open, live sync, switching, offline, incompatible, reconnect refresh, no replay) against the mock.
+- **Never run:** anything against a real Pi server. Anything in the GUI: the real-mode offline/connecting/ready screens, session list, opened transcript, the "Not sent" strip and unknown-outcome strip from the journal work. No native or visual check of any of this session's work.
+- **Known honest limits:** this build is read-only. Prompts are refused with "Sending prompts is not available yet" (the journal then records them `rejected`); no run state, queue, model selection, or attachments are wired. Session titles are derived (`Session <id> . <time>`) and there is one placeholder project, because Pi's session summaries carry only id and creation time.
+
+#### Blocker: getting a real Pi server running (needs the owner)
+
+The Pi checkout is `../pi` (`200387122`). `npm ci` was run there (approved) and succeeded; the server then failed at startup because Pi's generated model catalog (`packages/ai/src/providers/data/`, gitignored) does not exist. The only ways to create it are Pi's `npm run generate-models` (unauthenticated GETs to models.dev, openrouter.ai, ai-gateway.vercel.sh, integrate.api.nvidia.com) or `scripts/hydrate-model-catalog.ts` with a published `models.all.json` (offline). **The owner declined the network fetch in this session, so none of this was done and nothing was written to `../pi`.** I also had not yet checked whether the installed standalone `pi` ships usable catalog data (that search was interrupted). To resume:
+
+1. Decide how to produce the catalog: run `! cd ~/coding/pi/packages/ai && npm run generate-models`, or provide a `models.all.json` for the offline hydrate, or ask for a scratch copy of the checkout so `../pi` stays untouched.
+2. `scripts/pi-test-server.sh /tmp/pipkin-pi` in one terminal (foreground).
+3. In another: `eval "$(scripts/pi-test-server.sh /tmp/pipkin-pi --print-env)" && cargo test -p pipkin-app real_pi -- --ignored --nocapture`.
+4. Expect first-contact surprises: the server may need another generated artifact (plugin build needs `esbuild`'s postinstall, which `npm ci` skipped), and Pi's real `ConversationView` entry kinds, `SessionSummary.createdAt` units, and attach ordering are inferred from source, not observed. Fix what appears; keep the mock tests honest.
+
+M1's exit criterion is met only when those two tests pass against a real server and a launch of the app against it shows the real session list and an opened transcript.
+
+#### Before you do anything else
+
+- **Commit.** Nothing from M0 or M1 is committed. Suggested split: (1) M0 core/storage/journal, (2) `pi-client`, (3) the Pi adapter and scripts. `Cargo.lock` changed (new crate; `libc` was already locked).
+- `docs/baseline.md` still carries the old demo scorecard figures; they are historical.
+- `AGENTS.md` still references `scripts/guard.sh`, which does not exist in the repo (only `scripts/pi-test-server.sh` does). Native input testing was therefore not done; do not send synthetic input without recreating a guard.
+
+#### Next work, in order
+
+1. Close the M1 real-server gate above.
+2. **M0 leftovers:** build manifest recording the tested Pi revision and service-contract version; surface storage fallback/load failures in the UI; restore from backup.
+3. **M2 (first complete real workflow):** `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, the work listed in section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery enabled for real sessions. Also: steer and follow-up requests are not journaled yet.
+4. Known smaller gaps: `Synced` replaces all items on each change (fine for now; coalesce and reconcile by stable id in M2); unmatched `has_older` paging; keyed-service support in the replica exists but is untested against a real server.
+
+## 11. Verification and release gates
+
+Retain all seven demo scenarios, but add integration tests using the actual Pi server/worker/runtime. Simulation alone cannot pass an integration gate.
+
+| Test layer | Required evidence |
+| --- | --- |
+| Core | Availability with connection/capability state; stable identities; exact prompt/steer acknowledgment mapping; queue/stop races; stale events and snapshot reconciliation |
+| Protocol | Rust↔TypeScript fixtures, service catalogues, hydration buffering, Delta dictionaries, gap detection, malformed/oversized frames, disconnect during request, route fencing, authentication rejection |
+| Engine integration | Real sessions/cwd/model selection, fake provider streaming, actual temporary-file tools, historical pages, queue consumption/removal, settlement and extension responses |
+| Crash/recovery | Kill UI/engine before journal commit, before/after engine acceptance, before acknowledgment, during tool execution, while stopping, during page hydration, and on upgrade; assert no duplicate acceptance or lost acknowledged draft |
+| Storage | Full draft/attachment round trips, demo/real isolation, queue saturation, failed-save retry, disk full, corruption, newer schema, interrupted migration, backup restore, rollback compatibility |
+| UI/native | Actual keyboard, clipboard, IME, accessibility, focus restoration, themes/large text, scaling, selection, scroll anchoring, narrow layouts, sleep/resume and graphics |
+| Soak/performance | Long streams, huge tool output/diffs, repeated 10,000-message traversal, session switches/reconnects; measure bounded caches, queue depths, retained subscriptions, CPU/RSS and frame latency |
+| Distribution | Clean launch without development checkout, engine mismatch, missing credentials/tools, installation/update interruption, executable discovery/environment, uninstallation that preserves user data |
+
+For Pipkin changes, run `rtk cargo test --workspace`, `rtk cargo clippy --workspace --all-targets`, and `rtk cargo fmt --all --check`. For Pi changes, follow that repository's required checks and run targeted contract/runtime tests with fake providers. Record commands and outcomes. Native input automation must follow Pipkin's guard script and stay confined to the test window; system configuration/package changes are separate explicit actions.
+
+Release blockers: acknowledged data loss, duplicate accepted mutations, wrong-project execution, silent simulated fallback, unresolved stop state, unauthenticated local control, essential accessibility failures, and nonrecoverable upgrade failures. Maintain bounded crash retries and actionable diagnostics. Collect no prompts, code, tool output, or credentials by default.
+
+Preserve the original beta targets of 99.9% crash-free launches and 90% unassisted core-task completion, but define population/sample size and report observed evidence before claiming either. A small successful developer run cannot establish those rates.
+
+## 12. Platform and product completion
+
+| Release track | Required coverage before advertising support |
+| --- | --- |
+| Omarchy/Arch Wayland alpha | Hyprland tiling, portals, clipboard, missing keyring, actual scale/IME/screen reader, Intel/AMD/NVIDIA coverage appropriate to the support claim; maintained Arch packaging and bundled engine |
+| Other Linux | GNOME/KDE Wayland, declared runtime/library baseline, practical distribution artifact; X11 feature/build and native qualification (currently disabled in the pinned manifest) |
+| macOS | Platform initialization/features, Apple Silicon and explicit Intel policy, menus/shortcuts, Keychain, VoiceOver, process lifecycle, signed/notarized package |
+| Windows | Platform initialization/features, authenticated local transport, Unicode/long paths, process tree ownership, per-monitor DPI, screen reader, signed installer; WSL remains a separate future capability |
+
+Across tracks, support secure credential storage or the engine's established mechanism, explicit environment/tool discovery, drag-and-drop and folder/editor/terminal actions, and a signed/verifiable update path with a bootable prior version. Do not claim isolation: Pi tools execute with the engine process's permissions unless an actual execution boundary is implemented.
+
+The roadmap is complete when the selected release track can install and run the entire real workflow, every visible control has authoritative behavior or a clear unavailable state, recovery is demonstrated at the acknowledgment and process boundaries, and the native interaction gates pass. Preserve the demo for regression work and the existing visual foundation throughout.
