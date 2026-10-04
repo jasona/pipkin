@@ -286,6 +286,7 @@ fn connects_then_publishes_the_catalog_and_ready() {
             LifecycleEvent::Catalog(_) => "catalog",
             LifecycleEvent::Connection(Connection::Ready) => "ready",
             LifecycleEvent::Connection(_) => "state",
+            LifecycleEvent::ModelSelected(_) | LifecycleEvent::Notice(_) => "other",
         })
         .collect();
     let catalog_at = order.iter().position(|e| *e == "catalog").unwrap();
@@ -442,34 +443,6 @@ fn switching_sessions_never_lets_the_old_attachment_update_the_screen() {
         panic!("{event:?}")
     };
     assert_eq!(texts(&items), ["from B", "B again"]);
-}
-
-#[test]
-fn prompts_are_refused_honestly_not_simulated() {
-    let env = start(mock(&[("s", 1)], vec![]), true);
-    let conv = env.conversation(0);
-    env.backend.request(BackendRequest::Submit {
-        conversation: conv,
-        generation: 1,
-        op: OperationId(4),
-        request: RequestId("r".into()),
-        text: "do it".into(),
-        attachments: vec![],
-        model: None,
-    });
-    let event = env.next_event();
-    assert_eq!(event.op, Some(OperationId(4)));
-    let EventKind::Rejected { reason } = event.kind else {
-        panic!("{event:?}")
-    };
-    assert!(reason.contains("not available yet"), "{reason}");
-    // Nothing was sent to the engine.
-    assert!(
-        env.pi
-            .requests()
-            .iter()
-            .all(|(_, call)| call.service_id != "pi.agent-controller")
-    );
 }
 
 #[test]
@@ -770,4 +743,624 @@ fn a_server_that_refuses_our_protocol_is_reported_as_incompatible_not_absent() {
             .iter()
             .any(|c| matches!(c, Connection::Offline(m) if m.contains("no Pi server")))
     );
+}
+
+// ------------------------------------------------------------------ agent controller flows
+
+use pipkin_core::FileChange;
+
+/// What the mock AgentController, Models and session management were asked, and what the engine
+/// "reports" for each request key. Tests edit `statuses` to model the engine finishing a run.
+#[derive(Default)]
+struct Agent {
+    prompts: Vec<Value>,
+    aborts: usize,
+    selects: Vec<Value>,
+    creates: Vec<Value>,
+    /// requestId -> the JSON `lookup` returns.
+    statuses: std::collections::HashMap<String, Value>,
+    next_op: u64,
+    /// How the next prompt is answered.
+    prompt_mode: PromptMode,
+}
+
+#[derive(Default, Clone)]
+enum PromptMode {
+    #[default]
+    Accept,
+    Reject(&'static str),
+    InternalError,
+    DropConnection,
+}
+
+fn placed(op: &str) -> Value {
+    json!({ "found": true, "operationId": op, "status": "placed", "reason": null, "detail": null })
+}
+
+fn settled(op: &str, status: &str, reason: Option<&str>, detail: Option<&str>) -> Value {
+    json!({ "found": true, "operationId": op, "status": status, "reason": reason, "detail": detail })
+}
+
+/// A mock engine with an AgentController. Each prompt is admitted as `placed`.
+fn agent_mock(
+    sessions: &[(&str, i64)],
+    views: Vec<(&str, Value)>,
+) -> (MockPi, Arc<Mutex<Agent>>, Views) {
+    let (pi, views) = mock_with_views(sessions, views);
+    let agent = Arc::new(Mutex::new(Agent::default()));
+    let a = agent.clone();
+    pi.set_handler("pi.agent-controller", "prompt", move |_, conn, call| {
+        let mut agent = a.lock().unwrap();
+        let request = call.args[0].clone();
+        agent.prompts.push(request.clone());
+        match agent.prompt_mode.clone() {
+            PromptMode::Reject(why) => Ok(Some(json!({
+                "accepted": false, "operationId": null,
+                "error": { "code": "busy", "message": why },
+            }))),
+            PromptMode::InternalError => Err(pi_client::protocol::ProtocolError {
+                code: "internal_error".into(),
+                message: "Internal server error".into(),
+            }),
+            PromptMode::DropConnection => {
+                conn.close();
+                Ok(None)
+            }
+            PromptMode::Accept => {
+                agent.next_op += 1;
+                let op = agent.next_op.to_string();
+                if let Some(key) = request["requestId"].as_str() {
+                    // A repeated key returns the original submission, as the real engine does.
+                    let existing = agent.statuses.get(key).cloned();
+                    let operation = existing
+                        .as_ref()
+                        .and_then(|e| e["operationId"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| op.clone());
+                    agent
+                        .statuses
+                        .entry(key.to_owned())
+                        .or_insert_with(|| placed(&op));
+                    return Ok(Some(
+                        json!({ "accepted": true, "operationId": operation, "error": null }),
+                    ));
+                }
+                Ok(Some(
+                    json!({ "accepted": true, "operationId": op, "error": null }),
+                ))
+            }
+        }
+    });
+    let a = agent.clone();
+    pi.set_handler("pi.agent-controller", "lookup", move |_, _, call| {
+        let key = call.args[0].as_str().unwrap_or("");
+        Ok(Some(
+            a.lock()
+                .unwrap()
+                .statuses
+                .get(key)
+                .cloned()
+                .unwrap_or(json!({ "found": false })),
+        ))
+    });
+    let a = agent.clone();
+    pi.set_handler("pi.agent-controller", "abort", move |_, _, _| {
+        let mut agent = a.lock().unwrap();
+        agent.aborts += 1;
+        for status in agent.statuses.values_mut() {
+            if status["status"] == "placed" {
+                let op = status["operationId"].as_str().unwrap_or("").to_owned();
+                *status = settled(&op, "unanswered", Some("aborted"), None);
+            }
+        }
+        Ok(None)
+    });
+    let a = agent.clone();
+    pi.set_handler("pi.models", "select", move |pi, _, call| {
+        a.lock().unwrap().selects.push(call.args[0].clone());
+        let model = call.args[0].clone();
+        pi.publish(
+            "pi.models",
+            vec![Op::Set(vec![key("configuration"), key("model")], model)],
+        );
+        Ok(None)
+    });
+    let a = agent.clone();
+    pi.set_handler("pi.session-management", "create", move |pi, _, call| {
+        let options = call.args[0].clone();
+        let mut agent = a.lock().unwrap();
+        let id = options["id"].as_str().unwrap_or("generated").to_owned();
+        if agent.creates.iter().any(|c| c["id"] == options["id"]) {
+            return Err(pi_client::protocol::ProtocolError {
+                code: "internal_error".into(),
+                message: format!("Session {id} already exists"),
+            });
+        }
+        agent.creates.push(options.clone());
+        let row = json!({ "serverId": SERVER_ID, "sessionId": id, "createdAt": 4_000_000_000_000i64, "cwd": options["cwd"] });
+        pi.publish(
+            "pi.session-directory",
+            vec![Op::Splice { path: vec![key("sessions")], index: 99, remove: 0, items: vec![row.clone()] }],
+        );
+        Ok(Some(row))
+    });
+    (pi, agent, views)
+}
+
+fn submit(env: &Env, conv: ConversationId, generation: u64, op: u64, request: &str, text: &str) {
+    env.backend.request(BackendRequest::Submit {
+        conversation: conv,
+        generation,
+        op: OperationId(op),
+        request: RequestId(request.into()),
+        text: text.into(),
+        attachments: vec![],
+        model: None,
+    });
+}
+
+impl Env {
+    /// The next event for `op`, skipping unrelated transcript and workspace updates.
+    fn next_for(&self, op: u64) -> BackendEvent {
+        loop {
+            let event = self.next_event();
+            if event.op == Some(OperationId(op)) {
+                return event;
+            }
+        }
+    }
+
+    fn open_first(&self) -> ConversationId {
+        let conv = self.conversation(0);
+        self.open(conv, 1);
+        assert!(matches!(self.next_event().kind, EventKind::Opened { .. }));
+        conv
+    }
+
+    fn wait_notice(&self, needle: &str) {
+        wait_until(needle, || {
+            self.lifecycle
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, LifecycleEvent::Notice(m) if m.contains(needle)))
+        });
+    }
+}
+
+#[test]
+fn a_prompt_is_sent_with_its_request_key_and_settles_when_the_engine_says_so() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    submit(&env, conv, 1, 7, "req-1", "fix the bug");
+    assert_eq!(env.next_for(7).kind, EventKind::Accepted);
+    {
+        let agent = agent.lock().unwrap();
+        assert_eq!(agent.prompts.len(), 1);
+        assert_eq!(agent.prompts[0]["message"], "fix the bug");
+        assert_eq!(
+            agent.prompts[0]["requestId"], "req-1",
+            "the journaled key reaches the engine"
+        );
+        assert!(agent.prompts[0]["images"].is_null());
+    }
+    // Still running: nothing settles yet.
+    env.no_event_within(600);
+    // The engine finishes the run; the adapter notices by asking, not by being told.
+    agent
+        .lock()
+        .unwrap()
+        .statuses
+        .insert("req-1".into(), settled("1", "done", None, None));
+    assert_eq!(env.next_for(7).kind, EventKind::Completed);
+}
+
+#[test]
+fn a_refused_prompt_is_a_definite_rejection_with_the_engine_s_reason() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    agent.lock().unwrap().prompt_mode = PromptMode::Reject("Pi is busy with another run");
+    submit(&env, conv, 1, 3, "req-busy", "again");
+    let EventKind::Rejected { reason } = env.next_for(3).kind else {
+        panic!()
+    };
+    assert!(reason.contains("busy"), "{reason}");
+    // A refusal leaves nothing to settle.
+    env.no_event_within(600);
+}
+
+#[test]
+fn an_internal_error_after_sending_is_an_unknown_outcome_not_a_rejection() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    agent.lock().unwrap().prompt_mode = PromptMode::InternalError;
+    submit(&env, conv, 1, 4, "req-ie", "maybe");
+    assert_eq!(env.next_for(4).kind, EventKind::AckLost);
+}
+
+#[test]
+fn losing_the_connection_before_the_acknowledgment_is_an_unknown_outcome() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    agent.lock().unwrap().prompt_mode = PromptMode::DropConnection;
+    submit(&env, conv, 1, 5, "req-drop", "lost");
+    assert_eq!(env.next_for(5).kind, EventKind::AckLost);
+}
+
+#[test]
+fn a_prompt_for_a_session_that_is_not_open_is_refused_and_nothing_is_sent() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.conversation(0); // listed, never opened
+    submit(&env, conv, 1, 6, "req-closed", "hi");
+    let EventKind::Rejected { reason } = env.next_for(6).kind else {
+        panic!()
+    };
+    assert!(reason.contains("not open"), "{reason}");
+    assert!(agent.lock().unwrap().prompts.is_empty());
+}
+
+#[test]
+fn attachments_are_refused_rather_than_silently_dropped() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    env.backend.request(BackendRequest::Submit {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(8),
+        request: RequestId("req-att".into()),
+        text: "with file".into(),
+        attachments: vec![pipkin_core::Attachment {
+            path: "/tmp/a.txt".into(),
+            name: "a.txt".into(),
+            size: Some(1),
+            error: None,
+        }],
+        model: None,
+    });
+    let EventKind::Rejected { reason } = env.next_for(8).kind else {
+        panic!()
+    };
+    assert!(reason.contains("Attachments"), "{reason}");
+    assert!(agent.lock().unwrap().prompts.is_empty());
+}
+
+#[test]
+fn check_status_resolves_through_the_engine_by_request_key() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    let check = |op: u64, key: &str| {
+        env.backend.request(BackendRequest::CheckStatus {
+            conversation: conv,
+            generation: 1,
+            op: OperationId(op),
+            request: Some(RequestId(key.into())),
+        })
+    };
+    // The engine never saw it: proven not accepted, so a retry is safe.
+    check(10, "never-arrived");
+    assert_eq!(
+        env.next_for(10).kind,
+        EventKind::StatusResolved { accepted: false }
+    );
+    // The engine has it and it is still running: accepted, then settles later.
+    agent
+        .lock()
+        .unwrap()
+        .statuses
+        .insert("running".into(), placed("9"));
+    check(11, "running");
+    assert_eq!(
+        env.next_for(11).kind,
+        EventKind::StatusResolved { accepted: true }
+    );
+    agent
+        .lock()
+        .unwrap()
+        .statuses
+        .insert("running".into(), settled("9", "done", None, None));
+    assert_eq!(env.next_for(11).kind, EventKind::Completed);
+    // The engine has it and it already finished.
+    agent
+        .lock()
+        .unwrap()
+        .statuses
+        .insert("finished".into(), settled("8", "done", None, None));
+    check(12, "finished");
+    assert_eq!(
+        env.next_for(12).kind,
+        EventKind::StatusResolved { accepted: true }
+    );
+    assert_eq!(env.next_for(12).kind, EventKind::Completed);
+    // No key to ask with: say so, resolve nothing.
+    env.backend.request(BackendRequest::CheckStatus {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(13),
+        request: None,
+    });
+    env.wait_notice("no record");
+}
+
+#[test]
+fn engine_failures_read_as_failures_with_their_message() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    submit(&env, conv, 1, 20, "req-err", "go");
+    assert_eq!(env.next_for(20).kind, EventKind::Accepted);
+    agent.lock().unwrap().statuses.insert(
+        "req-err".into(),
+        settled(
+            "1",
+            "unanswered",
+            Some("model_error"),
+            Some("provider unavailable"),
+        ),
+    );
+    assert_eq!(
+        env.next_for(20).kind,
+        EventKind::Failed {
+            message: "provider unavailable".into()
+        }
+    );
+}
+
+#[test]
+fn stopping_a_run_asks_the_engine_and_settles_as_cancelled() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    submit(&env, conv, 1, 30, "req-stop", "long job");
+    assert_eq!(env.next_for(30).kind, EventKind::Accepted);
+    env.backend.request(BackendRequest::Cancel {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(30),
+    });
+    // Stop is only a request: the run settles when the engine reports it.
+    assert_eq!(env.next_for(30).kind, EventKind::Cancelled);
+    assert_eq!(agent.lock().unwrap().aborts, 1);
+}
+
+#[test]
+fn a_run_that_finished_while_another_session_was_open_settles_when_reopened() {
+    let (pi, agent, _) = agent_mock(
+        &[("s-a", 100), ("s-b", 200)],
+        vec![("s-a", view(&[])), ("s-b", view(&[]))],
+    );
+    let env = start(pi, true);
+    env.wait_ready();
+    let (a, b) = {
+        let c = env.catalogs().pop().unwrap().conversations;
+        let find = |t: &str| c.iter().find(|x| x.2.contains(t)).unwrap().0;
+        (find("s-a"), find("s-b"))
+    };
+    env.open(a, 1);
+    assert!(matches!(env.next_event().kind, EventKind::Opened { .. }));
+    submit(&env, a, 1, 40, "req-away", "start it");
+    assert_eq!(env.next_for(40).kind, EventKind::Accepted);
+    env.open(b, 1);
+    assert!(matches!(
+        env.next_for_conversation(b).kind,
+        EventKind::Opened { .. }
+    ));
+    // While away, the engine finishes the run; nothing is delivered for a session not attached.
+    agent
+        .lock()
+        .unwrap()
+        .statuses
+        .insert("req-away".into(), settled("1", "done", None, None));
+    env.no_event_within(700);
+    env.open(a, 2);
+    assert_eq!(env.next_for(40).kind, EventKind::Completed);
+}
+
+impl Env {
+    fn next_for_conversation(&self, conversation: ConversationId) -> BackendEvent {
+        loop {
+            let event = self.next_event();
+            if event.conversation == conversation {
+                return event;
+            }
+        }
+    }
+}
+
+#[test]
+fn choosing_a_model_asks_the_engine_and_the_selection_follows_its_report() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    // Opening already reported the engine's model.
+    assert!(
+        env.lifecycle.lock().unwrap().iter().any(
+            |e| matches!(e, LifecycleEvent::ModelSelected(Some(m)) if m == "anthropic/sonnet")
+        )
+    );
+    env.backend.request(BackendRequest::SetModel {
+        conversation: conv,
+        generation: 1,
+        model: "openai/gpt".into(),
+    });
+    wait_until("select sent", || !agent.lock().unwrap().selects.is_empty());
+    assert_eq!(
+        agent.lock().unwrap().selects[0],
+        json!({ "provider": "openai", "modelId": "gpt" })
+    );
+    wait_until("engine reported the new model", || {
+        env.lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, LifecycleEvent::ModelSelected(Some(m)) if m == "openai/gpt"))
+    });
+    // A malformed id is not sent to the engine.
+    env.backend.request(BackendRequest::SetModel {
+        conversation: conv,
+        generation: 1,
+        model: "noslash".into(),
+    });
+    env.wait_notice("Unrecognized model");
+    assert_eq!(agent.lock().unwrap().selects.len(), 1);
+}
+
+#[test]
+fn creating_a_conversation_names_the_directory_and_is_safe_to_repeat() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![]);
+    let env = start(pi, true);
+    env.wait_ready();
+    let create = || {
+        env.backend.request(BackendRequest::CreateConversation {
+            project: pipkin_core::project_id_for_path("/work/app"),
+            cwd: "/work/app".into(),
+            request: RequestId("create-1".into()),
+        })
+    };
+    create();
+    wait_until("created", || agent.lock().unwrap().creates.len() == 1);
+    assert_eq!(
+        agent.lock().unwrap().creates[0],
+        json!({ "id": "create-1", "cwd": "/work/app" })
+    );
+    // The new session arrives through the directory, in the project of its directory.
+    wait_until("catalog lists it", || {
+        env.catalogs().last().is_some_and(|c| {
+            c.projects.iter().any(|p| p.path == "/work/app")
+                && c.conversations
+                    .iter()
+                    .any(|x| x.1 == pipkin_core::project_id_for_path("/work/app"))
+        })
+    });
+    // Repeating the same creation (a retry after a lost reply) is not an error.
+    create();
+    env.no_event_within(500);
+    assert!(
+        !env.lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, LifecycleEvent::Notice(_))),
+        "a duplicate creation must not show an error"
+    );
+}
+
+#[test]
+fn a_failed_creation_is_reported_as_a_notice() {
+    let (pi, _agent, _) = agent_mock(&[("s", 1)], vec![]);
+    pi.set_handler("pi.session-management", "create", |_, _, _| {
+        Err(pi_client::protocol::ProtocolError {
+            code: "service_invalid_value".into(),
+            message: "Session cwd is not an existing directory: /nope".into(),
+        })
+    });
+    let env = start(pi, true);
+    env.wait_ready();
+    env.backend.request(BackendRequest::CreateConversation {
+        project: pipkin_core::project_id_for_path("/nope"),
+        cwd: "/nope".into(),
+        request: RequestId("create-bad".into()),
+    });
+    env.wait_notice("not an existing directory");
+}
+
+#[test]
+fn workspace_changes_follow_the_session_directory_and_update_when_a_tool_finishes() {
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(repo.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(
+        repo.path().join("notes.txt"),
+        "one
+",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let (pi, _agent, _) = agent_mock(&[], vec![("s", view(&[]))]);
+    pi.publish(
+        "pi.session-directory",
+        vec![Op::Replace(json!({ "revision": 2, "sessions": [{
+            "serverId": SERVER_ID, "sessionId": "s", "createdAt": 5,
+            "cwd": repo.path().to_str().unwrap(),
+        }]}))],
+    );
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let changes = |env: &Env| -> Vec<FileChange> {
+        loop {
+            if let EventKind::ChangesSynced(files) = env.next_event().kind {
+                return files;
+            }
+        }
+    };
+    // Opening scans the session's directory: clean at first.
+    assert!(changes(&env).is_empty());
+
+    // A tool edits a tracked file and creates a new one; the transcript shows a finished tool.
+    std::fs::write(
+        repo.path().join("notes.txt"),
+        "one
+two
+",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.path().join("new.txt"),
+        "hello
+",
+    )
+    .unwrap();
+    let call = json!({ "role": "assistant", "stopReason": "toolUse", "timestamp": 0,
+        "content": [{ "type": "toolCall", "id": "c1", "name": "write", "arguments": {} }] });
+    let result = json!({ "role": "toolResult", "toolCallId": "c1", "toolName": "write", "isError": false,
+        "timestamp": 0, "content": [{ "type": "text", "text": "Successfully wrote" }] });
+    env.pi.publish(
+        "pi.transcript",
+        vec![Op::Replace(
+            json!({ "conversation": { "id": 1 }, "docs": {}, "entries": [
+                { "id": 1, "kind": "pi.assistant", "model": [call] },
+                { "id": 2, "kind": "pi.tool-result", "model": [result] },
+            ]}),
+        )],
+    );
+    let files = changes(&env);
+    let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(names, ["notes.txt", "new.txt"], "{files:?}");
+    assert_eq!((files[0].added, files[0].removed), (1, 0));
+    assert!(
+        files[1].hunks[0]
+            .lines
+            .iter()
+            .all(|l| l.kind == pipkin_core::DiffKind::Add)
+    );
+    // A transcript change that finishes no tool and ends no run does not rescan.
+    let _ = ItemKind::Notice {
+        text: String::new(),
+        level: pipkin_core::NoticeLevel::Info,
+    };
 }

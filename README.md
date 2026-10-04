@@ -5,7 +5,7 @@ Native Rust/GPUI desktop client for Pi. Started as a single-pass prototype ([`do
 ```sh
 # system: Wayland compositor, Vulkan driver, fontconfig, xkbcommon; Rust 1.99.0 (rust-toolchain.toml)
 # real mode (default): read-only client for a running Pi experimental server
-cargo run -p pipkin-app --release -- [--pi-dir DIR] [--pi-server-id UUID] [--data-dir DIR]
+cargo run -p pipkin-app --release -- [--pi-dir DIR] [--pi-server-id UUID] [--pi-repo DIR --pi-agent-dir DIR] [--project DIR] [--data-dir DIR]
 # simulated agent, for regression and demos only
 cargo run -p pipkin-app --release -- --demo normal [--data-dir DIR] [--speed 1.0]
 cargo test --workspace && cargo clippy --workspace --all-targets && cargo fmt --all --check

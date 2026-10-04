@@ -1,6 +1,6 @@
 # Rust Desktop Client for Pi: prototype to working product
 
-Updated: 2026-10-04. Status: implementation roadmap. M0 is done and M1 is met against a real Pi server, with caveats; see "Implementation status" near the end of section 10 for exactly where to resume.
+Updated: 2026-10-04. Status: implementation roadmap. M0 is done, M1 is met with caveats, and M2 is complete (exit criteria met by real-engine tests, GUI picker not yet seen); see "Implementation status" near the end of section 10 for exactly where to resume.
 
 ## 1. Continue the application that exists
 
@@ -254,15 +254,24 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done. M1 is met against a real Pi server, with the caveats below.** Committed and pushed through the real-mode UI fixes; the real-data fixtures and tests are not yet committed.
+**Where we are: M0 is done, M1 is met with caveats, and M2 is complete.** M2 work (Pipkin tree and the Pi branch `pipkin-m2`) is uncommitted. The Pi changes are saved as `patches/pi-m2.patch`.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
 | M0 preserve and prepare | **Done** (open: source/version manifest) | Explicit `Mode`, `Connection` state, async `Backend::start(sink)`, namespaced storage v3, crash-safe submit journal v4 |
 | M1 real read path | **Met, with caveats** | Real handshake, trust checks, catalogue, Delta hydration, session listing, attach, `Transcript` subscription and switching all pass against a real Pi server (3 opt-in tests, run repeatedly). The app was launched against it and showed the real session list and an opened session |
-| M2 and later | Not started | |
+| M2 first real workflow | **Complete** (caveats below) | 7 real-engine e2e tests: a real Pi engine plus a deterministic stub provider runs a file-changing tool; Pipkin shows output and diff and reopens the same history; dropped ack and lost prompt then relaunch do not accept the prompt twice; engine crash restart and lifecycle |
+| M3 and later | Not started | |
 
-`cargo test --workspace`: 312 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
+`cargo test --workspace`: 353 pass, 10 ignored (real-server and real-engine tests). Clippy and fmt clean.
+
+#### M2 summary and caveats
+
+Built: project and session creation (session `cwd` is Pi-side, validated), engine-authoritative model selection, prompt and tool streaming through `AgentController`, journal-before-send with Pi-side `requestId` dedup and `lookup` settlement (short polls), engine lifecycle (Pipkin launches and owns a pinned engine, identified by env; restarts on crash with a cap; clears a stale launcher lock), read-only Git workspace diffs, an "Open project folder" action, and `--project`.
+
+Run the real-engine suite: apply `patches/pi-m2.patch` in the Pi checkout (`git apply`, uncommitted, branch `pipkin-m2`), `npm ci` there, then `PIPKIN_PI_REPO=<pi> cargo test -p pipkin-app -- --ignored adapters::pi::e2e`. The app takes `--pi-repo`, `--pi-agent-dir` and `--project` to launch a managed engine.
+
+Caveats, not covered: the folder picker and the whole M2 flow were **not verified in the GUI** (e2e drives the real state machine, backend and storage without the window); attachments, steer and queue, and history paging are not done; Pi does not compare the payload when a `requestId` is repeated; the engine launcher is a development entry (runs from the Pi checkout), not a distribution path; Pi changes are not upstream.
 
 #### M1 caveats (what the real-server runs did NOT cover)
 
@@ -307,10 +316,10 @@ cargo run -p pipkin-app --release -- --pi-dir /tmp/pipkin-pi/server \
 
 #### Next work, in order
 
-1. **Commit and push** the uncommitted real-server work.
+1. **Commit and push** the uncommitted M1 and M2 work. Next milestone: M3.
 2. **Finish M1 properly:** get a non-empty real transcript through a faux-provider harness and verify the mapper against real entries; look at switching and the offline screens in the GUI; report the attach race to Pi.
 3. **M0 leftovers:** build manifest (tested Pi revision and service-contract version); surface storage fallback and load failures in the UI; restore from backup.
-4. **M2 (first complete real workflow):** `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery for real sessions, journaling of steer and follow-up requests.
+4. **M2 (done; see its summary above)** originally: `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery for real sessions, journaling of steer and follow-up requests.
 5. Smaller gaps: `Synced` replaces all items on each change (coalesce and reconcile by stable id in M2); no `has_older` paging; keyed-service replica support is untested against a real server.
 
 ## 11. Verification and release gates

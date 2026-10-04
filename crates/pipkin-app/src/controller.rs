@@ -3,7 +3,7 @@
 //! Effects emitted by the core are executed here, never in render. Backend events arrive on an
 //! async channel and are applied on the foreground in coalesced batches.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,11 +12,12 @@ use gpui::{App, AppContext as _, Entity};
 use pipkin_core::*;
 use pipkin_ui::{DemoControls, Model};
 
+use crate::adapters::pi::engine::EngineConfig;
 use crate::adapters::pi::{PiBackend, PiConfig};
 use crate::adapters::script;
 use crate::adapters::{DemoBackend, DemoOptions};
 use crate::platform;
-use crate::storage::{DEMO_NAMESPACE, DemoConversation, Storage};
+use crate::storage::{DEMO_NAMESPACE, DemoConversation, Loaded, OpenRequest, Storage, StoredDraft};
 
 const CLOCK_REFRESH: Duration = Duration::from_secs(15);
 const EVENT_QUEUE: usize = 1024;
@@ -32,6 +33,13 @@ pub struct Options {
     pub pi_dir: Option<PathBuf>,
     /// Real mode: connect to this logical server instead of discovering one.
     pub pi_server_id: Option<String>,
+    /// Real mode: a Pi checkout to launch and own an engine from (the development entry point).
+    /// Without it, an engine must already be running.
+    pub pi_repo: Option<PathBuf>,
+    /// Real mode: the agent directory (credentials, models, sessions) for a launched engine.
+    pub pi_agent_dir: Option<PathBuf>,
+    /// Real mode: project folders to add at startup (repeatable); the last one is selected.
+    pub projects: Vec<PathBuf>,
 }
 
 impl Default for Options {
@@ -43,6 +51,9 @@ impl Default for Options {
             speed: 1.0,
             pi_dir: None,
             pi_server_id: None,
+            pi_repo: None,
+            pi_agent_dir: None,
+            projects: vec![],
         }
     }
 }
@@ -83,6 +94,11 @@ impl Options {
                 }
                 "--data-dir" => options.data_dir = Some(PathBuf::from(value("--data-dir")?)),
                 "--pi-dir" => options.pi_dir = Some(PathBuf::from(value("--pi-dir")?)),
+                "--pi-repo" => options.pi_repo = Some(PathBuf::from(value("--pi-repo")?)),
+                "--project" => options.projects.push(PathBuf::from(value("--project")?)),
+                "--pi-agent-dir" => {
+                    options.pi_agent_dir = Some(PathBuf::from(value("--pi-agent-dir")?))
+                }
                 "--pi-server-id" => {
                     let id = value("--pi-server-id")?;
                     if !pi_client::protocol::is_server_id(&id) {
@@ -142,19 +158,74 @@ fn coalesce(batch: Vec<BackendEvent>) -> Vec<BackendEvent> {
     out
 }
 
-/// Desktop data is namespaced by backend so identities from one never apply to another.
-/// The real namespace becomes `pi:<profile>` once the engine host defines profiles.
-fn namespace(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Demo => DEMO_NAMESPACE,
-        Mode::Real => "pi:local",
+/// The Pi server profile directory this run talks to.
+fn profile_dir(options: &Options) -> PathBuf {
+    options
+        .pi_dir
+        .clone()
+        .unwrap_or_else(crate::adapters::pi::default_directory)
+}
+
+/// Desktop data is namespaced by backend so identities from one never apply to another. A real
+/// backend is identified by its profile directory, so two engines never share drafts, journals
+/// or selections.
+fn namespace(options: &Options) -> String {
+    match options.mode {
+        Mode::Demo => DEMO_NAMESPACE.to_owned(),
+        Mode::Real => format!(
+            "pi:{:x}",
+            stable_id(&profile_dir(options).display().to_string())
+        ),
     }
+}
+
+/// The engine to launch and own, for `--pi-repo`. Its server identity is the one given, else the
+/// profile's `default-server-id` (the identity Pi itself would use), else a fresh one that is
+/// remembered there so the next launch is the same logical server.
+fn managed_engine(options: &Options, pi_repo: &Path) -> Result<EngineConfig, String> {
+    let server_dir = profile_dir(options);
+    let id_file = server_dir.join("default-server-id");
+    let server_id = match &options.pi_server_id {
+        Some(id) => id.clone(),
+        None => match std::fs::read_to_string(&id_file) {
+            Ok(text) if pi_client::protocol::is_server_id(text.trim()) => text.trim().to_owned(),
+            _ => {
+                let id = std::fs::read_to_string("/proc/sys/kernel/random/uuid")
+                    .map_err(|e| format!("cannot create a server id: {e}"))?
+                    .trim()
+                    .to_owned();
+                std::fs::create_dir_all(&server_dir)
+                    .and_then(|_| std::fs::write(&id_file, &id))
+                    .map_err(|e| {
+                        format!(
+                            "cannot remember the server id in {}: {e}",
+                            id_file.display()
+                        )
+                    })?;
+                id
+            }
+        },
+    };
+    let cwd = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| PathBuf::from("/"));
+    Ok(EngineConfig {
+        pi_repo: pi_repo.to_path_buf(),
+        log_path: platform::data_dir(options.data_dir.as_deref()).join("engine.log"),
+        server_dir,
+        server_id,
+        agent_dir: options.pi_agent_dir.clone(),
+        cwd,
+        model: None,
+        env: vec![],
+    })
 }
 
 fn open_storage(options: &Options) -> Arc<Storage> {
     let dir = platform::data_dir(options.data_dir.as_deref());
-    let ns = namespace(options.mode);
-    match Storage::open(&platform::db_path(&dir), ns) {
+    let ns = namespace(options);
+    match Storage::open(&platform::db_path(&dir), &ns) {
         Ok(storage) => Arc::new(storage),
         Err(e) => {
             // Keep the app usable; drafts will not survive this session.
@@ -165,8 +236,60 @@ fn open_storage(options: &Options) -> Arc<Storage> {
                 dir.display(),
                 fallback.display()
             );
-            Arc::new(Storage::open(&platform::db_path(&fallback), ns).expect("fallback storage"))
+            Arc::new(Storage::open(&platform::db_path(&fallback), &ns).expect("fallback storage"))
         }
+    }
+}
+
+/// Stored state waiting for its conversation to appear in a catalog. Real sessions come from
+/// the engine, possibly after startup or a reconnect, so each catalog restores whatever now has
+/// a home and keeps the rest for later.
+pub(crate) struct Restore {
+    /// Demo-only conversations kept in the desktop database.
+    conversations: Vec<DemoConversation>,
+    drafts: Vec<StoredDraft>,
+    requests: Vec<OpenRequest>,
+}
+
+impl Restore {
+    pub(crate) fn new(loaded: Loaded, include_demo_conversations: bool) -> Restore {
+        Restore {
+            conversations: if include_demo_conversations {
+                loaded.conversations
+            } else {
+                vec![]
+            },
+            drafts: loaded.drafts,
+            requests: loaded.open_requests,
+        }
+    }
+
+    pub(crate) fn apply(&mut self, state: &mut AppState) -> Outcome {
+        let mut out = Outcome::default();
+        for c in self.conversations.drain(..) {
+            state.restore_conversation(c.id, c.project, c.title, c.updated_at);
+        }
+        self.drafts.retain(|d| {
+            if state.conversation(d.conversation).is_none() {
+                return true;
+            }
+            state.restore_draft(d.conversation, d.text.clone());
+            false
+        });
+        // Never resend: an unresolved request becomes "outcome unknown" for the user to resolve.
+        self.requests.retain(|r| {
+            if state.conversation(r.conversation).is_none() {
+                return true;
+            }
+            out.merge(state.restore_unresolved(
+                r.conversation,
+                r.request.clone(),
+                r.text.clone(),
+                r.attachments.clone(),
+            ));
+            false
+        });
+        out
     }
 }
 
@@ -179,6 +302,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
             drafts: vec![],
             conversations: vec![],
             open_requests: vec![],
+            projects: vec![],
         }
     });
 
@@ -199,13 +323,21 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     let backend: Arc<dyn Backend> = match &demo {
         Some(demo) => demo.clone(),
         None => {
-            let mut config = PiConfig::new(
-                options
-                    .pi_dir
-                    .clone()
-                    .unwrap_or_else(crate::adapters::pi::default_directory),
-            );
-            config.server_id = options.pi_server_id.clone();
+            let config = match &options.pi_repo {
+                Some(repo) => match managed_engine(&options, repo) {
+                    Ok(engine) => PiConfig::managed(engine),
+                    Err(error) => {
+                        // Say why the engine cannot be launched; do not quietly fall back.
+                        eprintln!("pipkin: cannot manage a Pi engine: {error}");
+                        std::process::exit(2);
+                    }
+                },
+                None => {
+                    let mut config = PiConfig::new(profile_dir(&options));
+                    config.server_id = options.pi_server_id.clone();
+                    config
+                }
+            };
             Arc::new(PiBackend::new(event_tx, config))
         }
     };
@@ -225,14 +357,33 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     state.set_request_prefix(request_prefix(now));
     state.set_connection(Connection::Connecting);
     if options.mode == Mode::Real {
-        state.read_only = Some(
-            "This version can read Pi sessions but cannot run them yet, so prompts cannot be sent."
-                .into(),
-        );
+        state.can_create = true;
+        // Folders the user opened are known before the engine answers, so the project list
+        // is usable while connecting.
+        for path in &loaded.projects {
+            state.restore_project(path);
+        }
+        // Folders named on the command line: resolved like the folder picker's, remembered, and
+        // the last one is where new conversations go.
+        for path in &options.projects {
+            match std::fs::canonicalize(path) {
+                Ok(real) if real.is_dir() => {
+                    let real = real.display().to_string();
+                    state.restore_project(&real);
+                    storage.save_project(real.clone());
+                    state.prefs.selected_project = Some(project_id_for_path(&real));
+                }
+                _ => eprintln!(
+                    "pipkin: --project {} is not a folder; ignoring it",
+                    path.display()
+                ),
+            }
+        }
     }
-    // Stored demo conversations and numeric-ID drafts must not leak into real mode. A real
-    // backend reports its own connection state through `start`.
-    let mut restore = (options.mode == Mode::Demo).then_some(loaded);
+    // Stored demo conversations must not leak into real mode. Drafts and unresolved requests
+    // are namespaced per backend, so they are restored in either mode, as their conversations
+    // appear. A real backend reports its own connection state through `start`.
+    let mut restore = Restore::new(loaded, options.mode == Mode::Demo);
 
     let model = cx.new(|_| Model::new(state));
     let (ack_tx, ack_rx) = async_channel::unbounded::<(ConversationId, u64, Result<(), String>)>();
@@ -279,6 +430,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                     storage.journal_state(request, state)
                 }
                 Effect::SavePrefs(prefs) => storage.save_prefs(&prefs),
+                Effect::SaveProject { path } => storage.save_project(path),
                 Effect::SaveConversation { conversation } => {
                     // The model is mid-update here; read the conversation once it settles.
                     let storage = storage.clone();
@@ -398,37 +550,21 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                 let alive = weak.update(cx, |m, cx| match event {
                     LifecycleEvent::Connection(c) => m.set_connection(c, cx),
                     LifecycleEvent::Catalog(boot) => {
-                        let stored = restore.take();
                         m.mutate(
                             |state| {
                                 let mut out = state.apply_catalog(boot);
-                                if let Some(stored) = stored {
-                                    for c in stored.conversations {
-                                        state.restore_conversation(
-                                            c.id,
-                                            c.project,
-                                            c.title,
-                                            c.updated_at,
-                                        );
-                                    }
-                                    for d in stored.drafts {
-                                        state.restore_draft(d.conversation, d.text);
-                                    }
-                                    // Never resend: unresolved requests become "outcome unknown".
-                                    for r in stored.open_requests {
-                                        out.merge(state.restore_unresolved(
-                                            r.conversation,
-                                            r.request,
-                                            r.text,
-                                            r.attachments,
-                                        ));
-                                    }
-                                }
+                                out.merge(restore.apply(state));
                                 out.merge(state.select_initial());
                                 out
                             },
                             cx,
                         );
+                    }
+                    LifecycleEvent::ModelSelected(model) => {
+                        m.mutate(|state| state.set_engine_model(model), cx)
+                    }
+                    LifecycleEvent::Notice(message) => {
+                        m.mutate(|state| state.set_notice(message), cx)
                     }
                 });
                 if alive.is_err() {
@@ -472,7 +608,6 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
         let storage = storage.clone();
         let backend = backend.clone();
         cx.on_app_quit(move |cx| {
-            backend.shutdown();
             let _ = weak.update(cx, |m, cx| {
                 let dirty: Vec<ConversationId> = m
                     .state
@@ -486,10 +621,14 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                 }
             });
             let storage = storage.clone();
+            let backend = backend.clone();
             let background = cx.background_executor().clone();
             async move {
                 background
                     .spawn(async move {
+                        // Stopping an engine this app launched can take a few seconds; it must
+                        // not freeze the window, and it must finish before the process exits.
+                        backend.shutdown();
                         storage.shutdown();
                     })
                     .await;
@@ -518,6 +657,48 @@ mod tests {
         assert_eq!(o.mode, Mode::Demo);
         assert_eq!(o.data_dir, Some(PathBuf::from("/tmp/x")));
         assert_eq!(o.speed, 0.5);
+    }
+
+    #[test]
+    fn real_mode_flags() {
+        let o = parse(&[
+            "--pi-repo=/pi",
+            "--pi-dir",
+            "/srv",
+            "--pi-agent-dir=/agent",
+            "--project",
+            "/work/a",
+            "--project=/work/b",
+        ])
+        .unwrap();
+        assert_eq!(o.mode, Mode::Real);
+        assert_eq!(o.pi_repo, Some(PathBuf::from("/pi")));
+        assert_eq!(o.pi_dir, Some(PathBuf::from("/srv")));
+        assert_eq!(o.pi_agent_dir, Some(PathBuf::from("/agent")));
+        assert_eq!(
+            o.projects,
+            [PathBuf::from("/work/a"), PathBuf::from("/work/b")]
+        );
+        assert!(parse(&["--pi-server-id", "nope"]).is_err());
+        assert!(parse(&["--project"]).is_err());
+    }
+
+    #[test]
+    fn the_namespace_names_the_backend_and_the_profile() {
+        let demo = parse(&["--demo", "normal"]).unwrap();
+        assert_eq!(namespace(&demo), DEMO_NAMESPACE);
+        let a = parse(&["--pi-dir", "/srv/a"]).unwrap();
+        let b = parse(&["--pi-dir", "/srv/b"]).unwrap();
+        assert!(namespace(&a).starts_with("pi:"));
+        assert_ne!(
+            namespace(&a),
+            namespace(&b),
+            "two profiles never share drafts or journals"
+        );
+        assert_eq!(
+            namespace(&a),
+            namespace(&parse(&["--pi-dir", "/srv/a"]).unwrap())
+        );
     }
 
     #[test]

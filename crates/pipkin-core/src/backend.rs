@@ -9,6 +9,10 @@ pub enum LifecycleEvent {
     Connection(Connection),
     /// Projects, models and conversation summaries known to the backend.
     Catalog(Bootstrap),
+    /// The model the engine reports as selected (`provider/modelId`), which is authoritative.
+    ModelSelected(Option<String>),
+    /// A background action failed and there is no conversation to attach the failure to.
+    Notice(String),
 }
 
 pub type LifecycleSink = Box<dyn Fn(LifecycleEvent) + Send + Sync>;

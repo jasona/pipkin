@@ -78,6 +78,14 @@ pub struct AppState {
     pub connection: Connection,
     /// Why this build cannot send prompts, if it cannot. Shown wherever sending is offered.
     pub read_only: Option<String>,
+    /// Whether the backend can create conversations (real mode); demo mode creates them locally.
+    pub can_create: bool,
+    /// A background action failed and there is no conversation to show it on.
+    pub notice: Option<String>,
+    /// Project folders the user opened, kept across catalogs.
+    bookmarks: Vec<Project>,
+    /// A conversation creation waiting for the backend to report it.
+    pending_create: Option<RequestId>,
     request_prefix: String,
     next_request: u64,
     next_op: u64,
@@ -121,6 +129,10 @@ impl AppState {
             mode: Mode::Demo,
             connection: Connection::Ready,
             read_only: None,
+            can_create: false,
+            notice: None,
+            bookmarks: Vec::new(),
+            pending_create: None,
             request_prefix: "req".into(),
             next_request: 1,
             next_op: 1,
@@ -178,21 +190,64 @@ impl AppState {
     /// Merge the backend's catalog into state. Existing conversations keep their local state.
     pub fn apply_catalog(&mut self, boot: Bootstrap) -> Outcome {
         let mut out = Outcome::default();
-        self.projects = boot.projects;
+        self.projects = merge_projects(boot.projects, &self.bookmarks);
         self.models = boot.models;
         self.now = self.now.max(boot.now);
+        let mut created: Vec<(ConversationId, i64)> = Vec::new();
         for (id, project, title, at) in boot.conversations {
             if self.conv_mut(id).is_none() {
                 self.conversations
                     .push(ConversationState::new(id, project, title, at));
                 self.next_conversation = self.next_conversation.max(id.0 + 1);
+                created.push((id, at));
             }
+        }
+        // A conversation we asked the backend to create has arrived: show it.
+        if self.pending_create.is_some()
+            && let Some((id, _)) = created.iter().max_by_key(|(_, at)| *at)
+        {
+            let id = *id;
+            self.pending_create = None;
+            out.merge(self.dispatch(Command::SelectConversation(id)));
         }
         if self.prefs.model.is_none() {
             self.prefs.model = self.models.first().map(|m| m.id.clone());
         }
         out.notes.push(Note::ConversationsChanged);
         out
+    }
+
+    /// The engine reports which model is selected; that, not a local choice, is what is shown.
+    pub fn set_engine_model(&mut self, model: Option<String>) -> Outcome {
+        let mut out = Outcome::default();
+        if model.is_some() && self.prefs.model != model {
+            self.prefs.model = model;
+            out.notes.push(Note::Other);
+        }
+        out
+    }
+
+    /// Show a failure that has no conversation to attach to, and stop waiting on anything it ended.
+    pub fn set_notice(&mut self, message: String) -> Outcome {
+        self.pending_create = None;
+        self.notice = Some(message);
+        Outcome {
+            notes: vec![Note::Other],
+            ..Outcome::default()
+        }
+    }
+
+    /// Restore a project folder remembered from an earlier run (no effects).
+    pub fn restore_project(&mut self, path: &str) {
+        let id = project_id_for_path(path);
+        if self.bookmarks.iter().all(|p| p.id != id) {
+            self.bookmarks.push(Project {
+                id,
+                name: project_name_for_path(path),
+                path: path.to_owned(),
+            });
+        }
+        self.projects = merge_projects(std::mem::take(&mut self.projects), &self.bookmarks);
     }
 
     /// Select the remembered (or first) conversation, if nothing is selected, so its history loads.
@@ -225,8 +280,10 @@ impl AppState {
         if !self.connection.is_ready() {
             return Availability::default();
         }
-        // Real sessions are created by the engine, which this build cannot ask yet.
-        let new_conversation = self.mode == Mode::Demo && self.current_project().is_some();
+        // Real sessions are created by the engine, so creation is offered only once it can be asked.
+        let new_conversation = (self.mode == Mode::Demo || self.can_create)
+            && self.pending_create.is_none()
+            && self.current_project().is_some();
         let Some(c) = self.current() else {
             return Availability {
                 new_conversation,
@@ -351,8 +408,40 @@ impl AppState {
             }
             // Real sessions are created and renamed by the engine; a local-only row would be
             // simulated success.
-            Command::NewConversation | Command::RenameConversation(..)
-                if self.mode == Mode::Real => {}
+            Command::RenameConversation(..) if self.mode == Mode::Real => {}
+            Command::NewConversation if self.mode == Mode::Real => {
+                if self.availability().new_conversation
+                    && let Some(project) = self.current_project().cloned()
+                {
+                    let request = self.alloc_request();
+                    self.pending_create = Some(request.clone());
+                    out.effects
+                        .push(Effect::Backend(BackendRequest::CreateConversation {
+                            project: project.id,
+                            cwd: project.path,
+                            request,
+                        }));
+                    out.notes.push(Note::Other);
+                }
+            }
+            Command::AddProject(path) => {
+                let path = path.trim().trim_end_matches('/').to_string();
+                if !path.starts_with('/') {
+                    return self.set_notice("A project folder must be an absolute path.".into());
+                }
+                let id = project_id_for_path(&path);
+                if self.bookmarks.iter().all(|p| p.id != id) {
+                    out.effects.push(Effect::SaveProject { path: path.clone() });
+                }
+                self.restore_project(&path);
+                out.notes.push(Note::ConversationsChanged);
+                out.merge(self.dispatch(Command::SelectProject(id)));
+            }
+            Command::DismissNotice => {
+                if self.notice.take().is_some() {
+                    out.notes.push(Note::Other);
+                }
+            }
             Command::NewConversation => {
                 let Some(project) = self.current_project().map(|p| p.id) else {
                     return out;
@@ -421,9 +510,20 @@ impl AppState {
             }
             Command::SetModel(m) => {
                 if self.models.iter().any(|x| x.id == m) {
-                    self.prefs.model = Some(m);
-                    out.effects.push(Effect::SavePrefs(self.prefs.clone()));
-                    out.notes.push(Note::Other);
+                    if self.mode == Mode::Real {
+                        // Ask the engine; the selection changes only when it reports it.
+                        if let Some(id) = self.selected.filter(|id| self.conv(*id).opened) {
+                            out.effects.push(Effect::Backend(BackendRequest::SetModel {
+                                conversation: id,
+                                generation: self.conv(id).generation,
+                                model: m,
+                            }));
+                        }
+                    } else {
+                        self.prefs.model = Some(m);
+                        out.effects.push(Effect::SavePrefs(self.prefs.clone()));
+                        out.notes.push(Note::Other);
+                    }
                 }
             }
 
@@ -480,6 +580,7 @@ impl AppState {
                             conversation: id,
                             generation: c.generation,
                             op: c.run.op().unwrap(),
+                            request: c.current_request.clone(),
                         }));
                 }
             }
@@ -777,6 +878,7 @@ impl AppState {
                 | EventKind::OlderPage { .. }
                 | EventKind::Synced { .. }
                 | EventKind::OpenFailed { .. }
+                | EventKind::ChangesSynced(_)
         );
         if scoped && ev.op != c.run.op() {
             return out;
@@ -949,6 +1051,16 @@ impl AppState {
                         ToolStatus::Failed
                     };
                     out.notes.push(Note::ItemChanged(id, i));
+                }
+            }
+            EventKind::ChangesSynced(changes) => {
+                if c.opened {
+                    c.selected_change = c
+                        .selected_change
+                        .filter(|i| *i < changes.len())
+                        .or((!changes.is_empty()).then_some(0));
+                    c.changes = changes;
+                    out.notes.push(Note::Other);
                 }
             }
             EventKind::ChangesReported(changes) => {
@@ -1144,6 +1256,16 @@ fn find_tool(
             ItemKind::Tool(t) if t.call_ref == Some((op, call)) => Some((i, t)),
             _ => None,
         })
+}
+
+/// Backend projects plus the folders the user opened, without duplicates (by id).
+fn merge_projects(mut from_backend: Vec<Project>, bookmarks: &[Project]) -> Vec<Project> {
+    for bookmark in bookmarks {
+        if from_backend.iter().all(|p| p.id != bookmark.id) {
+            from_backend.push(bookmark.clone());
+        }
+    }
+    from_backend
 }
 
 /// Bound a tool output to the preview size, never splitting a character. Returns the preview

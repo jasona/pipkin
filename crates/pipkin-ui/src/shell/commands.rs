@@ -52,6 +52,13 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(NewConversation)),
         ),
         cmd(
+            "Open project folder\u{2026}",
+            "Conversation",
+            Some("Ctrl+Shift+O"),
+            state.can_create,
+            Run::Action(Box::new(OpenProject)),
+        ),
+        cmd(
             "Rename conversation",
             "Conversation",
             Some("F2"),

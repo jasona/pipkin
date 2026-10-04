@@ -493,10 +493,14 @@ impl Worker {
                     }),
                 }
             }
+            // The demo creates conversations and chooses models locally in the core, so these
+            // are never sent to it.
+            BackendRequest::CreateConversation { .. } | BackendRequest::SetModel { .. } => {}
             BackendRequest::CheckStatus {
                 conversation,
                 generation,
                 op,
+                ..
             } => {
                 let known = self.seen_ops.contains(&(conversation, op));
                 if let Some(run) = self.find_run(conversation, op)

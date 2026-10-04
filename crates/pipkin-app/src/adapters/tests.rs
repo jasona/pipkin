@@ -66,7 +66,9 @@ impl Harness {
                 Effect::SaveDraft {
                     conversation, rev, ..
                 } => self.state.draft_saved(conversation, rev, Ok(())),
-                Effect::SavePrefs(_) | Effect::SaveConversation { .. } => {}
+                Effect::SavePrefs(_)
+                | Effect::SaveConversation { .. }
+                | Effect::SaveProject { .. } => {}
             }
         }
     }
@@ -661,6 +663,7 @@ fn a_repeated_submit_is_counted_and_not_treated_as_the_original() {
             conversation: ConversationId(8),
             generation: 1,
             op: OperationId(1),
+            request: None,
         }],
         |e| matches!(e.kind, EventKind::StatusResolved { .. }),
     );
@@ -677,6 +680,7 @@ fn a_repeated_submit_is_counted_and_not_treated_as_the_original() {
             conversation: ConversationId(8),
             generation: 1,
             op: OperationId(99),
+            request: None,
         }],
         |e| matches!(e.kind, EventKind::StatusResolved { .. }),
     );

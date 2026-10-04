@@ -15,6 +15,10 @@ pub enum Command {
     AddAttachments(Vec<Attachment>),
     RemoveAttachment(usize),
     SetModel(String),
+    /// Add a project folder (by absolute path) so conversations can be created in it.
+    AddProject(String),
+    /// Dismiss the application-level notice shown after a failed background action.
+    DismissNotice,
 
     Submit,
     Steer,
@@ -87,6 +91,21 @@ pub enum BackendRequest {
         conversation: ConversationId,
         generation: u64,
         op: OperationId,
+        /// The journaled key of the submission in doubt, for backends that can look it up.
+        request: Option<RequestId>,
+    },
+    /// Ask the backend to create a conversation whose agent works in `cwd`.
+    CreateConversation {
+        project: ProjectId,
+        cwd: String,
+        request: RequestId,
+    },
+    /// Ask the backend to use `model` for this conversation. The backend, not this request, is
+    /// authoritative: the selection changes only when it reports it.
+    SetModel {
+        conversation: ConversationId,
+        generation: u64,
+        model: String,
     },
 }
 
@@ -146,6 +165,8 @@ pub enum EventKind {
         ok: bool,
     },
     ChangesReported(Vec<FileChange>),
+    /// The workspace's current changes, independent of any run. Replaces what is shown.
+    ChangesSynced(Vec<FileChange>),
     Completed,
     Failed {
         message: String,
@@ -167,6 +188,10 @@ pub enum Effect {
     SavePrefs(Prefs),
     SaveConversation {
         conversation: ConversationId,
+    },
+    /// Remember a project folder the user opened.
+    SaveProject {
+        path: String,
     },
     /// Durably record a submission's immutable payload. The controller must report the commit
     /// with `AppState::intent_persisted`; until then nothing is sent and the draft is kept.

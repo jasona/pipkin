@@ -1,13 +1,17 @@
 //! Pi sessions as Pipkin conversations: stable local ids, titles, and the catalogue built from
-//! the replicated `pi.session-directory` state. Pi's session summaries carry only server id,
-//! session id and creation time today, so titles are derived and there is one placeholder
-//! project; real titles and working directories need the metadata contract on the Pi side.
+//! the replicated `pi.session-directory` state. A session's working directory (reported by
+//! current servers) is its project, so the project list is the set of directories the user's
+//! sessions run in. Titles are still derived (Pi has no session titles yet).
 
 use std::collections::{HashMap, HashSet};
 
-use pipkin_core::{Bootstrap, ConversationId, ModelInfo, Project, ProjectId};
+use pipkin_core::{
+    Bootstrap, ConversationId, ModelInfo, Project, ProjectId, project_id_for_path,
+    project_name_for_path, stable_id,
+};
 use serde_json::Value;
 
+/// The project of a session whose server does not report a working directory.
 pub const SESSIONS_PROJECT: ProjectId = ProjectId(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,16 +19,8 @@ pub struct Session {
     pub session_id: String,
     /// Unix seconds.
     pub created_at: i64,
-}
-
-/// FNV-1a over the session id, folded into 52 bits so it survives JSON and stays a stable key.
-fn hash(session_id: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in session_id.bytes() {
-        h ^= byte as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    (h & ((1 << 52) - 1)).max(1)
+    /// The directory the session's agent works in. Absent from servers that do not report it.
+    pub cwd: Option<String>,
 }
 
 /// Assign each session a stable `ConversationId` derived from its id. A collision (two live
@@ -49,7 +45,7 @@ pub fn assign_ids_with(
 }
 
 pub fn assign_ids(sessions: &[Session]) -> Vec<(ConversationId, Session)> {
-    assign_ids_with(sessions, hash)
+    assign_ids_with(sessions, stable_id)
 }
 
 /// Parse the directory state value, ignoring malformed rows rather than failing the catalogue.
@@ -68,9 +64,15 @@ pub fn parse_directory(state: &Value) -> Vec<Session> {
                     } else {
                         created
                     };
+                    let cwd = row
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .filter(|c| c.starts_with('/'))
+                        .map(str::to_owned);
                     Some(Session {
                         session_id: session_id.to_owned(),
                         created_at,
+                        cwd,
                     })
                 })
                 .collect()
@@ -105,36 +107,76 @@ pub fn title(session: &Session) -> String {
     format!("Session {short} \u{b7} {}", format_time(session.created_at))
 }
 
-/// The catalogue the core consumes. Sessions are listed newest first by recency.
+/// The project a session belongs to: its working directory, or a shared fallback for servers
+/// that do not report one.
+fn project_of(session: &Session) -> ProjectId {
+    session
+        .cwd
+        .as_deref()
+        .map_or(SESSIONS_PROJECT, project_id_for_path)
+}
+
+/// The catalogue the core consumes: one project per distinct working directory (plus the
+/// fallback when some session has none), conversations in the given order.
 pub fn catalog(
     sessions: &[(ConversationId, Session)],
     models: Vec<ModelInfo>,
     location: &str,
     now: i64,
 ) -> Bootstrap {
+    let mut projects: Vec<Project> = Vec::new();
+    for (_, session) in sessions {
+        let id = project_of(session);
+        if projects.iter().any(|p| p.id == id) {
+            continue;
+        }
+        projects.push(match &session.cwd {
+            Some(cwd) => Project {
+                id,
+                name: project_name_for_path(cwd),
+                path: cwd.clone(),
+            },
+            None => Project {
+                id,
+                name: "Pi sessions".into(),
+                path: location.into(),
+            },
+        });
+    }
+    projects.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
     Bootstrap {
-        projects: vec![Project {
-            id: SESSIONS_PROJECT,
-            name: "Pi sessions".into(),
-            path: location.into(),
-        }],
+        projects,
         models,
         conversations: sessions
             .iter()
-            .map(|(id, s)| (*id, SESSIONS_PROJECT, title(s), s.created_at))
+            .map(|(id, s)| (*id, project_of(s), title(s), s.created_at))
             .collect(),
         now,
     }
 }
 
-/// Map `pi.models` state. The configured model comes first so it is the default selection.
-pub fn parse_models(state: &Value) -> Vec<ModelInfo> {
-    let configured = state
+/// The model the engine reports as selected, as `provider/modelId`.
+pub fn selected_model(state: &Value) -> Option<String> {
+    let model = state
         .get("configuration")
         .and_then(|c| c.get("model"))
-        .filter(|m| m.is_object())
-        .and_then(|m| Some((m.get("provider")?.as_str()?, m.get("modelId")?.as_str()?)))
-        .map(|(p, m)| format!("{p}/{m}"));
+        .filter(|m| m.is_object())?;
+    Some(format!(
+        "{}/{}",
+        model.get("provider")?.as_str()?,
+        model.get("modelId")?.as_str()?
+    ))
+}
+
+/// Split a `provider/modelId` id at the first slash (model ids may themselves contain slashes).
+pub fn split_model_id(id: &str) -> Option<(&str, &str)> {
+    let (provider, model) = id.split_once('/')?;
+    (!provider.is_empty() && !model.is_empty()).then_some((provider, model))
+}
+
+/// Map `pi.models` state. The configured model comes first so it is the default selection.
+pub fn parse_models(state: &Value) -> Vec<ModelInfo> {
+    let configured = selected_model(state);
     let mut models: Vec<ModelInfo> = state
         .get("catalog")
         .and_then(|c| c.get("availableModels"))
@@ -171,12 +213,9 @@ pub fn parse_models(state: &Value) -> Vec<ModelInfo> {
     models
 }
 
-/// Reverse index from local conversation id to session id.
-pub fn index(sessions: &[(ConversationId, Session)]) -> HashMap<ConversationId, String> {
-    sessions
-        .iter()
-        .map(|(id, s)| (*id, s.session_id.clone()))
-        .collect()
+/// Reverse index from local conversation id to the session.
+pub fn index(sessions: &[(ConversationId, Session)]) -> HashMap<ConversationId, Session> {
+    sessions.iter().map(|(id, s)| (*id, s.clone())).collect()
 }
 
 #[cfg(test)]
@@ -189,6 +228,14 @@ mod tests {
         Session {
             session_id: id.into(),
             created_at: at,
+            cwd: None,
+        }
+    }
+
+    fn in_dir(id: &str, at: i64, cwd: &str) -> Session {
+        Session {
+            cwd: Some(cwd.into()),
+            ..s(id, at)
         }
     }
 
@@ -218,14 +265,22 @@ mod tests {
     #[test]
     fn parses_directory_rows_and_ignores_malformed_ones() {
         let state = json!({ "revision": 2, "sessions": [
-            { "serverId": "x", "sessionId": "one", "createdAt": 1_700_000_000_000i64 },
+            { "serverId": "x", "sessionId": "one", "createdAt": 1_700_000_000_000i64, "cwd": "/work/app" },
             { "sessionId": "two", "createdAt": 1_700_000_001 },
+            { "sessionId": "three", "createdAt": 5, "cwd": "relative/dir" },
             { "sessionId": "", "createdAt": 1 },
             { "createdAt": 1 },
             7,
         ]});
         let rows = parse_directory(&state);
-        assert_eq!(rows, vec![s("one", 1_700_000_000), s("two", 1_700_000_001)]);
+        assert_eq!(
+            rows,
+            vec![
+                in_dir("one", 1_700_000_000, "/work/app"),
+                s("two", 1_700_000_001),
+                s("three", 5), // a relative cwd is not trusted
+            ]
+        );
         assert!(parse_directory(&json!(null)).is_empty());
         assert!(parse_directory(&json!({ "sessions": "no" })).is_empty());
     }
@@ -239,23 +294,42 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_has_one_honest_project_and_derived_titles() {
+    fn sessions_group_into_projects_by_working_directory() {
+        let sessions = assign_ids(&[
+            in_dir("a1", 1, "/work/app"),
+            in_dir("a2", 2, "/work/app"),
+            in_dir("b1", 3, "/work/zeta"),
+        ]);
+        let boot = catalog(&sessions, vec![], "/home/u/.pi/server", 5);
+        let names: Vec<(&str, &str)> = boot
+            .projects
+            .iter()
+            .map(|p| (p.name.as_str(), p.path.as_str()))
+            .collect();
+        assert_eq!(names, [("app", "/work/app"), ("zeta", "/work/zeta")]);
+        let app = project_id_for_path("/work/app");
+        assert_eq!(boot.conversations.iter().filter(|c| c.1 == app).count(), 2);
+    }
+
+    #[test]
+    fn a_session_without_a_directory_goes_to_the_fallback_project() {
         let sessions = assign_ids(&[s("0123456789abcdef", 1_700_000_000)]);
         let boot = catalog(&sessions, vec![], "/home/u/.pi/server", 5);
         assert_eq!(boot.projects.len(), 1);
+        assert_eq!(boot.projects[0].id, SESSIONS_PROJECT);
         assert_eq!(boot.projects[0].path, "/home/u/.pi/server");
         assert_eq!(
             boot.conversations[0].2,
             "Session 01234567 \u{b7} 2023-11-14 22:13"
         );
         assert_eq!(
-            index(&sessions).get(&sessions[0].0).unwrap(),
+            index(&sessions).get(&sessions[0].0).unwrap().session_id,
             "0123456789abcdef"
         );
     }
 
     #[test]
-    fn models_put_the_configured_one_first() {
+    fn models_put_the_configured_one_first_and_the_selection_is_reported() {
         let state = json!({
             "catalog": { "revision": 1, "availableModels": [
                 { "provider": "anthropic", "modelId": "a", "name": "A", "reasoning": false },
@@ -270,10 +344,26 @@ mod tests {
             ["openai/b", "anthropic/a"]
         );
         assert!(models[0].note.contains("reasoning"));
+        assert_eq!(selected_model(&state).as_deref(), Some("openai/b"));
         assert!(parse_models(&json!({})).is_empty());
-        // A configured model absent from the catalogue changes nothing.
+        // No model configured: no selection to report.
+        let none = json!({ "configuration": { "model": null } });
+        assert_eq!(selected_model(&none), None);
+        // A configured model absent from the catalogue changes nothing about the order.
         let absent = json!({ "catalog": { "availableModels": [{ "provider": "p", "modelId": "m", "name": "M" }] },
             "configuration": { "model": { "provider": "q", "modelId": "z" } } });
         assert_eq!(parse_models(&absent).len(), 1);
+    }
+
+    #[test]
+    fn model_ids_split_at_the_first_slash() {
+        assert_eq!(split_model_id("openai/gpt"), Some(("openai", "gpt")));
+        assert_eq!(
+            split_model_id("openrouter/anthropic/claude"),
+            Some(("openrouter", "anthropic/claude"))
+        );
+        assert_eq!(split_model_id("noslash"), None);
+        assert_eq!(split_model_id("/x"), None);
+        assert_eq!(split_model_id("x/"), None);
     }
 }

@@ -157,6 +157,44 @@ impl Workspace {
                     })
                 })
         };
+        let (can_open_project, notice) = {
+            let s = self.state(cx);
+            (s.can_create, s.notice.clone())
+        };
+        let open_project_btn = can_open_project.then(|| {
+            let this = cx.entity();
+            Btn::new("open-project")
+                .icon("folder-open")
+                .label("Open project folder\u{2026}")
+                .kind(BtnKind::Subtle)
+                .on_click(move |_, cx| this.update(cx, |this, cx| this.open_project(cx)))
+        });
+        let notice_el = notice.map(|message| {
+            let this = cx.entity();
+            div()
+                .id("notice")
+                .role(Role::Alert)
+                .aria_label("Notice")
+                .flex()
+                .items_start()
+                .gap(px(6.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .bg(c.bg_active)
+                .text_size(t.small_size())
+                .text_color(c.danger)
+                .child(div().flex_1().min_w_0().child(message))
+                .child(
+                    Btn::new("dismiss-notice")
+                        .icon("x")
+                        .aria("Dismiss notice")
+                        .compact()
+                        .on_click(move |_, cx| {
+                            this.update(cx, |this, cx| this.dispatch(Command::DismissNotice, cx))
+                        }),
+                )
+        });
         let prefs_btn = {
             let this = cx.entity();
             Btn::new("open-prefs")
@@ -196,6 +234,8 @@ impl Workspace {
                     .gap(px(6.0))
                     .child(proj)
                     .child(new_btn)
+                    .children(open_project_btn)
+                    .children(notice_el)
                     .child(
                         div()
                             .flex()

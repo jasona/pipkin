@@ -815,3 +815,261 @@ fn a_read_only_build_offers_no_way_to_send() {
     s.read_only = None;
     assert!(s.availability().submit);
 }
+
+fn real_state() -> AppState {
+    let mut s = empty_state(Prefs::default());
+    s.mode = Mode::Real;
+    s.can_create = true;
+    s
+}
+
+#[test]
+fn project_ids_names_and_paths_are_derived_from_the_folder() {
+    assert_eq!(
+        project_id_for_path("/work/app"),
+        project_id_for_path("/work/app")
+    );
+    assert_ne!(
+        project_id_for_path("/work/app"),
+        project_id_for_path("/work/other")
+    );
+    assert_eq!(project_name_for_path("/work/app"), "app");
+    assert_eq!(project_name_for_path("/work/app/"), "app");
+    assert_eq!(project_name_for_path("/"), "/");
+}
+
+#[test]
+fn opening_a_project_adds_selects_and_remembers_it() {
+    let mut s = real_state();
+    let out = s.dispatch(Command::AddProject("/work/app/".into()));
+    assert!(
+        out.effects
+            .iter()
+            .any(|e| matches!(e, Effect::SaveProject { path } if path == "/work/app"))
+    );
+    assert_eq!(s.projects.len(), 1);
+    assert_eq!(s.projects[0].name, "app");
+    assert_eq!(s.current_project().unwrap().path, "/work/app");
+    // Adding it again changes nothing and saves nothing new.
+    let again = s.dispatch(Command::AddProject("/work/app".into()));
+    assert!(
+        !again
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SaveProject { .. }))
+    );
+    assert_eq!(s.projects.len(), 1);
+    // A relative path is refused with a visible notice.
+    s.dispatch(Command::AddProject("relative".into()));
+    assert!(s.notice.as_deref().unwrap().contains("absolute"));
+    s.dispatch(Command::DismissNotice);
+    assert!(s.notice.is_none());
+}
+
+#[test]
+fn bookmarked_projects_survive_the_backend_catalog() {
+    let mut s = real_state();
+    s.restore_project("/work/mine");
+    s.apply_catalog(Bootstrap {
+        projects: vec![Project {
+            id: ProjectId(5),
+            name: "theirs".into(),
+            path: "/work/theirs".into(),
+        }],
+        models: vec![],
+        conversations: vec![],
+        now: 1,
+    });
+    let names: Vec<&str> = s.projects.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["theirs", "mine"]);
+    // A catalog that already knows the folder does not duplicate it.
+    s.apply_catalog(Bootstrap {
+        projects: vec![Project {
+            id: project_id_for_path("/work/mine"),
+            name: "mine".into(),
+            path: "/work/mine".into(),
+        }],
+        models: vec![],
+        conversations: vec![],
+        now: 2,
+    });
+    assert_eq!(s.projects.len(), 1);
+}
+
+#[test]
+fn a_new_conversation_is_requested_from_the_backend_and_selected_when_it_arrives() {
+    let mut s = real_state();
+    s.dispatch(Command::AddProject("/work/app".into()));
+    assert!(s.availability().new_conversation);
+    let out = s.dispatch(Command::NewConversation);
+    let request = out.effects.iter().find_map(|e| match e {
+        Effect::Backend(BackendRequest::CreateConversation {
+            cwd,
+            project,
+            request,
+        }) => {
+            assert_eq!(cwd, "/work/app");
+            assert_eq!(*project, project_id_for_path("/work/app"));
+            Some(request.clone())
+        }
+        _ => None,
+    });
+    assert!(request.is_some());
+    // While it is pending, another request is not offered (no duplicate creation).
+    assert!(!s.availability().new_conversation);
+    assert!(s.dispatch(Command::NewConversation).effects.is_empty());
+
+    // The backend's catalog brings the new session: it becomes the selection.
+    let project = project_id_for_path("/work/app");
+    let out = s.apply_catalog(Bootstrap {
+        projects: vec![],
+        models: vec![],
+        conversations: vec![
+            (ConversationId(10), project, "old".into(), 5),
+            (ConversationId(11), project, "new".into(), 9),
+        ],
+        now: 10,
+    });
+    assert_eq!(s.selected, Some(ConversationId(11)));
+    assert!(out.effects.iter().any(|e| matches!(e, Effect::Backend(BackendRequest::Open { conversation, .. }) if *conversation == ConversationId(11))));
+    assert!(
+        s.availability().new_conversation,
+        "creation is available again"
+    );
+}
+
+#[test]
+fn a_failed_creation_shows_a_notice_and_allows_trying_again() {
+    let mut s = real_state();
+    s.dispatch(Command::AddProject("/work/app".into()));
+    s.dispatch(Command::NewConversation);
+    assert!(!s.availability().new_conversation);
+    s.set_notice("Session cwd is not an existing directory: /work/app".into());
+    assert!(
+        s.notice
+            .as_deref()
+            .unwrap()
+            .contains("not an existing directory")
+    );
+    assert!(s.availability().new_conversation);
+}
+
+#[test]
+fn creation_needs_the_backend_to_support_it() {
+    let mut s = real_state();
+    s.can_create = false;
+    s.dispatch(Command::AddProject("/work/app".into()));
+    assert!(!s.availability().new_conversation);
+    assert!(s.dispatch(Command::NewConversation).effects.is_empty());
+}
+
+#[test]
+fn in_real_mode_the_engine_decides_the_model() {
+    let mut s = real_state();
+    s.dispatch(Command::AddProject("/work/app".into()));
+    let project = project_id_for_path("/work/app");
+    s.apply_catalog(Bootstrap {
+        projects: vec![],
+        models: vec![
+            ModelInfo {
+                id: "stub/a".into(),
+                name: "A".into(),
+                note: String::new(),
+            },
+            ModelInfo {
+                id: "stub/b".into(),
+                name: "B".into(),
+                note: String::new(),
+            },
+        ],
+        conversations: vec![(ConversationId(1), project, "c".into(), 1)],
+        now: 1,
+    });
+    s.dispatch(Command::SelectConversation(ConversationId(1)));
+    // Not opened yet: nothing to ask.
+    assert!(
+        s.dispatch(Command::SetModel("stub/b".into()))
+            .effects
+            .is_empty()
+    );
+    let c = s.current().unwrap();
+    s.apply_event(BackendEvent {
+        conversation: ConversationId(1),
+        generation: c.generation,
+        op: None,
+        kind: EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    });
+    let out = s.dispatch(Command::SetModel("stub/b".into()));
+    assert!(out.effects.iter().any(|e| matches!(e, Effect::Backend(BackendRequest::SetModel { model, .. }) if model == "stub/b")));
+    // The request alone changes nothing; the engine's report does.
+    assert_ne!(s.prefs.model.as_deref(), Some("stub/b"));
+    s.set_engine_model(Some("stub/b".into()));
+    assert_eq!(s.prefs.model.as_deref(), Some("stub/b"));
+    // An unknown model is not even requested.
+    assert!(
+        s.dispatch(Command::SetModel("nope".into()))
+            .effects
+            .is_empty()
+    );
+    // A report of "no model" does not erase a known selection.
+    s.set_engine_model(None);
+    assert_eq!(s.prefs.model.as_deref(), Some("stub/b"));
+}
+
+#[test]
+fn workspace_changes_sync_independently_of_any_run() {
+    let mut s = state();
+    let c = s.current().unwrap();
+    let (conv, generation) = (c.id, c.generation);
+    let ev = |kind| BackendEvent {
+        conversation: conv,
+        generation,
+        op: None,
+        kind,
+    };
+    let change = |path: &str| FileChange {
+        path: path.into(),
+        added: 1,
+        removed: 0,
+        hunks: vec![],
+    };
+    // Ignored until the conversation is open.
+    s.apply_event(ev(EventKind::ChangesSynced(vec![change("early.rs")])));
+    assert!(s.current().unwrap().changes.is_empty());
+    s.apply_event(ev(EventKind::Opened {
+        items: vec![],
+        has_older: false,
+        changes: vec![],
+    }));
+    s.apply_event(ev(EventKind::ChangesSynced(vec![
+        change("a.rs"),
+        change("b.rs"),
+    ])));
+    assert_eq!(s.current().unwrap().changes.len(), 2);
+    assert_eq!(s.current().unwrap().selected_change, Some(0));
+    s.apply_event(ev(EventKind::ChangesSynced(vec![])));
+    assert!(s.current().unwrap().changes.is_empty());
+    assert_eq!(s.current().unwrap().selected_change, None);
+}
+
+#[test]
+fn check_status_carries_the_journaled_request_key() {
+    let mut s = state();
+    s.dispatch(Command::EditDraft("risky".into()));
+    let out = send(&mut s, Command::Submit);
+    let request = out.effects.iter().find_map(|e| match e {
+        Effect::Backend(BackendRequest::Submit { request, .. }) => Some(request.clone()),
+        _ => None,
+    });
+    let lost = ev(&s, EventKind::AckLost);
+    s.apply_event(lost);
+    let out = s.dispatch(Command::CheckStatus);
+    assert!(out.effects.iter().any(|e| matches!(
+        e,
+        Effect::Backend(BackendRequest::CheckStatus { request: r, .. }) if *r == request
+    )));
+}

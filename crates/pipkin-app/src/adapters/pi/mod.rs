@@ -1,18 +1,26 @@
 //! The Pi engine adapter: maps Pi's replicated services onto Pipkin's core.
 //!
-//! One worker thread owns the connection. It discovers a trusted local server, mirrors the
-//! session directory into the catalogue, and opens a conversation by attaching its session and
-//! subscribing to its `Transcript` and `Models` services. Every update is checked against the
-//! live subscription, so traffic from an attachment the user has moved away from cannot reach
-//! the screen. This slice is read-only: prompts are refused honestly, never simulated.
+//! One worker thread owns the connection. It discovers a trusted local server (or launches and
+//! owns one), mirrors the session directory into the catalogue, and opens a conversation by
+//! attaching its session and subscribing to its `Transcript` and `Models` services. Every update
+//! is checked against the live subscription, so traffic from an attachment the user has moved
+//! away from cannot reach the screen.
+//!
+//! Prompts go through `AgentController` with the submission's journaled request key, so the
+//! engine deduplicates and a lost acknowledgment can be resolved by asking it. A run's
+//! settlement is observed by short `lookup` polls, never by a long-lived call: Pi releases an
+//! attachment only after its in-flight calls finish, so a call that waited for the whole run
+//! would block switching sessions.
 //!
 //! The adapter never replays a request after a disconnect. It reconnects, resubscribes and
 //! refreshes what is shown; anything that mutates stays the user's explicit decision.
 
+pub mod engine;
 pub mod session;
 pub mod transcript;
+pub mod workspace;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
@@ -26,14 +34,19 @@ use pi_client::protocol::RpcTarget;
 use pi_client::unix::{self, ServerRoute};
 use pipkin_core::{
     Backend, BackendEvent, BackendRequest, Connection, ConversationId, EventKind, LifecycleEvent,
-    LifecycleSink, ModelInfo,
+    LifecycleSink, ModelInfo, OperationId, RequestId,
 };
 use serde_json::{Value, json};
 
+use self::engine::{EngineConfig, EngineHost};
 use self::session::Session;
+use self::workspace::Workspace;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often a conversation with a run in flight is polled for its outcome, as a fallback to
+/// the transcript updates that normally trigger the check first.
+const RUN_POLL: Duration = Duration::from_millis(400);
 /// Messages handled per wakeup before remapping, so a burst becomes one refresh.
 const BATCH: usize = 256;
 /// Waits before each retry of an attach that failed with `internal_error`; at most this many
@@ -46,6 +59,9 @@ const ATTACH_RETRY_DELAYS: [Duration; 4] = [
 ];
 /// A subscription that keeps failing is not worth patching; resync through a reconnect.
 const MAX_RESUBSCRIBES: u32 = 3;
+/// How long shutdown waits for the worker, and, when it owns the engine, for the engine to stop.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+const SHUTDOWN_WAIT_OWNED_ENGINE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub struct PiConfig {
@@ -55,6 +71,8 @@ pub struct PiConfig {
     pub server_id: Option<String>,
     /// Delay between connection attempts while no server is reachable.
     pub retry_delay: Duration,
+    /// Launch and own an engine instead of expecting one to be running.
+    pub engine: Option<EngineConfig>,
 }
 
 impl PiConfig {
@@ -63,6 +81,17 @@ impl PiConfig {
             directory,
             server_id: None,
             retry_delay: Duration::from_secs(3),
+            engine: None,
+        }
+    }
+
+    /// Own the engine described by `engine`: connect to exactly that profile and server.
+    pub fn managed(engine: EngineConfig) -> Self {
+        PiConfig {
+            directory: engine.server_dir.clone(),
+            server_id: Some(engine.server_id.clone()),
+            retry_delay: Duration::from_secs(3),
+            engine: Some(engine),
         }
     }
 }
@@ -81,6 +110,12 @@ pub fn default_directory() -> PathBuf {
 enum Msg {
     Request(BackendRequest),
     Client(ClientEvent),
+    /// A workspace scan finished on its own thread.
+    Changes {
+        conversation: ConversationId,
+        generation: u64,
+        workspace: Workspace,
+    },
     Shutdown,
 }
 
@@ -115,6 +150,7 @@ impl Backend for PiBackend {
             return; // already started
         };
         let worker = Worker {
+            engine: self.config.engine.clone().map(EngineHost::new),
             config: self.config.clone(),
             events: self.events.clone(),
             sink,
@@ -122,6 +158,8 @@ impl Backend for PiBackend {
             rx,
             last_open: None,
             ever_connected: false,
+            runs: HashMap::new(),
+            cancelling: HashSet::new(),
         };
         let handle = thread::Builder::new()
             .name("pi-backend".into())
@@ -137,7 +175,14 @@ impl Backend for PiBackend {
     fn shutdown(&self) {
         let _ = self.tx.send(Msg::Shutdown);
         if let Some(handle) = lock(&self.worker).take() {
-            let deadline = Instant::now() + Duration::from_secs(2);
+            // An engine this adapter owns must be stopped before the process exits, or it would
+            // be orphaned; give that longer than a plain disconnect.
+            let wait = if self.config.engine.is_some() {
+                SHUTDOWN_WAIT_OWNED_ENGINE
+            } else {
+                SHUTDOWN_WAIT
+            };
+            let deadline = Instant::now() + wait;
             while !handle.is_finished() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -146,8 +191,17 @@ impl Backend for PiBackend {
     }
 }
 
+/// A prompt the engine accepted whose outcome has not been seen yet.
+#[derive(Clone, Debug)]
+struct Run {
+    conversation: ConversationId,
+    generation: u64,
+    request: RequestId,
+}
+
 struct Worker {
     config: PiConfig,
+    engine: Option<EngineHost>,
     events: async_channel::Sender<BackendEvent>,
     sink: LifecycleSink,
     tx: Sender<Msg>,
@@ -155,6 +209,11 @@ struct Worker {
     /// The conversation most recently opened, refreshed after a reconnect.
     last_open: Option<(ConversationId, u64)>,
     ever_connected: bool,
+    /// Accepted prompts awaiting an outcome. Kept across reconnects: they are reconciled by
+    /// asking the engine, never by resending.
+    runs: HashMap<OperationId, Run>,
+    /// Runs the user asked to stop, so their `aborted` outcome reads as a stop, not a failure.
+    cancelling: HashSet<OperationId>,
 }
 
 enum Outcome {
@@ -166,13 +225,17 @@ impl Worker {
     fn run(mut self) {
         loop {
             match self.connect_and_serve() {
-                Outcome::Shutdown => return,
+                Outcome::Shutdown => break,
                 Outcome::Retry => {
                     if self.wait_to_retry() {
-                        return;
+                        break;
                     }
                 }
             }
+        }
+        // Stop only what this adapter started.
+        if let Some(engine) = self.engine.as_mut() {
+            engine.stop();
         }
     }
 
@@ -186,11 +249,30 @@ impl Worker {
         (self.sink)(LifecycleEvent::Connection(connection));
     }
 
+    fn notice(&self, message: String) {
+        (self.sink)(LifecycleEvent::Notice(message));
+    }
+
     fn emit(&self, conversation: ConversationId, generation: u64, kind: EventKind) {
         let _ = self.events.send_blocking(BackendEvent {
             conversation,
             generation,
             op: None,
+            kind,
+        });
+    }
+
+    fn emit_op(
+        &self,
+        conversation: ConversationId,
+        generation: u64,
+        op: OperationId,
+        kind: EventKind,
+    ) {
+        let _ = self.events.send_blocking(BackendEvent {
+            conversation,
+            generation,
+            op: Some(op),
             kind,
         });
     }
@@ -205,12 +287,13 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Timeout) => return false,
                 Err(mpsc::RecvTimeoutError::Disconnected) | Ok(Msg::Shutdown) => return true,
                 Ok(Msg::Request(request)) => self.refuse_offline(request),
-                Ok(Msg::Client(_)) => {} // from a connection that is already gone
+                Ok(Msg::Client(_)) | Ok(Msg::Changes { .. }) => {} // from a connection that is gone
             }
         }
     }
 
     fn refuse_offline(&self, request: BackendRequest) {
+        const OFFLINE: &str = "Not connected to the Pi engine.";
         match request {
             BackendRequest::Open {
                 conversation,
@@ -219,46 +302,43 @@ impl Worker {
                 conversation,
                 generation,
                 EventKind::OpenFailed {
-                    message: "Not connected to the Pi engine.".into(),
+                    message: OFFLINE.into(),
                 },
             ),
-            other => self.refuse_unsupported(other, "Not connected to the Pi engine."),
-        }
-    }
-
-    /// Answer a mutating request truthfully instead of leaving it to hang or pretending.
-    fn refuse_unsupported(&self, request: BackendRequest, reason: &str) {
-        match request {
+            // Nothing was sent, so this is a definite refusal, never an unknown outcome.
             BackendRequest::Submit {
                 conversation,
                 generation,
                 op,
                 ..
-            } => {
-                let _ = self.events.send_blocking(BackendEvent {
-                    conversation,
-                    generation,
-                    op: Some(op),
-                    kind: EventKind::Rejected {
-                        reason: reason.into(),
-                    },
-                });
-            }
+            } => self.emit_op(
+                conversation,
+                generation,
+                op,
+                EventKind::Rejected {
+                    reason: OFFLINE.into(),
+                },
+            ),
             BackendRequest::LoadOlder {
                 conversation,
                 generation,
                 ..
-            } => {
-                self.emit(
-                    conversation,
-                    generation,
-                    EventKind::OlderPage {
-                        items: vec![],
-                        has_older: false,
-                    },
-                );
+            } => self.emit(
+                conversation,
+                generation,
+                EventKind::OlderPage {
+                    items: vec![],
+                    has_older: false,
+                },
+            ),
+            BackendRequest::CreateConversation { .. } | BackendRequest::SetModel { .. } => {
+                self.notice(OFFLINE.into())
             }
-            other => log::warn!("not supported by the Pi adapter yet: {other:?}"),
+            // Cancelling and checking a status need the engine; the user can try again.
+            BackendRequest::Cancel { .. } | BackendRequest::CheckStatus { .. } => {
+                self.notice(OFFLINE.into())
+            }
+            other => log::warn!("not supported while offline: {other:?}"),
         }
     }
 
@@ -308,6 +388,13 @@ impl Worker {
         } else {
             Connection::Connecting
         });
+        // An engine we own is started (or restarted, within a cap) before connecting.
+        if let Some(engine) = self.engine.as_mut()
+            && let Err(error) = engine.ensure_running()
+        {
+            self.report(Connection::Failed(error.to_string()));
+            return Outcome::Retry;
+        }
         let route = match self.resolve() {
             Ok(route) => route,
             Err(connection) => {
@@ -357,16 +444,24 @@ impl Worker {
     }
 
     fn serve(&mut self, live: &mut Live) -> Outcome {
-        let mut deferred: VecDeque<Msg> = VecDeque::new();
         loop {
-            let first = match deferred.pop_front() {
-                Some(m) => m,
-                None => match self.rx.recv() {
-                    Ok(m) => m,
+            // While a run is in flight in the open conversation, wake regularly to ask how it
+            // went; otherwise sleep until something happens.
+            let polling = live.has_runs(self);
+            let first = if polling {
+                match self.rx.recv_timeout(RUN_POLL) {
+                    Ok(m) => Some(m),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return Outcome::Shutdown,
+                }
+            } else {
+                match self.rx.recv() {
+                    Ok(m) => Some(m),
                     Err(_) => return Outcome::Shutdown,
-                },
+                }
             };
-            let mut batch = vec![first];
+            let mut batch = Vec::new();
+            batch.extend(first);
             while batch.len() < BATCH {
                 match self.rx.try_recv() {
                     Ok(m) => batch.push(m),
@@ -390,9 +485,17 @@ impl Worker {
                             return outcome;
                         }
                     }
+                    Msg::Changes {
+                        conversation,
+                        generation,
+                        workspace,
+                    } => live.changes_ready(self, conversation, generation, workspace),
                 }
             }
             live.flush(self, dirty);
+            // Settlement is checked after every wakeup that could have changed it: a transcript
+            // update, or the poll timer.
+            live.poll_runs(self);
         }
     }
 }
@@ -407,8 +510,14 @@ struct Dirty {
 struct Current {
     conversation: ConversationId,
     generation: u64,
+    target: RpcTarget,
     transcript: Subscription,
     models: Option<Subscription>,
+    /// The session's working directory, for workspace changes.
+    cwd: Option<String>,
+    /// What the last transcript showed, to notice when tools finish or a run ends.
+    tools_done: usize,
+    busy: bool,
 }
 
 struct Live {
@@ -416,15 +525,66 @@ struct Live {
     location: String,
     dir: Subscription,
     sessions: Vec<(ConversationId, Session)>,
-    index: HashMap<ConversationId, String>,
+    index: HashMap<ConversationId, Session>,
     models: Vec<ModelInfo>,
     current: Option<Current>,
     resubscribes: u32,
+    /// A workspace scan is running; another is wanted once it ends.
+    scanning: bool,
+    rescan: bool,
 }
 
 fn server_target(route: &ServerRoute) -> RpcTarget {
     RpcTarget::Server {
         server_id: route.server_id.clone(),
+    }
+}
+
+/// A completed engine outcome for a submission, as the core should see it.
+fn outcome_event(reason: Option<&str>, detail: Option<&str>, cancelled: bool) -> EventKind {
+    match reason {
+        None => EventKind::Completed,
+        Some("aborted") => EventKind::Cancelled,
+        Some(_) if cancelled => EventKind::Cancelled,
+        Some("model_error") => EventKind::Failed {
+            message: detail
+                .filter(|d| !d.is_empty())
+                .map_or_else(|| "The model returned an error.".to_owned(), str::to_owned),
+        },
+        Some("no_model") => EventKind::Failed {
+            message: "No model is selected for this session. Choose one and send again.".into(),
+        },
+        Some("stale") => EventKind::Failed {
+            message: "The message was superseded and never answered.".into(),
+        },
+        Some(other) => EventKind::Failed {
+            message: format!("The run ended without an answer ({other})."),
+        },
+    }
+}
+
+/// What `AgentController.lookup` said about a request key.
+enum Lookup {
+    Unknown,
+    Known {
+        /// Running or queued.
+        open: bool,
+        reason: Option<String>,
+        detail: Option<String>,
+    },
+}
+
+fn parse_lookup(value: &Value) -> Option<Lookup> {
+    if value.get("found")?.as_bool()? {
+        let status = value.get("status")?.as_str()?;
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        Some(Lookup::Known {
+            open: matches!(status, "queued" | "placed"),
+            reason: text("reason"),
+            detail: text("detail"),
+        })
+    } else {
+        Some(Lookup::Unknown)
     }
 }
 
@@ -466,6 +626,8 @@ impl Live {
             models: Vec::new(),
             current: None,
             resubscribes: 0,
+            scanning: false,
+            rescan: false,
         };
         live.refresh_directory();
         Ok(live)
@@ -490,37 +652,395 @@ impl Live {
         )
     }
 
+    /// One short call to the open session's `AgentController` (or `Models`) service.
+    fn call(
+        &self,
+        target: &RpcTarget,
+        service: &str,
+        member: &str,
+        args: Vec<Value>,
+    ) -> Result<Option<Value>, Error> {
+        let pending = self
+            .client
+            .request(target, &ServiceCall::new(service, member, args))?;
+        match pending.wait_timeout(CALL_TIMEOUT) {
+            Err(Error::Timeout) => {
+                pending.cancel();
+                Err(Error::Timeout)
+            }
+            other => other,
+        }
+    }
+
     fn handle_request(&mut self, worker: &mut Worker, request: BackendRequest) {
         match request {
-            BackendRequest::Open { conversation, generation } => {
+            BackendRequest::Open {
+                conversation,
+                generation,
+            } => {
                 worker.last_open = Some((conversation, generation));
                 self.open(worker, conversation, generation, true);
             }
-            other => worker.refuse_unsupported(
-                other,
-                "Sending prompts is not available yet: this build can read Pi sessions but not run them.",
+            BackendRequest::Submit {
+                conversation,
+                generation,
+                op,
+                request,
+                text,
+                attachments,
+                ..
+            } => self.submit(
+                worker,
+                conversation,
+                generation,
+                op,
+                request,
+                text,
+                !attachments.is_empty(),
             ),
+            BackendRequest::Cancel {
+                conversation, op, ..
+            } => self.cancel(worker, conversation, op),
+            BackendRequest::CheckStatus {
+                conversation,
+                generation,
+                op,
+                request,
+            } => self.check_status(worker, conversation, generation, op, request),
+            BackendRequest::SetModel {
+                conversation,
+                model,
+                ..
+            } => self.set_model(worker, conversation, &model),
+            BackendRequest::CreateConversation { cwd, request, .. } => {
+                self.create_conversation(worker, &cwd, &request)
+            }
+            BackendRequest::LoadOlder {
+                conversation,
+                generation,
+                ..
+            } => worker.emit(
+                conversation,
+                generation,
+                EventKind::OlderPage {
+                    items: vec![],
+                    has_older: false,
+                },
+            ),
+            // Steering is not wired yet; say so on the run instead of dropping it silently.
+            BackendRequest::Steer { .. } => {
+                worker.notice("Steering a running prompt is not available yet.".into())
+            }
+        }
+    }
+
+    /// The open conversation's target, if `conversation` is the one attached.
+    fn target_for(&self, conversation: ConversationId) -> Option<RpcTarget> {
+        self.current
+            .as_ref()
+            .filter(|c| c.conversation == conversation)
+            .map(|c| c.target.clone())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        op: OperationId,
+        request: RequestId,
+        text: String,
+        has_attachments: bool,
+    ) {
+        let reject = |reason: &str| {
+            worker.emit_op(
+                conversation,
+                generation,
+                op,
+                EventKind::Rejected {
+                    reason: reason.into(),
+                },
+            )
+        };
+        // Everything below sends nothing, so each is a definite refusal.
+        if has_attachments {
+            return reject("Attachments are not supported yet.");
+        }
+        let Some(target) = self.target_for(conversation) else {
+            return reject("The session is not open on the Pi server.");
+        };
+        let call = ServiceCall::new(
+            "pi.agent-controller",
+            "prompt",
+            vec![json!({ "message": text, "images": null, "requestId": request.0 })],
+        );
+        let pending = match self.client.request(&target, &call) {
+            Ok(p) => p,
+            // The call never left: a definite refusal.
+            Err(error) => return reject(&format!("Could not send the message: {error}")),
+        };
+        let ack_lost = |worker: &Worker| {
+            worker.emit_op(conversation, generation, op, EventKind::AckLost);
+        };
+        match pending.wait_timeout(CALL_TIMEOUT) {
+            Ok(Some(reply)) => match reply.get("accepted").and_then(Value::as_bool) {
+                Some(true) => {
+                    worker.runs.insert(
+                        op,
+                        Run {
+                            conversation,
+                            generation,
+                            request,
+                        },
+                    );
+                    worker.emit_op(conversation, generation, op, EventKind::Accepted);
+                    self.schedule_changes(worker);
+                }
+                Some(false) => {
+                    let reason = reply["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Pi did not accept the message.");
+                    reject(reason);
+                }
+                // An answer we cannot read: it may have been accepted.
+                None => ack_lost(worker),
+            },
+            // An internal error may come after the engine admitted the input: unknown.
+            Err(Error::Server { code, .. }) if code == "internal_error" => ack_lost(worker),
+            // The engine answered with a definite refusal (not attached, unknown service, ...).
+            Err(Error::Server { message, .. }) => reject(&message),
+            Err(Error::Timeout) => {
+                pending.cancel();
+                ack_lost(worker);
+            }
+            // Connection loss or anything else after sending: the outcome is unknown.
+            Err(_) | Ok(None) => ack_lost(worker),
+        }
+    }
+
+    fn cancel(&mut self, worker: &mut Worker, conversation: ConversationId, op: OperationId) {
+        let Some(target) = self.target_for(conversation) else {
+            return worker.notice("The session is not open, so the run cannot be stopped.".into());
+        };
+        worker.cancelling.insert(op);
+        if let Err(error) = self.call(&target, "pi.agent-controller", "abort", vec![]) {
+            // Stay in "stopping" until the engine settles it, but tell the user.
+            worker.notice(format!("Could not ask Pi to stop: {error}"));
+        }
+    }
+
+    fn check_status(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        op: OperationId,
+        request: Option<RequestId>,
+    ) {
+        let Some(request) = request else {
+            return worker.notice("There is no record of this message to check.".into());
+        };
+        let Some(target) = self.target_for(conversation) else {
+            return worker.notice("Open the conversation first, then check again.".into());
+        };
+        let answer = self
+            .call(
+                &target,
+                "pi.agent-controller",
+                "lookup",
+                vec![json!(request.0)],
+            )
+            .map(|v| v.as_ref().and_then(parse_lookup));
+        match answer {
+            Ok(Some(Lookup::Unknown)) => {
+                // The engine has no submission under this key, so it never admitted it.
+                worker.emit_op(
+                    conversation,
+                    generation,
+                    op,
+                    EventKind::StatusResolved { accepted: false },
+                );
+            }
+            Ok(Some(Lookup::Known {
+                open,
+                reason,
+                detail,
+            })) => {
+                worker.emit_op(
+                    conversation,
+                    generation,
+                    op,
+                    EventKind::StatusResolved { accepted: true },
+                );
+                if open {
+                    worker.runs.insert(
+                        op,
+                        Run {
+                            conversation,
+                            generation,
+                            request,
+                        },
+                    );
+                } else {
+                    let kind = outcome_event(reason.as_deref(), detail.as_deref(), false);
+                    worker.emit_op(conversation, generation, op, kind);
+                    self.schedule_changes(worker);
+                }
+            }
+            Ok(None) | Err(_) => {
+                worker.notice("Could not check with Pi; try again in a moment.".into())
+            }
+        }
+    }
+
+    /// Ask the engine how each in-flight prompt of the open conversation went.
+    fn poll_runs(&mut self, worker: &mut Worker) {
+        let Some(current) = &self.current else { return };
+        let (conversation, target) = (current.conversation, current.target.clone());
+        let ops: Vec<(OperationId, Run)> = worker
+            .runs
+            .iter()
+            .filter(|(_, r)| r.conversation == conversation)
+            .map(|(op, r)| (*op, r.clone()))
+            .collect();
+        for (op, run) in ops {
+            let answer = self
+                .call(
+                    &target,
+                    "pi.agent-controller",
+                    "lookup",
+                    vec![json!(run.request.0)],
+                )
+                .map(|v| v.as_ref().and_then(parse_lookup));
+            let event = match answer {
+                // Still running, or we could not ask: look again next time.
+                Ok(Some(Lookup::Known { open: true, .. })) | Err(_) | Ok(None) => continue,
+                Ok(Some(Lookup::Known { reason, detail, .. })) => outcome_event(
+                    reason.as_deref(),
+                    detail.as_deref(),
+                    worker.cancelling.contains(&op),
+                ),
+                Ok(Some(Lookup::Unknown)) => EventKind::Failed {
+                    message: "The Pi engine no longer has a record of this run.".into(),
+                },
+            };
+            worker.runs.remove(&op);
+            worker.cancelling.remove(&op);
+            worker.emit_op(run.conversation, run.generation, op, event);
+            self.schedule_changes(worker);
+        }
+    }
+
+    fn has_runs(&self, worker: &Worker) -> bool {
+        self.current.as_ref().is_some_and(|c| {
+            worker
+                .runs
+                .values()
+                .any(|r| r.conversation == c.conversation)
+        })
+    }
+
+    fn set_model(&mut self, worker: &mut Worker, conversation: ConversationId, model: &str) {
+        let Some(target) = self.target_for(conversation) else {
+            return worker.notice("Open the conversation first, then choose a model.".into());
+        };
+        let Some((provider, model_id)) = session::split_model_id(model) else {
+            return worker.notice(format!("Unrecognized model id: {model}"));
+        };
+        let args = vec![json!({ "provider": provider, "modelId": model_id })];
+        // The selection changes only when the engine's replicated state says so.
+        if let Err(error) = self.call(&target, "pi.models", "select", args) {
+            worker.notice(format!("Could not switch the model: {error}"));
+        }
+    }
+
+    fn create_conversation(&mut self, worker: &mut Worker, cwd: &str, request: &RequestId) {
+        // The request key doubles as the session id, so repeating a lost creation is harmless:
+        // Pi refuses a duplicate id and that refusal is treated as success.
+        let args = vec![json!({ "id": request.0, "cwd": cwd })];
+        match self.call(&self.server(), "pi.session-management", "create", args) {
+            Ok(_) => {}
+            Err(Error::Server { message, .. }) if message.contains("already exists") => {}
+            Err(error) => worker.notice(format!("Could not create the conversation: {error}")),
+        }
+    }
+
+    /// Scan the open session's working directory for changes, off this thread, one scan at a
+    /// time (a request during a scan asks for one more afterwards).
+    fn schedule_changes(&mut self, worker: &Worker) {
+        let Some(current) = &self.current else { return };
+        let Some(cwd) = current.cwd.clone() else {
+            return;
+        };
+        if self.scanning {
+            self.rescan = true;
+            return;
+        }
+        self.scanning = true;
+        let (conversation, generation) = (current.conversation, current.generation);
+        let tx = worker.tx.clone();
+        thread::spawn(move || {
+            let workspace = workspace::collect(Path::new(&cwd));
+            let _ = tx.send(Msg::Changes {
+                conversation,
+                generation,
+                workspace,
+            });
+        });
+    }
+
+    fn changes_ready(
+        &mut self,
+        worker: &Worker,
+        conversation: ConversationId,
+        generation: u64,
+        workspace: Workspace,
+    ) {
+        self.scanning = false;
+        // Only the conversation that is still open may show the result.
+        let still_open = self
+            .current
+            .as_ref()
+            .is_some_and(|c| c.conversation == conversation && c.generation == generation);
+        if still_open {
+            let files = match workspace {
+                Workspace::Changes { files, .. } => files,
+                Workspace::NotARepository => vec![],
+                Workspace::Unavailable(reason) => {
+                    log::warn!("workspace changes unavailable: {reason}");
+                    vec![]
+                }
+            };
+            worker.emit(conversation, generation, EventKind::ChangesSynced(files));
+        }
+        if std::mem::take(&mut self.rescan) {
+            self.schedule_changes(worker);
         }
     }
 
     /// Attach a session, subscribe to its services and show its state.
     fn open(
         &mut self,
-        worker: &Worker,
+        worker: &mut Worker,
         conversation: ConversationId,
         generation: u64,
         initial: bool,
     ) {
-        let fail = |message: String| {
+        let fail = |worker: &Worker, message: String| {
             if initial {
                 worker.emit(conversation, generation, EventKind::OpenFailed { message });
             } else {
                 log::warn!("could not refresh {conversation:?} after reconnecting: {message}");
             }
         };
-        let Some(session_id) = self.index.get(&conversation).cloned() else {
-            return fail("This session no longer exists on the Pi server.".into());
+        let Some(session) = self.index.get(&conversation).cloned() else {
+            return fail(
+                worker,
+                "This session no longer exists on the Pi server.".into(),
+            );
         };
+        let session_id = session.session_id.clone();
         // Drop the previous attachment's subscriptions first; the client retires them anyway.
         self.current = None;
         let attach = ServiceCall::new("pi.session-management", "attach", vec![json!(session_id)]);
@@ -546,7 +1066,9 @@ impl Live {
                     thread::sleep(ATTACH_RETRY_DELAYS[attempt]);
                     attempt += 1;
                 }
-                Err(error) => return fail(format!("Could not attach the session: {error}")),
+                Err(error) => {
+                    return fail(worker, format!("Could not attach the session: {error}"));
+                }
             }
         }
         // The route arrives out of band, before or after the response.
@@ -558,7 +1080,10 @@ impl Live {
                 break a.rpc();
             }
             if Instant::now() >= deadline {
-                return fail("The Pi server did not publish the session attachment.".into());
+                return fail(
+                    worker,
+                    "The Pi server did not publish the session attachment.".into(),
+                );
             }
             thread::sleep(Duration::from_millis(10));
         };
@@ -568,16 +1093,19 @@ impl Live {
                 .subscribe(&target, "pi.transcript", Mode::Singleton, CALL_TIMEOUT)
             {
                 Ok(sub) => sub,
-                Err(error) => return fail(format!("Could not read the session: {error}")),
+                Err(error) => {
+                    return fail(worker, format!("Could not read the session: {error}"));
+                }
             };
         let models = self
             .client
             .subscribe(&target, "pi.models", Mode::Singleton, CALL_TIMEOUT)
             .ok();
         let Some(view) = transcript.read(|r| r.state("state").cloned()).flatten() else {
-            return fail("The session has no transcript.".into());
+            return fail(worker, "The session has no transcript.".into());
         };
         let mapped = transcript::map_view(&view);
+        let (tools_done, busy) = (tools_done(&mapped), mapped.busy);
         let kind = if initial {
             EventKind::Opened {
                 items: mapped.items,
@@ -591,20 +1119,30 @@ impl Live {
         };
         worker.emit(conversation, generation, kind);
         if let Some(models) = &models {
-            self.models = models
-                .read(|r| r.state("state").cloned())
-                .flatten()
-                .map(|s| session::parse_models(&s))
+            let state = models.read(|r| r.state("state").cloned()).flatten();
+            self.models = state
+                .as_ref()
+                .map(session::parse_models)
                 .unwrap_or_default();
             (worker.sink)(LifecycleEvent::Catalog(self.catalog()));
+            (worker.sink)(LifecycleEvent::ModelSelected(
+                state.as_ref().and_then(session::selected_model),
+            ));
         }
         self.resubscribes = 0;
         self.current = Some(Current {
             conversation,
             generation,
+            target,
             transcript,
             models,
+            cwd: session.cwd,
+            tools_done,
+            busy,
         });
+        self.schedule_changes(worker);
+        // Prompts accepted earlier may have finished while this conversation was not attached.
+        self.poll_runs(worker);
     }
 
     fn handle_event(
@@ -689,27 +1227,58 @@ impl Live {
             && let Some(state) = models.read(|r| r.state("state").cloned()).flatten()
         {
             self.models = session::parse_models(&state);
+            (worker.sink)(LifecycleEvent::ModelSelected(session::selected_model(
+                &state,
+            )));
         }
         if dirty.directory || dirty.models {
             (worker.sink)(LifecycleEvent::Catalog(self.catalog()));
         }
-        if dirty.transcript
-            && let Some(current) = &self.current
-            && let Some(view) = current
-                .transcript
-                .read(|r| r.state("state").cloned())
-                .flatten()
-        {
-            let mapped = transcript::map_view(&view);
-            worker.emit(
-                current.conversation,
-                current.generation,
-                EventKind::Synced {
-                    items: mapped.items,
-                },
-            );
+        if dirty.transcript {
+            let view = self.current.as_ref().and_then(|c| {
+                c.transcript
+                    .read(|r| r.state("state").cloned())
+                    .flatten()
+                    .map(|v| (c.conversation, c.generation, v))
+            });
+            if let Some((conversation, generation, view)) = view {
+                let mapped = transcript::map_view(&view);
+                let (done, busy) = (tools_done(&mapped), mapped.busy);
+                worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::Synced {
+                        items: mapped.items,
+                    },
+                );
+                // Files change when a tool finishes or a run ends.
+                let changed = self
+                    .current
+                    .as_mut()
+                    .map(|c| {
+                        let changed = c.tools_done != done || c.busy != busy;
+                        c.tools_done = done;
+                        c.busy = busy;
+                        changed
+                    })
+                    .unwrap_or(false);
+                if changed {
+                    self.schedule_changes(worker);
+                }
+            }
         }
     }
+}
+
+/// How many tool calls in the transcript have finished.
+fn tools_done(mapped: &transcript::Mapped) -> usize {
+    mapped
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(&item.kind, pipkin_core::ItemKind::Tool(t) if t.status != pipkin_core::ToolStatus::Running)
+        })
+        .count()
 }
 
 fn display_path(path: &Path) -> String {
@@ -726,3 +1295,9 @@ mod tests;
 
 #[cfg(test)]
 mod real_pi;
+
+#[cfg(test)]
+mod testsupport;
+
+#[cfg(test)]
+mod e2e;

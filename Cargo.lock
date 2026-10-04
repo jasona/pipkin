@@ -4133,6 +4133,7 @@ dependencies = [
  "env_logger",
  "gpui",
  "gpui_platform",
+ "libc",
  "log",
  "pi-client",
  "pipkin-core",

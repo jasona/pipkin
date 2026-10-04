@@ -560,6 +560,54 @@ impl Workspace {
     fn on_model_menu(&mut self, _: &OpenModelMenu, window: &mut Window, cx: &mut Context<Self>) {
         self.open_overlay(Overlay::Model, window, cx);
     }
+    fn on_open_project(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_project(cx);
+    }
+
+    /// Choose a project folder and add it. The engine resolves a session's directory through
+    /// symlinks, so the folder is resolved the same way here, which keeps one folder one project.
+    pub(super) fn open_project(&mut self, cx: &mut Context<Self>) {
+        if !self.state(cx).can_create {
+            return;
+        }
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open project folder".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let paths = match rx.await {
+                Ok(Ok(Some(p))) => p,
+                Ok(Ok(None)) | Err(_) => return,
+                Ok(Err(e)) => {
+                    this.update(cx, |this, cx| {
+                        this.show_toast(format!("Folder picker unavailable: {e}"), cx)
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(first) = paths.into_iter().next() else {
+                return;
+            };
+            let resolved = cx
+                .background_spawn(async move { std::fs::canonicalize(&first).map(|p| (first, p)) })
+                .await;
+            this.update(cx, |this, cx| match resolved {
+                Ok((_, real)) if real.is_dir() => {
+                    this.dispatch(Command::AddProject(real.display().to_string()), cx)
+                }
+                Ok((chosen, _)) => {
+                    this.show_toast(format!("{} is not a folder", chosen.display()), cx)
+                }
+                Err(e) => this.show_toast(format!("Cannot open that folder: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn on_attach(&mut self, _: &AttachFiles, _: &mut Window, cx: &mut Context<Self>) {
         self.attach_files(cx);
     }
@@ -791,6 +839,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_jump))
             .on_action(cx.listener(Self::on_model_menu))
             .on_action(cx.listener(Self::on_attach))
+            .on_action(cx.listener(Self::on_open_project))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
             .on_action(cx.listener(Self::on_close_overlay))

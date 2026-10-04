@@ -5,6 +5,7 @@ actions!(
     [
         OpenPalette,
         NewConversation,
+        OpenProject,
         ToggleNav,
         ToggleInspector,
         FocusComposer,
@@ -33,6 +34,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-k", OpenPalette, None),
         KeyBinding::new("ctrl-shift-p", OpenPalette, None),
         KeyBinding::new("ctrl-n", NewConversation, None),
+        KeyBinding::new("ctrl-shift-o", OpenProject, None),
         KeyBinding::new("ctrl-b", ToggleNav, None),
         KeyBinding::new("ctrl-i", ToggleInspector, None),
         KeyBinding::new("ctrl-l", FocusComposer, None),

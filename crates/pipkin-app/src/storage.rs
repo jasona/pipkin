@@ -78,6 +78,12 @@ const MIGRATIONS: &[&str] = &[
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (namespace, request_id)
      );",
+    "CREATE TABLE projects (
+        namespace TEXT NOT NULL,
+        path TEXT NOT NULL,
+        added_at INTEGER NOT NULL,
+        PRIMARY KEY (namespace, path)
+     );",
 ];
 
 /// States that still need reconciliation after a restart.
@@ -118,6 +124,8 @@ pub struct Loaded {
     pub conversations: Vec<DemoConversation>,
     /// Oldest first, so a later request for a conversation supersedes an earlier one.
     pub open_requests: Vec<OpenRequest>,
+    /// Project folders the user opened, oldest first.
+    pub projects: Vec<String>,
 }
 
 enum Msg {
@@ -129,6 +137,7 @@ enum Msg {
     },
     Prefs(Prefs),
     Conversation(DemoConversation),
+    Project(String),
     Intent {
         conversation: ConversationId,
         request: RequestId,
@@ -327,11 +336,19 @@ impl Storage {
                 })
             })
             .collect();
+        let projects = conn
+            .prepare("SELECT path FROM projects WHERE namespace = ?1 ORDER BY rowid")
+            .map_err(sql_err)?
+            .query_map([&self.namespace], |r| r.get::<_, String>(0))
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
         Ok(Loaded {
             prefs,
             drafts,
             conversations,
             open_requests,
+            projects,
         })
     }
 
@@ -401,6 +418,13 @@ impl Storage {
         }
     }
 
+    /// Remember a project folder. Idempotent.
+    pub fn save_project(&self, path: String) {
+        if self.send(Msg::Project(path)).is_err() {
+            log::warn!("project write dropped: storage busy or closed");
+        }
+    }
+
     pub fn save_conversation(&self, conversation: DemoConversation) {
         if self.send(Msg::Conversation(conversation)).is_err() {
             log::warn!("conversation write dropped: storage busy or closed");
@@ -454,6 +478,15 @@ fn write(conn: &mut Connection, ns: &str, fail: &AtomicBool, msg: Msg) {
         Msg::Conversation(c) => {
             if let Err(e) = write_conversation(conn, &c) {
                 log::warn!("saving conversation failed: {e}");
+            }
+        }
+        Msg::Project(path) => {
+            let result = conn.execute(
+                "INSERT OR IGNORE INTO projects (namespace, path, added_at) VALUES (?1, ?2, ?3)",
+                params![ns, path, now_secs()],
+            );
+            if let Err(e) = result {
+                log::warn!("saving project failed: {e}");
             }
         }
         Msg::Intent {
@@ -1039,6 +1072,33 @@ mod tests {
         let (result, seen) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(result, Ok(()));
         assert_eq!(seen, 1);
+    }
+
+    #[test]
+    fn projects_round_trip_in_order_and_are_namespaced() {
+        let (_dir, path) = tmp_db();
+        {
+            let s = Storage::open(&path, "pi:a").unwrap();
+            s.save_project("/work/one".into());
+            s.save_project("/work/two".into());
+            s.save_project("/work/one".into()); // idempotent
+            s.shutdown();
+            let other = Storage::open(&path, "pi:b").unwrap();
+            other.save_project("/elsewhere".into());
+            other.shutdown();
+        }
+        let a = Storage::open(&path, "pi:a").unwrap().load_all().unwrap();
+        assert_eq!(a.projects, ["/work/one", "/work/two"]);
+        let b = Storage::open(&path, "pi:b").unwrap().load_all().unwrap();
+        assert_eq!(b.projects, ["/elsewhere"]);
+        assert!(
+            Storage::open(&path, DEMO_NAMESPACE)
+                .unwrap()
+                .load_all()
+                .unwrap()
+                .projects
+                .is_empty()
+        );
     }
 
     #[test]
