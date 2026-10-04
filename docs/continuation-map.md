@@ -2,7 +2,7 @@
 
 Next step if approved: obtain and verify the real Pi service sources (absent from this workspace), then add a Pi adapter beside `adapters/demo.rs`.
 
-## Backend port (`desktop_core::Backend` + `BackendRequest`/`BackendEvent`)
+## Backend port (`pipkin_core::Backend` + `BackendRequest`/`BackendEvent`)
 | Application capability | Adapter work | Backend facts still needed |
 | --- | --- | --- |
 | `bootstrap()` projects, models, conversation summaries | Map engine session/project listing and model discovery | Project identity, model catalog source |

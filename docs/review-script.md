@@ -3,7 +3,7 @@
 Build and launch (release, Wayland):
 
 ```sh
-cargo run -p desktop-app --release -- --demo normal
+cargo run -p pipkin-app --release -- --demo normal
 ```
 
 Use a fresh data directory for a clean first run: add `--data-dir /tmp/pi-review`.

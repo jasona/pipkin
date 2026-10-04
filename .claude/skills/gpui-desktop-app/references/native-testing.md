@@ -6,7 +6,7 @@
 - **Keyboard:** `wtype "text"`, `wtype -k Return`, `wtype -M ctrl -k Return -m ctrl`, `wtype -s 30 "…"` for a 30 ms cadence (latency tests). Always through `scripts/guard.sh`, which refuses to type unless the active window class is yours.
 - **Mouse:** `/dev/uinput` was writable. `scripts/mouse.py` builds a virtual **absolute** pointer (like a VM tablet: ABS_X/ABS_Y 0..32767, BTN_LEFT, REL_WHEEL) with raw ioctls, no `evdev` module needed. Commands: `move|click|dblclick|tripleclick|drag|wheel`. Coordinates are global layout pixels (edit `W,H` for your output). It enabled real drag-selection across rows, wheel scrolling mid-stream, and button clicks.
 - **Resize:** Hyprland 0.56 uses Lua dispatch: `hyprctl dispatch "hl.dsp.window.resize({ x = DX, y = DY, relative = true })"` acts on the **active** window and is relative (`scripts/size.sh` computes deltas). Old `resizewindowpixel` syntax errors.
-- **Accessibility:** `python3` with `gi.repository.Atspi`; find the app by name under `Atspi.get_desktop(0)` (our binary showed as `desktop-app`), walk children, print role/name.
+- **Accessibility:** `python3` with `gi.repository.Atspi`; find the app by name under `Atspi.get_desktop(0)` (our binary showed as `pipkin`), walk children, print role/name.
 - **Perf probes:** a palette command that logs frame p50/p95, input-to-frame latency and `VmRSS`; launch timing by polling `hyprctl clients` for the class (warm 175–218 ms; page-cache-evicted binary via `posix_fadvise(DONTNEED)` 197–258 ms; idle RSS 140 MB).
 - **Persistence:** type, wait for "Draft saved", `kill -9`, relaunch with the same `--data-dir`: draft restored.
 

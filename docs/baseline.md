@@ -11,8 +11,8 @@ Recorded 2026-10-03 (step 1, native foundation).
 | GPU selected by GPUI | Intel RPL-S, Vulkan (follows the compositor GPU hint) |
 | Rust | 1.99.0 (installed stable); pinned in `rust-toolchain.toml` |
 | System libs | wayland-client 1.26.0, xkbcommon 1.13.2, vulkan 1.4.357, fontconfig 2.18.3 |
-| Window | native Wayland (`xwayland: False`), app_id `pi-desktop`, 1440x960 |
+| Window | native Wayland (`xwayland: False`), app_id `pipkin`, 1440x960 |
 
-Launch: `cargo run -p desktop-app --release` (set `RUST_LOG=info` for adapter logs).
+Launch: `cargo run -p pipkin-app --release` (set `RUST_LOG=info` for adapter logs).
 
 Capture caveat: Omarchy's default window-opacity rule makes the app translucent, so other windows ghost through captures. Not an app setting.

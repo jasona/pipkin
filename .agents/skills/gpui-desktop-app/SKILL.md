@@ -1,11 +1,11 @@
 ---
 name: gpui-desktop-app
-description: Build, debug, test and verify native desktop apps with GPUI (Zed's UI framework) outside the Zed repo, especially chat/agent style apps on Linux/Wayland (Hyprland/Omarchy). Use for GPUI views and entities, a custom multiline text editor with IME, a virtualized streaming transcript with cross-message selection, a pure-Rust state core with a simulated backend, SQLite draft persistence, GPUI tests, Wayland/Hyprland native testing, and honest verification scorecards. Distilled from the Pi Desktop prototype in this repo plus a read of Zed's source at rev a846890.
+description: Build, debug, test and verify native desktop apps with GPUI (Zed's UI framework) outside the Zed repo, especially chat/agent style apps on Linux/Wayland (Hyprland/Omarchy). Use for GPUI views and entities, a custom multiline text editor with IME, a virtualized streaming transcript with cross-message selection, a pure-Rust state core with a simulated backend, SQLite draft persistence, GPUI tests, Wayland/Hyprland native testing, and honest verification scorecards. Distilled from the Pipkin prototype in this repo plus a read of Zed's source at rev a846890.
 ---
 
-# GPUI desktop app: lessons from the Pi Desktop prototype
+# GPUI desktop app: lessons from the Pipkin prototype
 
-Everything here was learned building `crates/desktop-core`, `desktop-ui`, `desktop-app` in this repo (135 tests, running native Wayland app) and by reading Zed's source at the pinned rev. File references under `zed/` are to that checkout. Read the reference file that matches your task; do not read them all.
+Everything here was learned building `crates/pipkin-core`, `pipkin-ui`, `pipkin-app` in this repo (135 tests, running native Wayland app) and by reading Zed's source at the pinned rev. File references under `zed/` are to that checkout. Read the reference file that matches your task; do not read them all.
 
 ## Start here: the 12 rules that cost the most time
 
@@ -26,19 +26,19 @@ Everything here was learned building `crates/desktop-core`, `desktop-ui`, `deskt
 
 ```
 Cargo.toml  rust-toolchain.toml        independent workspace, excludes zed/
-crates/desktop-core/                   ids, model, protocol (Command/Effect/Note/BackendRequest/BackendEvent), state machine, Backend trait
-crates/desktop-ui/src/{theme,assets,model}.rs   semantic tokens, bundled fonts/icons, Model entity (AppState + effect handler)
-crates/desktop-ui/src/text/            EditorModel (pure) + ComposerEditor (GPUI) + latency probe
-crates/desktop-ui/src/transcript/      markdown, highlight, document (selection), view
-crates/desktop-ui/src/shell/           workspace, nav, center, inspector (diff), overlays, commands, controls
-crates/desktop-app/                    main, controller (effects, event pump), adapters/demo.rs (+script JSON), storage.rs (SQLite)
+crates/pipkin-core/                   ids, model, protocol (Command/Effect/Note/BackendRequest/BackendEvent), state machine, Backend trait
+crates/pipkin-ui/src/{theme,assets,model}.rs   semantic tokens, bundled fonts/icons, Model entity (AppState + effect handler)
+crates/pipkin-ui/src/text/            EditorModel (pure) + ComposerEditor (GPUI) + latency probe
+crates/pipkin-ui/src/transcript/      markdown, highlight, document (selection), view
+crates/pipkin-ui/src/shell/           workspace, nav, center, inspector (diff), overlays, commands, controls
+crates/pipkin-app/                    main, controller (effects, event pump), adapters/demo.rs (+script JSON), storage.rs (SQLite)
 fixtures/scenarios/*.json              versioned event scripts      assets/ fonts+icons with PROVENANCE.md
 ```
 
 ## Useful commands
 
 ```sh
-cargo run -p desktop-app --release -- --demo normal --data-dir /tmp/pi-x
+cargo run -p pipkin-app --release -- --demo normal --data-dir /tmp/pi-x
 cargo test --workspace && cargo clippy --workspace --all-targets && cargo fmt --all --check
 RUST_LOG=warn ...   # GPUI/adapter logs; needs env_logger::init() in main
 ```

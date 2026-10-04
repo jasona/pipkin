@@ -1,4 +1,4 @@
-# Pi Desktop
+# Pipkin
 
 <!-- impeccable:product-schema 1 -->
 
@@ -32,7 +32,7 @@ The existing product plan assumes individual developers working locally. The imm
 
 - `rust-desktop-client-plan.md`: product workflow, proposed architecture, visual direction, and release requirements.
 - `zed/`: local source reference at revision `a84689073d296dfd39987bc7dd478e43ef76d83a` when inspected.
-- No existing Pi desktop implementation or approved application screenshots were found in this workspace.
+- No existing Pipkin implementation or approved application screenshots were found in this workspace.
 
 ## Product Principles
 

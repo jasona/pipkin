@@ -1,6 +1,6 @@
-# Pi Desktop design record
+# Pipkin design record
 
-Derived from the shipped build (`crates/desktop-ui/src/theme.rs`, `shell/controls.rs`). Quiet, precise developer workspace: neutral layered surfaces, subtle separators, one restrained accent, text-and-icon status. Zed is the interaction-quality reference, not a visual template.
+Derived from the shipped build (`crates/pipkin-ui/src/theme.rs`, `shell/controls.rs`). Quiet, precise developer workspace: neutral layered surfaces, subtle separators, one restrained accent, text-and-icon status. Zed is the interaction-quality reference, not a visual template.
 
 ## Layout
 - Nominal 1440×960: navigation 240 px · conversation (flexible, text column bounded to 760 px × text scale) · inspector 400 px. Dividers drag; widths persist (nav 180–420, inspector 280–720).

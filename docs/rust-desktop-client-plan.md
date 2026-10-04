@@ -174,9 +174,9 @@ The application core should remain independent of GPUI. It owns commands, state 
 
 Suggested Rust workspace boundaries:
 
-- `desktop-app`: application entry point and composition.
-- `desktop-ui`: screens and reusable components.
-- `desktop-core`: commands and state machines.
+- `pipkin-app`: application entry point and composition.
+- `pipkin-ui`: screens and reusable components.
+- `pipkin-core`: commands and state machines.
 - `pi-client`: protocol and service bindings.
 - `desktop-storage`: drafts, preferences, and disposable indexes.
 - `desktop-platform`: windows, credentials, dialogs, notifications, and process lifecycle.

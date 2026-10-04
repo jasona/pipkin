@@ -1349,40 +1349,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "desktop-app"
-version = "0.0.1"
-dependencies = [
- "async-channel",
- "desktop-core",
- "desktop-ui",
- "env_logger",
- "gpui",
- "gpui_platform",
- "log",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "desktop-core"
-version = "0.0.1"
-
-[[package]]
-name = "desktop-ui"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "chrono",
- "desktop-core",
- "gpui",
- "log",
- "pulldown-cmark",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4146,6 +4112,40 @@ dependencies = [
  "atomic-waker",
  "fastrand",
  "futures-io",
+]
+
+[[package]]
+name = "pipkin-app"
+version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "env_logger",
+ "gpui",
+ "gpui_platform",
+ "log",
+ "pipkin-core",
+ "pipkin-ui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "pipkin-core"
+version = "0.0.1"
+
+[[package]]
+name = "pipkin-ui"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gpui",
+ "log",
+ "pipkin-core",
+ "pulldown-cmark",
+ "unicode-segmentation",
 ]
 
 [[package]]

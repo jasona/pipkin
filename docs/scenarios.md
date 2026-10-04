@@ -1,20 +1,20 @@
 # Demo scenarios
 
-The simulated Pi backend (`crates/desktop-app/src/adapters/demo.rs`) answers the **next Submit** according to the
+The simulated Pi backend (`crates/pipkin-app/src/adapters/demo.rs`) answers the **next Submit** according to the
 selected scenario. Seeded projects and conversations exist regardless of scenario. Scripts live in
 `fixtures/scenarios/<name>.json` (`"version": 1`; unknown versions are rejected) and are embedded at build time.
 
 ## Running
 
 ```sh
-cargo run -p desktop-app --release -- --demo normal
-cargo run -p desktop-app --release -- --demo followup --data-dir /tmp/pi-demo --speed 2
+cargo run -p pipkin-app --release -- --demo normal
+cargo run -p pipkin-app --release -- --demo followup --data-dir /tmp/pi-demo --speed 2
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `--demo <scenario>` | Initial scenario (default `normal`). Can be changed later from the Developer commands. |
-| `--data-dir <path>` | Where `pi-desktop.sqlite3` lives. Also `PI_DESKTOP_DATA`; default `$XDG_DATA_HOME/pi-desktop`, else `~/.local/share/pi-desktop`. |
+| `--data-dir <path>` | Where `pipkin.sqlite3` lives. Also `PIPKIN_DATA`; default `$XDG_DATA_HOME/pipkin`, else `~/.local/share/pipkin`. |
 | `--speed <factor>` | `1.0` real time (default), `2` twice as fast, `0` never sleeps. At `0`, steer points pass through. |
 
 ## Scenarios
@@ -31,7 +31,7 @@ cargo run -p desktop-app --release -- --demo followup --data-dir /tmp/pi-demo --
 
 ## Seeded conversations
 
-Two projects: `pi-desktop` and `billing-service`. Twelve conversations, including:
+Two projects: `pipkin` and `billing-service`. Twelve conversations, including:
 
 - ordinary histories of 8 to 30 messages (prompts, Markdown with lists, links and fenced code in Rust, Python, TypeScript, SQL, Bash, Go, TOML and JSON, completed tool rows, one failed tool each), some with very long or Unicode titles;
 - **Large history - 10,000 messages**: opens the latest 200 items; "load older" pages 200 at a time until all 10,000 are loaded (stable item ids, mixed heights, some tool rows with large output);
@@ -40,7 +40,7 @@ Two projects: `pi-desktop` and `billing-service`. Twelve conversations, includin
 - **Stress content**: long paths and titles, emoji, combining marks, ZWJ, RTL, malformed Markdown, a missing attachment;
 - **Empty conversation**.
 
-"Fix failing search test in desktop-core" also shows the three changed files from the `normal` story.
+"Fix failing search test in pipkin-core" also shows the three changed files from the `normal` story.
 
 ## Determinism
 
@@ -51,9 +51,9 @@ to the start of the current day (UTC) so recency labels read naturally; tests us
 ## Tests
 
 ```sh
-cargo test -p desktop-app        # storage (incl. SIGKILL durability), scripts, headless scenario runs
-cargo test -p desktop-core
+cargo test -p pipkin-app        # storage (incl. SIGKILL durability), scripts, headless scenario runs
+cargo test -p pipkin-core
 ```
 
-The headless tests (`crates/desktop-app/src/adapters/tests.rs`) run `desktop_core::AppState` against `DemoBackend` at speed 0
+The headless tests (`crates/pipkin-app/src/adapters/tests.rs`) run `pipkin_core::AppState` against `DemoBackend` at speed 0
 with `hold_steer` enabled where a test must stop at a steer point. They need no GPUI window.

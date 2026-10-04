@@ -1,13 +1,13 @@
 # State core, effects, backend port, persistence
 
 ## Shape
-`Command` (UI intent) → `AppState::dispatch` → `Outcome { effects, notes }`. `BackendEvent` → `AppState::apply_event` → `Outcome`. The GPUI `Model` entity (`desktop-ui/src/model.rs`) owns `AppState`, runs effects through an installed `EffectHandler` (installed by the controller in `desktop-app`), `cx.emit(Note)` and `cx.notify()`. Views subscribe to `Note` to splice lists instead of rebuilding.
+`Command` (UI intent) → `AppState::dispatch` → `Outcome { effects, notes }`. `BackendEvent` → `AppState::apply_event` → `Outcome`. The GPUI `Model` entity (`pipkin-ui/src/model.rs`) owns `AppState`, runs effects through an installed `EffectHandler` (installed by the controller in `pipkin-app`), `cx.emit(Note)` and `cx.notify()`. Views subscribe to `Note` to splice lists instead of rebuilding.
 
 - `Effect`: `Backend(BackendRequest)`, `SaveDraft{conv,text,rev}`, `SavePrefs`, `SaveConversation`.
 - `Note`: `ItemsReset|ItemsPrepended(n)|ItemsAppended(n)|ItemChanged(i)|ConversationsChanged|SelectionChanged|Other`. The transcript view maps these to `ListState::{reset,splice,remeasure_items}`.
 - `Backend` trait is only `bootstrap()` + `request(BackendRequest)`; events return on an `async_channel` handed to the adapter. Slow, lost and late responses are representable. Do not invent the real wire protocol in the port.
 
-## Correctness rules encoded in the core (all unit-tested in `desktop-core/tests/transitions.rs`)
+## Correctness rules encoded in the core (all unit-tested in `pipkin-core/tests/transitions.rs`)
 - **Stale guard:** every event carries `(conversation, generation, op)`. Drop if the generation differs from the conversation's, or if an op-scoped event's op is not the live op. A late event for conversation A must land in A even when B is selected.
 - **Run states:** `Idle → Submitting → Running → Stopping → Idle`, plus `OutcomeUnknown` and `Failed`. `Cancel` moves to `Stopping` and stays until the backend sends `Cancelled`. Cancel is not available again while Stopping.
 - **Unknown outcome:** `AckLost` during `Submitting` → `OutcomeUnknown`. Submit/Retry are unavailable. Only `CheckStatus` is, and the backend's `StatusResolved` decides. Never auto-resend. The demo only proves client presentation, not engine exactly-once.
@@ -20,7 +20,7 @@
 ## Syncing the editor with the core
 The composer owns live text. `ComposerEvent::Changed` → `EditDraft(text)`. When the core changes the draft (submit clears it, rejection restores it, conversation switch) it bumps `sync_epoch`; the workspace's `observe_in(&model)` callback calls `composer.set_text(..)` (which must NOT emit `Changed`, or you loop). Do this in the observer, not in `render`.
 
-## Controller (desktop-app)
+## Controller (pipkin-app)
 - `start(cx, options) -> Entity<Model>`: open storage, build demo backend, build `AppState::new(bootstrap, prefs)`, apply stored conversations/drafts **before** creating the entity, install the effect handler, spawn a foreground task that drains the event channel in batches (coalescing consecutive tokens of one op), set `DemoControls` global, register `cx.on_app_quit` to flush dirty drafts and `storage.shutdown()`.
 - Real clock only through `AppState::set_now` on a timer; the demo base time is fixed for determinism.
 

@@ -1,10 +1,10 @@
-# Pi Desktop: single-pass GPUI prototype
+# Pipkin: single-pass GPUI prototype
 
 Status: implementation plan; application not yet built.
 
 This narrows [the desktop product plan](rust-desktop-client-plan.md) to one implementation pass and one reviewable deliverable: **a running, high fidelity Rust application on Omarchy/Hyprland/Wayland, with a reusable application foundation and a deterministic simulated Pi backend**.
 
-The decision is whether to continue building Pi Desktop with GPUI. Approval should mean connecting real services to the existing application, continuing its components and tests, and refining known gaps. It should not require rebuilding a presentation-only mockup.
+The decision is whether to continue building Pipkin with GPUI. Approval should mean connecting real services to the existing application, continuing its components and tests, and refining known gaps. It should not require rebuilding a presentation-only mockup.
 
 ## 1. Define the pass
 
@@ -95,9 +95,9 @@ Start with three crates. Keep adapters as modules until there is a concrete reas
 Cargo.toml                         independent workspace; excludes zed/
 rust-toolchain.toml
 crates/
-  desktop-core/                    ordinary Rust types, commands, events, state
-  desktop-ui/                      GPUI views, shared controls, theme, text layer
-  desktop-app/                     entry point, controller, adapters, storage
+  pipkin-core/                    ordinary Rust types, commands, events, state
+  pipkin-ui/                      GPUI views, shared controls, theme, text layer
+  pipkin-app/                     entry point, controller, adapters, storage
     src/adapters/demo.rs           deterministic implementation of backend port
     src/storage.rs                 local drafts/preferences/demo data
     src/platform.rs                dialogs, clipboard and platform boundaries
@@ -214,7 +214,7 @@ No result from this pass claims production reliability or cross-platform approva
 
 The implementation pass is complete when it provides:
 
-1. A launchable native executable and source, with the exact toolchain, dependency revision, lockfile, assets, and setup/run commands. Suggested stable interface: `rtk cargo run -p desktop-app --release -- --demo normal`.
+1. A launchable native executable and source, with the exact toolchain, dependency revision, lockfile, assets, and setup/run commands. Suggested stable interface: `rtk cargo run -p pipkin-app --release -- --demo normal`.
 2. The finished workflow, reusable controls/text components, small independent core, working local storage, and replaceable demo adapter.
 3. Fixture scenarios and tests that remain usable when a real backend is added.
 4. `DESIGN.md`, a concise architecture/dependency decision record, and a 10-minute owner review script.
