@@ -1,0 +1,48 @@
+{
+  "conversation": {
+    "id": 1
+  },
+  "entries": [
+    {
+      "model": [
+        {
+          "role": "user",
+          "content": "work on it",
+          "timestamp": 1791145448530
+        }
+      ],
+      "kind": "pi.user",
+      "id": 7,
+      "conversationId": 1
+    }
+  ],
+  "docs": {
+    "pi.agent": {
+      "model": {
+        "provider": "faux",
+        "modelId": "faux-1"
+      }
+    },
+    "pi.live": {
+      "run": {
+        "taskId": 9,
+        "inputs": [
+          8
+        ]
+      },
+      "generation": {
+        "attempt": 1
+      }
+    },
+    "pi.inbox": {
+      "items": []
+    },
+    "pi.provider": {
+      "sessionId": "01a10896-9452-7078-bfb7-48df3fc6d4e7"
+    },
+    "pi.usage": {
+      "models": {},
+      "tools": {}
+    }
+  }
+}

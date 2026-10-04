@@ -254,7 +254,7 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done. M1 is met against a real Pi server, with the caveats below.** Committed and pushed through the attach retry; the real-mode UI fixes are not yet committed.
+**Where we are: M0 is done. M1 is met against a real Pi server, with the caveats below.** Committed and pushed through the real-mode UI fixes; the real-data fixtures and tests are not yet committed.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
@@ -262,11 +262,11 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 | M1 real read path | **Met, with caveats** | Real handshake, trust checks, catalogue, Delta hydration, session listing, attach, `Transcript` subscription and switching all pass against a real Pi server (3 opt-in tests, run repeatedly). The app was launched against it and showed the real session list and an opened session |
 | M2 and later | Not started | |
 
-`cargo test --workspace`: 299 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
+`cargo test --workspace`: 310 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
 
 #### M1 caveats (what the real-server runs did NOT cover)
 
-- **Only empty transcripts were seen from the real server.** A new session has no messages, so the `ConversationView` mapper has never met real entries. Its entry kinds, message shapes and `pi.live` slots are inferred from Pi's source. A non-empty real transcript needs a deterministic provider: Pi has `packages/ai/src/providers/faux.ts`, but it is an in-process test library, so using it means scripting Pi's own test harness (see `coding-agent/test/experimental-agent-controller.test.ts` and `experimental-durable-support.ts`). That is M2-sized and was not started.
+- **Real transcripts with messages: verified from Pi's own code, not through a running server.** A running server has no provider, so its sessions stay empty. Instead `scripts/capture-pi-views.ts` drives Pi's durable harness with scripted faux responses (text, thinking, tool call with a real harness error result, model error, multi-turn, a run in progress) and writes real `ConversationView` values to `fixtures/pi/`, and, through the server's own path (the `Transcript` provider behind Chord's remote endpoint and a per-subscription TypeScript state encoder), real wire streams (`stream-*.json`: snapshot, updates, final state). Rust tests map the real views (the mapper's assumptions about kinds and shapes held) and replay the real streams through the decoder and replica; all converge to Pi's final state, including real path interning, splices, sets and deletes. Still unseen from a live server: streaming text partials (the faux provider emitted no `a`/`t` ops) and tool slots in `pi.live` (no real tool ran).
 - **Delayed-frame rejection is proven at the client and mock level**, not by injecting frames into the real server. On the real server we verified what a switch does: a fresh attachment id, the old subscription retired locally, and calls to the old route refused locally.
 - **GUI check was limited and passive** (a window screenshot, no input): session list, derived title and age, an opened empty session, no demo marker. Switching in the GUI, and the offline/failed/incompatible screens, were not looked at.
 - Pi's `SessionSummary.createdAt` is in **milliseconds** (handled); the title time is shown in UTC.

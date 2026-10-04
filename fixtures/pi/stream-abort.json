@@ -1,0 +1,181 @@
+{
+  "snapshot": {
+    "serviceId": "pi.transcript",
+    "mode": "singleton",
+    "instances": [
+      {
+        "members": [
+          {
+            "name": "state",
+            "kind": "state",
+            "sequence": 0,
+            "ops": [
+              [
+                "r",
+                {
+                  "conversation": {
+                    "id": 1
+                  },
+                  "entries": [],
+                  "docs": {
+                    "pi.agent": {
+                      "model": {
+                        "provider": "faux",
+                        "modelId": "faux-1"
+                      }
+                    },
+                    "pi.live": {},
+                    "pi.inbox": {
+                      "items": []
+                    },
+                    "pi.provider": {
+                      "sessionId": "01a10896-9606-7078-bfb7-48e958503205"
+                    },
+                    "pi.usage": {
+                      "models": {},
+                      "tools": {}
+                    }
+                  }
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "updates": [
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 1,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "run"
+          ],
+          {
+            "taskId": 9,
+            "inputs": [
+              8
+            ]
+          }
+        ],
+        [
+          "p",
+          [
+            "entries"
+          ],
+          0,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "user",
+                  "content": "start then stop",
+                  "timestamp": 1791145448966
+                }
+              ],
+              "kind": "pi.user",
+              "id": 7,
+              "conversationId": 1
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 2,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "generation"
+          ],
+          {
+            "attempt": 1
+          }
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 3,
+      "ops": [
+        [
+          "#",
+          0,
+          [
+            "docs",
+            "pi.live",
+            "run"
+          ]
+        ],
+        [
+          "d",
+          0
+        ],
+        [
+          "#",
+          1,
+          [
+            "docs",
+            "pi.live",
+            "generation"
+          ]
+        ],
+        [
+          "d",
+          1
+        ]
+      ]
+    }
+  ],
+  "final": {
+    "conversation": {
+      "id": 1
+    },
+    "entries": [
+      {
+        "model": [
+          {
+            "role": "user",
+            "content": "start then stop",
+            "timestamp": 1791145448966
+          }
+        ],
+        "kind": "pi.user",
+        "id": 7,
+        "conversationId": 1
+      }
+    ],
+    "docs": {
+      "pi.agent": {
+        "model": {
+          "provider": "faux",
+          "modelId": "faux-1"
+        }
+      },
+      "pi.live": {},
+      "pi.inbox": {
+        "items": []
+      },
+      "pi.provider": {
+        "sessionId": "01a10896-9606-7078-bfb7-48e958503205"
+      },
+      "pi.usage": {
+        "models": {},
+        "tools": {}
+      }
+    }
+  }
+}

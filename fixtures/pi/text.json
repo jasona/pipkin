@@ -1,0 +1,89 @@
+{
+  "conversation": {
+    "id": 1
+  },
+  "entries": [
+    {
+      "model": [
+        {
+          "role": "user",
+          "content": "hello",
+          "timestamp": 1791145448487
+        }
+      ],
+      "kind": "pi.user",
+      "id": 7,
+      "conversationId": 1
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello back"
+            }
+          ],
+          "api": "faux:1791145448472:jge8xywm3jf",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 3,
+            "output": 3,
+            "cacheRead": 0,
+            "cacheWrite": 3,
+            "totalTokens": 9,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1791145448472
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 10,
+      "conversationId": 1,
+      "byTaskId": 9
+    }
+  ],
+  "docs": {
+    "pi.agent": {
+      "model": {
+        "provider": "faux",
+        "modelId": "faux-1"
+      }
+    },
+    "pi.live": {},
+    "pi.inbox": {
+      "items": []
+    },
+    "pi.provider": {
+      "sessionId": "01a10896-941e-7078-bfb7-48d58ca9e965"
+    },
+    "pi.usage": {
+      "models": {
+        "faux/faux-1": {
+          "input": 3,
+          "output": 3,
+          "cacheRead": 0,
+          "cacheWrite": 3,
+          "totalTokens": 9,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        }
+      },
+      "tools": {}
+    }
+  }
+}

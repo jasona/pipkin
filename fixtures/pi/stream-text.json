@@ -1,0 +1,306 @@
+{
+  "snapshot": {
+    "serviceId": "pi.transcript",
+    "mode": "singleton",
+    "instances": [
+      {
+        "members": [
+          {
+            "name": "state",
+            "kind": "state",
+            "sequence": 0,
+            "ops": [
+              [
+                "r",
+                {
+                  "conversation": {
+                    "id": 1
+                  },
+                  "entries": [],
+                  "docs": {
+                    "pi.agent": {
+                      "model": {
+                        "provider": "faux",
+                        "modelId": "faux-1"
+                      }
+                    },
+                    "pi.live": {},
+                    "pi.inbox": {
+                      "items": []
+                    },
+                    "pi.provider": {
+                      "sessionId": "01a10896-9457-7078-bfb7-48e0d967857d"
+                    },
+                    "pi.usage": {
+                      "models": {},
+                      "tools": {}
+                    }
+                  }
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "updates": [
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 1,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "run"
+          ],
+          {
+            "taskId": 9,
+            "inputs": [
+              8
+            ]
+          }
+        ],
+        [
+          "p",
+          [
+            "entries"
+          ],
+          0,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "user",
+                  "content": "hello",
+                  "timestamp": 1791145448537
+                }
+              ],
+              "kind": "pi.user",
+              "id": 7,
+              "conversationId": 1
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 2,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "generation"
+          ],
+          {
+            "attempt": 1
+          }
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 3,
+      "ops": [
+        [
+          "#",
+          0,
+          [
+            "docs",
+            "pi.live",
+            "run"
+          ]
+        ],
+        [
+          "d",
+          0
+        ],
+        [
+          "#",
+          1,
+          [
+            "docs",
+            "pi.live",
+            "generation"
+          ]
+        ],
+        [
+          "d",
+          1
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1"
+          ],
+          {
+            "input": 3,
+            "output": 3,
+            "cacheRead": 0,
+            "cacheWrite": 3,
+            "totalTokens": 9,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          }
+        ],
+        [
+          "#",
+          2,
+          [
+            "entries"
+          ]
+        ],
+        [
+          "p",
+          2,
+          1,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "hello back"
+                    }
+                  ],
+                  "api": "faux:1791145448535:rg2bgtnqem",
+                  "provider": "faux",
+                  "model": "faux-1",
+                  "usage": {
+                    "input": 3,
+                    "output": 3,
+                    "cacheRead": 0,
+                    "cacheWrite": 3,
+                    "totalTokens": 9,
+                    "cost": {
+                      "input": 0,
+                      "output": 0,
+                      "cacheRead": 0,
+                      "cacheWrite": 0,
+                      "total": 0
+                    }
+                  },
+                  "stopReason": "stop",
+                  "timestamp": 1791145448534
+                }
+              ],
+              "kind": "pi.assistant",
+              "id": 10,
+              "conversationId": 1,
+              "byTaskId": 9
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  "final": {
+    "conversation": {
+      "id": 1
+    },
+    "entries": [
+      {
+        "model": [
+          {
+            "role": "user",
+            "content": "hello",
+            "timestamp": 1791145448537
+          }
+        ],
+        "kind": "pi.user",
+        "id": 7,
+        "conversationId": 1
+      },
+      {
+        "model": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello back"
+              }
+            ],
+            "api": "faux:1791145448535:rg2bgtnqem",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": {
+              "input": 3,
+              "output": 3,
+              "cacheRead": 0,
+              "cacheWrite": 3,
+              "totalTokens": 9,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 1791145448534
+          }
+        ],
+        "kind": "pi.assistant",
+        "id": 10,
+        "conversationId": 1,
+        "byTaskId": 9
+      }
+    ],
+    "docs": {
+      "pi.agent": {
+        "model": {
+          "provider": "faux",
+          "modelId": "faux-1"
+        }
+      },
+      "pi.live": {},
+      "pi.inbox": {
+        "items": []
+      },
+      "pi.provider": {
+        "sessionId": "01a10896-9457-7078-bfb7-48e0d967857d"
+      },
+      "pi.usage": {
+        "models": {
+          "faux/faux-1": {
+            "input": 3,
+            "output": 3,
+            "cacheRead": 0,
+            "cacheWrite": 3,
+            "totalTokens": 9,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          }
+        },
+        "tools": {}
+      }
+    }
+  }
+}

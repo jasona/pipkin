@@ -657,3 +657,143 @@ mod tests {
         assert!(m.items[0].id.0 < LOCAL_ITEM_BASE);
     }
 }
+
+/// The mapper against REAL `ConversationView` values captured from Pi's durable harness with
+/// scripted faux responses (`scripts/capture-pi-views.ts`). These pin the shapes the engine
+/// actually produces, as opposed to the hand-written ones above.
+#[cfg(test)]
+mod real_views {
+    use super::*;
+
+    fn fixture(name: &str) -> Mapped {
+        let raw = match name {
+            "text" => include_str!("../../../../../fixtures/pi/text.json"),
+            "thinking" => include_str!("../../../../../fixtures/pi/thinking.json"),
+            "tool-call" => include_str!("../../../../../fixtures/pi/tool-call.json"),
+            "error" => include_str!("../../../../../fixtures/pi/error.json"),
+            "multi-turn" => include_str!("../../../../../fixtures/pi/multi-turn.json"),
+            "busy" => include_str!("../../../../../fixtures/pi/busy.json"),
+            other => panic!("unknown fixture {other}"),
+        };
+        map_view(&serde_json::from_str(raw).expect("fixture is JSON"))
+    }
+
+    const ALL: [&str; 6] = [
+        "text",
+        "thinking",
+        "tool-call",
+        "error",
+        "multi-turn",
+        "busy",
+    ];
+
+    #[test]
+    fn a_plain_exchange_maps_to_a_user_and_an_assistant_message() {
+        let m = fixture("text");
+        assert_eq!(m.items.len(), 2);
+        assert!(
+            matches!(&m.items[0].kind, ItemKind::User { text, delivery: Delivery::Sent, .. } if text == "hello")
+        );
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Assistant { text, streaming: false } if text == "hello back")
+        );
+        assert!(
+            m.items[0].at > 1_700_000_000,
+            "timestamps are converted from milliseconds"
+        );
+        assert!(!m.busy);
+    }
+
+    #[test]
+    fn thinking_is_shown_before_the_answer() {
+        let m = fixture("thinking");
+        assert_eq!(m.items.len(), 3, "{:?}", m.items);
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Notice { text, .. } if text == "Thinking\nweigh the options")
+        );
+        assert!(
+            matches!(&m.items[2].kind, ItemKind::Assistant { text, .. } if text == "Here is my answer.")
+        );
+    }
+
+    #[test]
+    fn a_tool_call_pairs_with_its_real_result() {
+        let m = fixture("tool-call");
+        let shape: Vec<&str> = m
+            .items
+            .iter()
+            .map(|i| match &i.kind {
+                ItemKind::User { .. } => "user",
+                ItemKind::Assistant { .. } => "assistant",
+                ItemKind::Tool(_) => "tool",
+                ItemKind::Notice { .. } => "notice",
+            })
+            .collect();
+        assert_eq!(shape, ["user", "assistant", "tool", "assistant"]);
+        let ItemKind::Tool(tool) = &m.items[2].kind else {
+            panic!()
+        };
+        assert_eq!(tool.name, "read_file");
+        assert_eq!(tool.input, r#"{"path":"a.rs"}"#);
+        // The harness reported the tool as unavailable, which is a real error result.
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert!(
+            tool.output.contains("Tool read_file is not available"),
+            "{}",
+            tool.output
+        );
+        assert!(
+            matches!(&m.items[3].kind, ItemKind::Assistant { text, .. } if text == "Done reading.")
+        );
+    }
+
+    #[test]
+    fn a_model_error_shows_its_reason() {
+        let m = fixture("error");
+        assert_eq!(m.items.len(), 2);
+        assert!(
+            matches!(&m.items[1].kind, ItemKind::Notice { text, level: NoticeLevel::Error } if text == "provider unavailable")
+        );
+    }
+
+    #[test]
+    fn several_turns_keep_their_order() {
+        let m = fixture("multi-turn");
+        let texts: Vec<&str> = m
+            .items
+            .iter()
+            .map(|i| match &i.kind {
+                ItemKind::User { text, .. } | ItemKind::Assistant { text, .. } => text.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(texts, ["one", "first reply", "two", "second reply"]);
+    }
+
+    #[test]
+    fn a_run_in_progress_is_busy_without_inventing_content() {
+        let m = fixture("busy");
+        assert!(m.busy);
+        assert_eq!(
+            m.items.len(),
+            1,
+            "only the prompt; no partial answer has arrived"
+        );
+        assert!(matches!(&m.items[0].kind, ItemKind::User { text, .. } if text == "work on it"));
+    }
+
+    #[test]
+    fn nothing_real_is_reported_as_unsupported_and_ids_are_sound() {
+        for name in ALL {
+            let m = fixture(name);
+            assert_eq!(m.unsupported, 0, "{name}: {:?}", m.items);
+            let mut ids: Vec<u64> = m.items.iter().map(|i| i.id.0).collect();
+            let sorted = ids.clone();
+            ids.sort_unstable();
+            assert_eq!(ids, sorted, "{name}: items follow entry order");
+            ids.dedup();
+            assert_eq!(ids.len(), m.items.len(), "{name}: ids are unique");
+            assert!(ids.iter().all(|id| *id < LOCAL_ITEM_BASE), "{name}");
+        }
+    }
+}

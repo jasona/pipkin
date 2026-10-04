@@ -1,0 +1,85 @@
+{
+  "conversation": {
+    "id": 1
+  },
+  "entries": [
+    {
+      "model": [
+        {
+          "role": "user",
+          "content": "go",
+          "timestamp": 1791145448520
+        }
+      ],
+      "kind": "pi.user",
+      "id": 7,
+      "conversationId": 1
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [],
+          "api": "faux:1791145448519:s1e7p5kvvwk",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 2,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 2,
+            "totalTokens": 4,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "errorMessage": "provider unavailable",
+          "timestamp": 1791145448519
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 10,
+      "conversationId": 1,
+      "byTaskId": 9
+    }
+  ],
+  "docs": {
+    "pi.agent": {
+      "model": {
+        "provider": "faux",
+        "modelId": "faux-1"
+      }
+    },
+    "pi.live": {},
+    "pi.inbox": {
+      "items": []
+    },
+    "pi.provider": {
+      "sessionId": "01a10896-9448-7078-bfb7-48dba74f5028"
+    },
+    "pi.usage": {
+      "models": {
+        "faux/faux-1": {
+          "input": 2,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 2,
+          "totalTokens": 4,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        }
+      },
+      "tools": {}
+    }
+  }
+}

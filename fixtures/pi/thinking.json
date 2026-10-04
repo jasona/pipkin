@@ -1,0 +1,93 @@
+{
+  "conversation": {
+    "id": 1
+  },
+  "entries": [
+    {
+      "model": [
+        {
+          "role": "user",
+          "content": "think about it",
+          "timestamp": 1791145448507
+        }
+      ],
+      "kind": "pi.user",
+      "id": 7,
+      "conversationId": 1
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "weigh the options"
+            },
+            {
+              "type": "text",
+              "text": "Here is my answer."
+            }
+          ],
+          "api": "faux:1791145448506:z5sz43jyv7",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 5,
+            "output": 9,
+            "cacheRead": 0,
+            "cacheWrite": 5,
+            "totalTokens": 19,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1791145448506
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 10,
+      "conversationId": 1,
+      "byTaskId": 9
+    }
+  ],
+  "docs": {
+    "pi.agent": {
+      "model": {
+        "provider": "faux",
+        "modelId": "faux-1"
+      }
+    },
+    "pi.live": {},
+    "pi.inbox": {
+      "items": []
+    },
+    "pi.provider": {
+      "sessionId": "01a10896-943b-7078-bfb7-48d6f2db269d"
+    },
+    "pi.usage": {
+      "models": {
+        "faux/faux-1": {
+          "input": 5,
+          "output": 9,
+          "cacheRead": 0,
+          "cacheWrite": 5,
+          "totalTokens": 19,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        }
+      },
+      "tools": {}
+    }
+  }
+}

@@ -1,0 +1,595 @@
+{
+  "snapshot": {
+    "serviceId": "pi.transcript",
+    "mode": "singleton",
+    "instances": [
+      {
+        "members": [
+          {
+            "name": "state",
+            "kind": "state",
+            "sequence": 0,
+            "ops": [
+              [
+                "r",
+                {
+                  "conversation": {
+                    "id": 1
+                  },
+                  "entries": [],
+                  "docs": {
+                    "pi.agent": {
+                      "model": {
+                        "provider": "faux",
+                        "modelId": "faux-1"
+                      }
+                    },
+                    "pi.live": {},
+                    "pi.inbox": {
+                      "items": []
+                    },
+                    "pi.provider": {
+                      "sessionId": "01a10896-952d-7078-bfb7-48e5ca58ee3f"
+                    },
+                    "pi.usage": {
+                      "models": {},
+                      "tools": {}
+                    }
+                  }
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "updates": [
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 1,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "run"
+          ],
+          {
+            "taskId": 9,
+            "inputs": [
+              8
+            ]
+          }
+        ],
+        [
+          "p",
+          [
+            "entries"
+          ],
+          0,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "user",
+                  "content": "read a.rs",
+                  "timestamp": 1791145448751
+                }
+              ],
+              "kind": "pi.user",
+              "id": 7,
+              "conversationId": 1
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 2,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "generation"
+          ],
+          {
+            "attempt": 1
+          }
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 3,
+      "ops": [
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "tools"
+          ],
+          [
+            {
+              "callId": "call-1",
+              "name": "read_file",
+              "status": "done",
+              "entry": 11
+            }
+          ]
+        ],
+        [
+          "#",
+          0,
+          [
+            "docs",
+            "pi.live",
+            "generation"
+          ]
+        ],
+        [
+          "d",
+          0
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1"
+          ],
+          {
+            "input": 4,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 4,
+            "totalTokens": 18,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          }
+        ],
+        [
+          "#",
+          1,
+          [
+            "entries"
+          ]
+        ],
+        [
+          "p",
+          1,
+          1,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Reading it."
+                    },
+                    {
+                      "type": "toolCall",
+                      "id": "call-1",
+                      "name": "read_file",
+                      "arguments": {
+                        "path": "a.rs"
+                      }
+                    }
+                  ],
+                  "api": "faux:1791145448749:t93nwjwrsd",
+                  "provider": "faux",
+                  "model": "faux-1",
+                  "usage": {
+                    "input": 4,
+                    "output": 10,
+                    "cacheRead": 0,
+                    "cacheWrite": 4,
+                    "totalTokens": 18,
+                    "cost": {
+                      "input": 0,
+                      "output": 0,
+                      "cacheRead": 0,
+                      "cacheWrite": 0,
+                      "total": 0
+                    }
+                  },
+                  "stopReason": "toolUse",
+                  "timestamp": 1791145448749
+                }
+              ],
+              "kind": "pi.assistant",
+              "id": 10,
+              "conversationId": 1,
+              "byTaskId": 9
+            }
+          ]
+        ],
+        [
+          "p",
+          2,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "toolResult",
+                  "toolCallId": "call-1",
+                  "toolName": "read_file",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "<harness>\n[error] Tool read_file is not available\n</harness>"
+                    }
+                  ],
+                  "isError": true,
+                  "timestamp": 1791145448753
+                }
+              ],
+              "data": {
+                "diagnostics": [
+                  {
+                    "severity": "error",
+                    "code": "tool_unavailable",
+                    "message": "Tool read_file is not available"
+                  }
+                ]
+              },
+              "kind": "pi.tool-result",
+              "id": 11,
+              "conversationId": 1,
+              "byTaskId": 9
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 4,
+      "ops": [
+        [
+          "#",
+          2,
+          [
+            "docs",
+            "pi.live",
+            "tools"
+          ]
+        ],
+        [
+          "d",
+          2
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.live",
+            "run",
+            "taskId"
+          ],
+          12
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 5,
+      "ops": [
+        [
+          "s",
+          0,
+          {
+            "attempt": 1
+          }
+        ]
+      ]
+    },
+    {
+      "type": "state",
+      "member": "state",
+      "sequence": 6,
+      "ops": [
+        [
+          "#",
+          3,
+          [
+            "docs",
+            "pi.live",
+            "run"
+          ]
+        ],
+        [
+          "d",
+          3
+        ],
+        [
+          "d",
+          0
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1",
+            "input"
+          ],
+          37
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1",
+            "output"
+          ],
+          14
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1",
+            "cacheRead"
+          ],
+          4
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1",
+            "cacheWrite"
+          ],
+          37
+        ],
+        [
+          "s",
+          [
+            "docs",
+            "pi.usage",
+            "models",
+            "faux/faux-1",
+            "totalTokens"
+          ],
+          92
+        ],
+        [
+          "p",
+          1,
+          3,
+          0,
+          [
+            {
+              "model": [
+                {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Done reading."
+                    }
+                  ],
+                  "api": "faux:1791145448749:t93nwjwrsd",
+                  "provider": "faux",
+                  "model": "faux-1",
+                  "usage": {
+                    "input": 33,
+                    "output": 4,
+                    "cacheRead": 4,
+                    "cacheWrite": 33,
+                    "totalTokens": 74,
+                    "cost": {
+                      "input": 0,
+                      "output": 0,
+                      "cacheRead": 0,
+                      "cacheWrite": 0,
+                      "total": 0
+                    }
+                  },
+                  "stopReason": "stop",
+                  "timestamp": 1791145448749
+                }
+              ],
+              "kind": "pi.assistant",
+              "id": 13,
+              "conversationId": 1,
+              "byTaskId": 12
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  "final": {
+    "conversation": {
+      "id": 1
+    },
+    "entries": [
+      {
+        "model": [
+          {
+            "role": "user",
+            "content": "read a.rs",
+            "timestamp": 1791145448751
+          }
+        ],
+        "kind": "pi.user",
+        "id": 7,
+        "conversationId": 1
+      },
+      {
+        "model": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Reading it."
+              },
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "read_file",
+                "arguments": {
+                  "path": "a.rs"
+                }
+              }
+            ],
+            "api": "faux:1791145448749:t93nwjwrsd",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": {
+              "input": 4,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 4,
+              "totalTokens": 18,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "toolUse",
+            "timestamp": 1791145448749
+          }
+        ],
+        "kind": "pi.assistant",
+        "id": 10,
+        "conversationId": 1,
+        "byTaskId": 9
+      },
+      {
+        "model": [
+          {
+            "role": "toolResult",
+            "toolCallId": "call-1",
+            "toolName": "read_file",
+            "content": [
+              {
+                "type": "text",
+                "text": "<harness>\n[error] Tool read_file is not available\n</harness>"
+              }
+            ],
+            "isError": true,
+            "timestamp": 1791145448753
+          }
+        ],
+        "data": {
+          "diagnostics": [
+            {
+              "severity": "error",
+              "code": "tool_unavailable",
+              "message": "Tool read_file is not available"
+            }
+          ]
+        },
+        "kind": "pi.tool-result",
+        "id": 11,
+        "conversationId": 1,
+        "byTaskId": 9
+      },
+      {
+        "model": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done reading."
+              }
+            ],
+            "api": "faux:1791145448749:t93nwjwrsd",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": {
+              "input": 33,
+              "output": 4,
+              "cacheRead": 4,
+              "cacheWrite": 33,
+              "totalTokens": 74,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 1791145448749
+          }
+        ],
+        "kind": "pi.assistant",
+        "id": 13,
+        "conversationId": 1,
+        "byTaskId": 12
+      }
+    ],
+    "docs": {
+      "pi.agent": {
+        "model": {
+          "provider": "faux",
+          "modelId": "faux-1"
+        }
+      },
+      "pi.live": {},
+      "pi.inbox": {
+        "items": []
+      },
+      "pi.provider": {
+        "sessionId": "01a10896-952d-7078-bfb7-48e5ca58ee3f"
+      },
+      "pi.usage": {
+        "models": {
+          "faux/faux-1": {
+            "input": 37,
+            "output": 14,
+            "cacheRead": 4,
+            "cacheWrite": 37,
+            "totalTokens": 92,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          }
+        },
+        "tools": {}
+      }
+    }
+  }
+}
