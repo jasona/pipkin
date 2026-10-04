@@ -224,6 +224,12 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     state.set_now(now);
     state.set_request_prefix(request_prefix(now));
     state.set_connection(Connection::Connecting);
+    if options.mode == Mode::Real {
+        state.read_only = Some(
+            "This version can read Pi sessions but cannot run them yet, so prompts cannot be sent."
+                .into(),
+        );
+    }
     // Stored demo conversations and numeric-ID drafts must not leak into real mode. A real
     // backend reports its own connection state through `start`.
     let mut restore = (options.mode == Mode::Demo).then_some(loaded);

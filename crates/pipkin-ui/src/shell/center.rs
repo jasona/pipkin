@@ -181,12 +181,20 @@ impl Workspace {
                 cv.intent_error.clone(),
             )
         };
-        let _ = (retry_hint, models.len());
+        let _ = retry_hint;
+        let no_models = models.is_empty();
+        let read_only = self.state(cx).read_only.clone();
         let model_name = models
             .iter()
             .find(|m| Some(&m.id) == model_id.as_ref())
             .map(|m| m.name.clone())
-            .unwrap_or_else(|| "Choose model".into());
+            .unwrap_or_else(|| {
+                if models.is_empty() {
+                    "No models available".into()
+                } else {
+                    "Choose model".into()
+                }
+            });
         let this = cx.entity();
 
         // ---- status strip
@@ -211,6 +219,15 @@ impl Workspace {
                         })
                         .into_any_element(),
                 ],
+            )),
+            // This build can read sessions but not run them: say so where sending is offered.
+            RunState::Idle if read_only.is_some() => Some(strip(
+                cx,
+                "circle-help",
+                c.text_muted,
+                "Read-only",
+                read_only.as_deref().unwrap_or_default(),
+                vec![],
             )),
             RunState::Idle | RunState::Submitting { .. } => None,
             RunState::Running { .. } => Some(strip(
@@ -453,6 +470,7 @@ impl Workspace {
                     .trailing_icon("chevron-up")
                     .aria("Choose model (Ctrl+M)")
                     .selected(self.overlay == Overlay::Model)
+                    .disabled(no_models)
                     .on_click(move |window, cx| {
                         this.update(cx, |t, cx| t.open_overlay(Overlay::Model, window, cx))
                     })

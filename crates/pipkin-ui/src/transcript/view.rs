@@ -1356,6 +1356,7 @@ impl Render for TranscriptView {
         }
         let mut empty = true;
         let mut run_label = "Idle";
+        let read_only = self.model.read(cx).state.read_only.clone();
         self.resolved = None;
         if let Some(id) = self.current {
             self.ensure_conv(id, cx);
@@ -1417,13 +1418,16 @@ impl Render for TranscriptView {
                 }));
             }
             _ => {
-                let (title, hint) = if self.current.is_none() {
+                let (title, hint): (&str, String) = if self.current.is_none() {
                     (
                         "No conversation selected",
-                        "Choose a conversation or start a new one.",
+                        "Choose a conversation or start a new one.".into(),
                     )
                 } else {
-                    ("No messages yet", "Write a prompt below to begin.")
+                    match &read_only {
+                        Some(reason) => ("No messages in this session", reason.clone()),
+                        None => ("No messages yet", "Write a prompt below to begin.".into()),
+                    }
                 };
                 root = root.child(
                     div()

@@ -41,6 +41,7 @@ pub enum Command {
 /// What the application can do right now. UI controls and the command palette share this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Availability {
+    pub new_conversation: bool,
     pub submit: bool,
     pub steer: bool,
     pub queue: bool,

@@ -254,7 +254,7 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done. M1 is met against a real Pi server, with the caveats below.** Everything through the M1 code is committed and pushed; the later real-server work (attach retry, third real test, this doc) is not yet committed.
+**Where we are: M0 is done. M1 is met against a real Pi server, with the caveats below.** Committed and pushed through the attach retry; the real-mode UI fixes are not yet committed.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
@@ -262,7 +262,7 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 | M1 real read path | **Met, with caveats** | Real handshake, trust checks, catalogue, Delta hydration, session listing, attach, `Transcript` subscription and switching all pass against a real Pi server (3 opt-in tests, run repeatedly). The app was launched against it and showed the real session list and an opened session |
 | M2 and later | Not started | |
 
-`cargo test --workspace`: 297 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
+`cargo test --workspace`: 299 pass, 3 ignored (the real-server tests). Clippy and fmt clean.
 
 #### M1 caveats (what the real-server runs did NOT cover)
 
@@ -275,7 +275,7 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 1. **Pi server bug (report upstream):** re-attaching a session right after switching away from it fails with `internal_error: Internal server error`. Reproducible and deterministic with no pause (open A, open B, open A); with 300 ms or more between switches it never fails, so the session's worker is still retiring. The server swallows the real exception (no error sink is wired; nothing reaches stderr), so the cause is unconfirmed beyond that timing. **Pipkin's mitigation:** `PiBackend` retries `attach` on `internal_error` only, at 150/400/1000/2000 ms, logs each retry and then gives up with a visible error; other error codes are final. Attach only navigates, so the retry is safe. Covered by two mock tests and `real_server_switching_between_sessions`.
 2. The server-scope catalogue lists only `pi.session-directory`, `pi.session-management`, `pi.presentation-plugins`; `pi.models`, `pi.transcript`, `pi.agent-controller` appear after attach (session scope), as designed.
-3. **UI defects seen in real mode (not yet fixed):** the "New conversation" button is shown enabled but does nothing (the core refuses local creation in real mode); the empty state says "No messages yet. Write a prompt below to begin" although prompts are refused; "Choose model" is empty because the test server has no providers. Each visible control should either work or show a clear unavailable state.
+3. **UI defects seen in real mode: fixed** (screenshot-verified): "New conversation" is disabled where creation cannot work (`Availability::new_conversation`); a core `read_only` reason (set by the controller in real mode) disables send, steer, queue and retry, and is shown as a "Read-only" strip and in the empty state; the model chip reads "No models available" and is disabled when there are none. This also fixed a core bug: `current_project()` returned `None` whenever no conversation was selected, even with a project selected.
 
 #### What exists
 
@@ -307,7 +307,7 @@ cargo run -p pipkin-app --release -- --pi-dir /tmp/pipkin-pi/server \
 #### Next work, in order
 
 1. **Commit and push** the uncommitted real-server work.
-2. **Finish M1 properly:** get a non-empty real transcript through a faux-provider harness and verify the mapper against real entries; fix the three real-mode UI defects above; look at switching and the offline screens in the GUI; report the attach race to Pi.
+2. **Finish M1 properly:** get a non-empty real transcript through a faux-provider harness and verify the mapper against real entries; look at switching and the offline screens in the GUI; report the attach race to Pi.
 3. **M0 leftovers:** build manifest (tested Pi revision and service-contract version); surface storage fallback and load failures in the UI; restore from backup.
 4. **M2 (first complete real workflow):** `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery for real sessions, journaling of steer and follow-up requests.
 5. Smaller gaps: `Synced` replaces all items on each change (coalesce and reconcile by stable id in M2); no `has_older` paging; keyed-service replica support is untested against a real server.

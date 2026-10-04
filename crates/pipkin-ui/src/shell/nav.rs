@@ -141,12 +141,14 @@ impl Workspace {
                     })
                 })
         };
+        let new_enabled = self.state(cx).availability().new_conversation;
         let new_btn = {
             let this = cx.entity();
             Btn::new("new-conversation")
                 .icon("plus")
                 .label("New conversation")
                 .kind(BtnKind::Subtle)
+                .disabled(!new_enabled)
                 .on_click(move |window, cx| {
                     this.update(cx, |this, cx| {
                         this.close_panel(window, cx);

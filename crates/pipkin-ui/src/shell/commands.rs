@@ -48,7 +48,7 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             "New conversation",
             "Conversation",
             Some("Ctrl+N"),
-            state.current_project().is_some(),
+            a.new_conversation,
             Run::Action(Box::new(NewConversation)),
         ),
         cmd(
@@ -83,7 +83,7 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             "Choose model…",
             "Composer",
             Some("Ctrl+M"),
-            true,
+            !state.models.is_empty(),
             Run::Action(Box::new(OpenModelMenu)),
         ),
         cmd(

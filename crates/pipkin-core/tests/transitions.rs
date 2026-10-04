@@ -778,3 +778,40 @@ fn a_failed_open_is_visible_and_retryable() {
     s.apply_event(late);
     assert!(s.current().unwrap().items.is_empty());
 }
+
+#[test]
+fn new_conversation_is_offered_only_where_it_can_work() {
+    let mut s = state();
+    assert!(s.availability().new_conversation, "demo with a project");
+    // Also available before any conversation is selected.
+    s.selected = None;
+    assert!(s.availability().new_conversation);
+    // Not while disconnected.
+    s.set_connection(Connection::Offline("x".into()));
+    assert!(!s.availability().new_conversation);
+    s.set_connection(Connection::Ready);
+    // Real sessions are created by the engine, which cannot be asked yet.
+    s.mode = Mode::Real;
+    assert!(!s.availability().new_conversation);
+    // No project, nothing to create in.
+    let mut empty = empty_state(Prefs::default());
+    assert!(!empty.availability().new_conversation);
+    assert!(empty.dispatch(Command::NewConversation).effects.is_empty());
+}
+
+#[test]
+fn a_read_only_build_offers_no_way_to_send() {
+    let mut s = state();
+    s.read_only = Some("cannot run prompts yet".into());
+    s.dispatch(Command::EditDraft("hello".into()));
+    let a = s.availability();
+    assert!(!a.submit && !a.steer && !a.queue && !a.retry);
+    assert!(s.dispatch(Command::Submit).effects.is_empty());
+    assert!(
+        s.current().unwrap().pending_intent.is_none(),
+        "nothing was journaled"
+    );
+    // Reading still works: stopping and paging are not send actions.
+    s.read_only = None;
+    assert!(s.availability().submit);
+}

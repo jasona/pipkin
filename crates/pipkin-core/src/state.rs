@@ -76,6 +76,8 @@ pub struct AppState {
     pub prefs: Prefs,
     pub mode: Mode,
     pub connection: Connection,
+    /// Why this build cannot send prompts, if it cannot. Shown wherever sending is offered.
+    pub read_only: Option<String>,
     request_prefix: String,
     next_request: u64,
     next_op: u64,
@@ -118,6 +120,7 @@ impl AppState {
             prefs,
             mode: Mode::Demo,
             connection: Connection::Ready,
+            read_only: None,
             request_prefix: "req".into(),
             next_request: 1,
             next_op: 1,
@@ -149,10 +152,12 @@ impl AppState {
     }
 
     pub fn current_project(&self) -> Option<&Project> {
-        let p = self
-            .prefs
-            .selected_project
-            .or(self.current()?.project.into())?;
+        // Only consult the current conversation when no project is selected: `current()?`
+        // must not run eagerly, or an empty project would report no project at all.
+        let p = match self.prefs.selected_project {
+            Some(p) => p,
+            None => self.current()?.project,
+        };
         self.projects.iter().find(|x| x.id == p)
     }
 
@@ -220,27 +225,38 @@ impl AppState {
         if !self.connection.is_ready() {
             return Availability::default();
         }
+        // Real sessions are created by the engine, which this build cannot ask yet.
+        let new_conversation = self.mode == Mode::Demo && self.current_project().is_some();
         let Some(c) = self.current() else {
-            return Availability::default();
+            return Availability {
+                new_conversation,
+                ..Availability::default()
+            };
         };
         let has_text = !c.draft.text.trim().is_empty();
         let attachments_ok = c.draft.attachments.iter().all(|a| a.error.is_none());
         let ready = has_text && attachments_ok;
         let idle =
             matches!(c.run, RunState::Idle | RunState::Failed { .. }) && c.pending_intent.is_none();
+        // A read-only build offers no way to send, steer, queue or retry.
+        let can_send = self.read_only.is_none();
         Availability {
-            submit: idle && ready,
-            steer: matches!(c.run, RunState::Running { .. }) && has_text,
-            queue: matches!(
-                c.run,
-                RunState::Running { .. } | RunState::Submitting { .. }
-            ) && ready,
+            new_conversation,
+            submit: can_send && idle && ready,
+            steer: can_send && matches!(c.run, RunState::Running { .. }) && has_text,
+            queue: can_send
+                && matches!(
+                    c.run,
+                    RunState::Running { .. } | RunState::Submitting { .. }
+                )
+                && ready,
             cancel: matches!(
                 c.run,
                 RunState::Running { .. } | RunState::Submitting { .. }
             ),
             check_status: matches!(c.run, RunState::OutcomeUnknown { .. }),
-            retry: c.last_submission.is_some()
+            retry: can_send
+                && c.last_submission.is_some()
                 && c.pending_intent.is_none()
                 && (matches!(c.run, RunState::Failed { .. })
                     || matches!(
