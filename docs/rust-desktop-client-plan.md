@@ -254,7 +254,7 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done, M1 is met with caveats, M2, M3 and M4 (features) are complete; the native gates are with the owner (native-gate-testing.md).** M2 is committed and pushed (`97dc6f7`). M3 is in the working tree, uncommitted. M3 needed no new Pi changes; the Pi changes are the M2 ones, now committed and pushed in the fork (`../pi-fork/pi`, branch `client-session-cwd-and-request-ids`, `646a5841a`). The older `../pi` checkout is no longer used.
+**Where we are: M0 is done, M1 is met with caveats, M2 and M3 are complete, and M4 and M5 are complete as build milestones; the native and install gates are with the owner (native-gate-testing.md).** M2 is committed and pushed (`97dc6f7`). M3 is in the working tree, uncommitted. M3 needed no new Pi changes; the Pi changes are the M2 ones, now committed and pushed in the fork (`../pi-fork/pi`, branch `client-session-cwd-and-request-ids`, `646a5841a`). The older `../pi` checkout is no longer used.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
@@ -263,9 +263,10 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 | M2 first real workflow | **Complete** (caveats below) | 7 real-engine e2e tests: a real Pi engine plus a deterministic stub provider runs a file-changing tool; Pipkin shows output and diff and reopens the same history; dropped ack and lost prompt then relaunch do not accept the prompt twice; engine crash restart and lifecycle |
 | M3 daily-use execution and recovery | **Complete** (caveats below) | 16 more real-engine e2e tests (23 in all, run repeatedly, in parallel): stop, steer, follow-up, remove-queued, resume after restart, run started elsewhere, switching conversations, attachments (text, image) and their survival across a restart, lost acknowledgments (reply dropped, request dropped, app killed before it could ask), connection cut mid-run, engine killed mid-run, storage refusing the journal, provider configured after start |
 | M4 complete local product | **Complete (features); native gates handed to the owner**, tracked in [native-gate-testing.md](native-gate-testing.md) and not passed | 7 new real-engine e2e tests on top of M3's 23 (history past a compaction, complete tool output, offline copies and search, editor/terminal launch, a real extension asking three questions, decline and reconnect), a repeated 10,000-item traversal test, mock-engine paging of 10,000 entries, storage, core and adapter tests |
-| M5 and later | Not started | |
+| M5 distributable Wayland alpha | **Complete (build, package, verify in a scratch prefix); install on a clean system handed to the owner**, tracked in [native-gate-testing.md](native-gate-testing.md) gates 8 to 11 and not passed | An Arch package (`packaging/PKGBUILD`, built with `makepkg`), a bundled engine found without any checkout, `--version`/`--diagnose [--probe]`, a clean-environment install check, all 31 real-engine tests against the unpacked engine, an upgrade test from every earlier schema, and a 1500-prompt soak; see [packaging.md](packaging.md) |
+| M6 and later | Not started | |
 
-`cargo test --workspace`: 408 pass, 26 ignored (real-server and real-engine tests, which need `PIPKIN_PI_REPO`). Clippy and fmt clean.
+`cargo test --workspace`: 468 pass, 35 ignored (real-server and real-engine tests, which need `PIPKIN_PI_REPO`). Clippy and fmt clean.
 
 #### M4 summary and caveats
 
@@ -301,6 +302,27 @@ Findings during M4 (fixed): the open-conversation request was never retried when
 | Display-presentation latency | **Unmeasured** (frame submission is measured in the scorecard). |
 
 What remains to close M4: the screen-reader gate (typed-character and caret speech, plus a full workflow), the 150% checks listed above, and minimize/restore and a suspend/resume with Pipkin open, which need the owner at the machine. Cold boot and display-presentation latency are unmeasured. M4 stays **not complete** until those pass or the owner explicitly changes the exit criterion.
+
+#### M5 summary and caveats
+
+What was built, and what was checked (measured here, not on a clean machine):
+
+- **Bundled engine.** `scripts/build-engine.sh` stages the Pi fork into a self-contained directory (sources, production dependencies, `engine.json` with version, protocol and minimum client). Pipkin finds it next to its own binary (`../lib/pipkin/engine`), at `PIPKIN_ENGINE_DIR`, or in `/usr/lib/pipkin/engine`, validates it (protocol, completeness, minimum client, Node >= 22.19) and launches and owns it. `--pi-repo`, `--pi-dir` and `--pi-server-id` still win for development.
+- **Package.** `scripts/package.sh` builds a tarball in the `/usr` layout; `packaging/PKGBUILD` makes an Arch package of the same tree (built here with `makepkg`, `!lto` needed for the bundled SQLite), with a desktop entry (`StartupWMClass=pipkin`, validated) and an icon.
+- **Clean-install check.** `scripts/verify-install.sh` unpacks the package into a scratch prefix and runs it with an empty `HOME`, a minimal `PATH`, no engine override and a non-checkout working directory: the engine is found from the binary's location, a throwaway engine answers a trusted handshake, the desktop entry validates, no link escapes the prefix. With `--full`, all 31 real-engine tests pass against the unpacked engine.
+- **Upgrade and recovery.** A test upgrades a database from every earlier schema and checks the unsent draft survives and a backup of the old schema is kept; a newer-schema database is refused untouched; a damaged one is restored from the newest intact backup (existing tests). Procedure: [packaging.md](packaging.md).
+- **Diagnostics.** `pipkin --version`, `pipkin --diagnose` (versions, paths, database health read-only, engine manifest and rejection reasons, Node, display, engine log tail, home directory hidden, non-zero exit on a problem) and `--diagnose --probe`.
+- **Soak.** A real-engine test sends 1500 prompts through one conversation: the app's memory grew 22 to 52 MiB, the engine's 633 to 700 MiB, open files 15 to 19. (It first showed 1.4 GiB of growth, which was the test's own scripted provider keeping every request in-process; the provider now forgets them.)
+
+**Exit criterion: not met as written, and not claimed.** "A clean supported Omarchy/Arch installation runs the workflow from a desktop launcher" was not tried: nothing was installed with `pacman -U` (it needs sudo), no launcher was used, and no GUI was opened from the installed copy. As with M4, the owner asked to move on with separate test notes, so M5 is marked complete as a build milestone and gates 8 to 11 (clean install, upgrade, rollback, a day-long soak) are in [native-gate-testing.md](native-gate-testing.md), unverified.
+
+Caveats:
+
+- The engine is Pi's TypeScript source run by Node, not a compiled artifact (Pi publishes no compiled experimental server); the package is about 850 MiB installed. A compiled engine is Pi-side work.
+- The package is local (`makepkg` from this checkout and the Pi fork checkout); there is no repository, signing, or AUR package. The fork's commit is recorded as the engine version.
+- Diagnostics are a command and a log file; there is no in-app "copy diagnostics" action.
+- Engine upgrade is atomic with the app (one package), but a rollback after a schema change needs the backup restored by hand.
+- Only x86_64 Arch with Wayland and system Node was considered. Power-loss, disk-full and GPU-driver coverage are unmeasured.
 
 Caveats of the features themselves:
 

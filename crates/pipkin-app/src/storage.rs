@@ -125,6 +125,33 @@ const OPEN_STATES: &str = "'intent', 'unknown', 'accepted'";
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
+/// A read-only summary of a database for diagnostics: its schema version, size and integrity.
+/// Opens read-only, so it never migrates, repairs or creates anything.
+pub fn inspect(path: &Path) -> Result<String, String> {
+    if !path.exists() {
+        return Ok("none yet (created on first run)".into());
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(sql_err)?;
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(sql_err)?;
+    let check: String = conn
+        .query_row("PRAGMA quick_check", [], |r| r.get(0))
+        .map_err(sql_err)?;
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "schema {version} is newer than this build supports ({SCHEMA_VERSION}); \
+             upgrade Pipkin, or restore a backup made before the newer version"
+        ));
+    }
+    if check != "ok" {
+        return Err(format!("integrity check says: {check}"));
+    }
+    Ok(format!("schema {version}, {bytes} bytes, integrity ok"))
+}
+
 pub type Ack = Box<dyn FnOnce(Result<(), String>) + Send>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1397,6 +1424,68 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn an_upgrade_from_every_earlier_schema_keeps_the_draft_and_makes_a_backup() {
+        for from in 1..SCHEMA_VERSION {
+            let (_dir, path) = tmp_db();
+            {
+                let conn = Connection::open(&path).unwrap();
+                for sql in &MIGRATIONS[..from as usize] {
+                    conn.execute_batch(sql).unwrap();
+                }
+                conn.execute_batch(&format!("PRAGMA user_version = {from}"))
+                    .unwrap();
+                // Drafts gained a namespace column in schema 3.
+                let insert = if from < 3 {
+                    "INSERT INTO drafts VALUES (9, 'unsent words', 4, 0)".to_owned()
+                } else {
+                    format!(
+                        "INSERT INTO drafts (namespace, conversation_id, text, rev, updated_at) \
+                         VALUES ('{DEMO_NAMESPACE}', 9, 'unsent words', 4, 0)"
+                    )
+                };
+                conn.execute(&insert, []).unwrap();
+            }
+            let s = Storage::open(&path, DEMO_NAMESPACE).unwrap();
+            let loaded = s.load_all().unwrap();
+            assert!(
+                loaded.drafts.iter().any(|d| d.text == "unsent words"),
+                "the draft survived an upgrade from schema {from}"
+            );
+            assert!(
+                intact_backups(&path).iter().any(|(v, _)| *v == from),
+                "a backup of schema {from} was kept for rolling back"
+            );
+            s.shutdown();
+            assert!(
+                inspect(&path)
+                    .unwrap()
+                    .contains(&format!("schema {SCHEMA_VERSION}"))
+            );
+        }
+    }
+
+    #[test]
+    fn inspect_reports_without_changing_anything() {
+        let (_dir, path) = tmp_db();
+        assert!(inspect(&path).unwrap().contains("none yet"));
+        assert!(!path.exists(), "inspecting does not create a database");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        }
+        assert!(inspect(&path).unwrap().contains("schema 1"));
+        let conn = Connection::open(&path).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 1, "an old database is not migrated by looking at it");
+        conn.execute_batch(&format!("PRAGMA user_version = {}", SCHEMA_VERSION + 1))
+            .unwrap();
+        assert!(inspect(&path).unwrap_err().contains("newer"));
     }
 
     #[test]

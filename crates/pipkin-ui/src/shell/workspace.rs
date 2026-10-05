@@ -71,6 +71,10 @@ pub struct Workspace {
     toast_task: Option<Task<()>>,
     pub(super) diff_scroll: UniformListScrollHandle,
     pub(super) nav_scroll: ScrollHandle,
+    /// The model/project menu's list, so the highlighted row is kept in view.
+    pub(super) menu_scroll: ScrollHandle,
+    /// Where the model button was last painted, so its menu opens right above it.
+    pub(super) model_button: Option<gpui::Bounds<gpui::Pixels>>,
     pub(super) changes_scroll: ScrollHandle,
     pub(super) diff_rows: DiffRows,
     live_nav: Option<f32>,
@@ -137,6 +141,8 @@ impl Workspace {
             toast_task: None,
             diff_scroll: UniformListScrollHandle::new(),
             nav_scroll: ScrollHandle::new(),
+            menu_scroll: ScrollHandle::new(),
+            model_button: None,
             changes_scroll: ScrollHandle::new(),
             diff_rows: DiffRows::default(),
             live_nav: None,
@@ -415,6 +421,7 @@ impl Workspace {
                     .iter()
                     .position(|m| Some(&m.id) == cur.as_ref())
                     .unwrap_or(0);
+                self.menu_scroll.scroll_to_item(self.overlay_sel);
                 window.focus(&self.menu_focus, cx);
             }
             Overlay::Project | Overlay::Prefs => window.focus(&self.menu_focus, cx),
@@ -508,6 +515,7 @@ impl Workspace {
     pub(super) fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
         let n = self.overlay_len(cx).max(1) as i32;
         self.overlay_sel = (self.overlay_sel as i32 + delta).rem_euclid(n) as usize;
+        self.menu_scroll.scroll_to_item(self.overlay_sel);
         cx.notify();
     }
 

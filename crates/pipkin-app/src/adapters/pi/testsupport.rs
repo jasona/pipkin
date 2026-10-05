@@ -245,6 +245,11 @@ impl StubProvider {
         format!("http://127.0.0.1:{}/v1", self.port)
     }
 
+    /// Drop the recorded requests (they carry whole histories), for long runs that measure memory.
+    pub fn forget_requests(&self) {
+        self.requests.lock().unwrap().clear();
+    }
+
     /// Every chat-completions request the engine has made, in order.
     pub fn requests(&self) -> Vec<Value> {
         self.requests

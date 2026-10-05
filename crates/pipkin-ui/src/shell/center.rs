@@ -722,15 +722,33 @@ impl Workspace {
             })
             .child({
                 let this = this.clone();
-                Btn::new("model-menu")
-                    .label(model_name)
-                    .trailing_icon("chevron-up")
-                    .aria("Choose model (Ctrl+M)")
-                    .selected(self.overlay == Overlay::Model)
-                    .disabled(no_models)
-                    .on_click(move |window, cx| {
-                        this.update(cx, |t, cx| t.open_overlay(Overlay::Model, window, cx))
-                    })
+                let measure = this.clone();
+                div()
+                    .relative()
+                    .child(
+                        Btn::new("model-menu")
+                            .label(model_name)
+                            .trailing_icon("chevron-up")
+                            .aria("Choose model (Ctrl+M)")
+                            .selected(self.overlay == Overlay::Model)
+                            .disabled(no_models)
+                            .on_click(move |window, cx| {
+                                this.update(cx, |t, cx| t.open_overlay(Overlay::Model, window, cx))
+                            }),
+                    )
+                    // Remember where the button is, for the menu that opens above it.
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, cx| {
+                                measure.update(cx, |t, _| t.model_button = Some(bounds))
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
             })
             .child(div().flex_1())
             .child(

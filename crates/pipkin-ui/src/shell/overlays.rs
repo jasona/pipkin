@@ -120,16 +120,35 @@ impl Workspace {
         };
         let h = window.viewport_size().height;
         let positioned = match overlay {
-            Overlay::Model => div()
+            // Opens just above the model button: its bottom-left corner sits at the button's
+            // top-left, in window coordinates, and is kept inside the window.
+            Overlay::Model => match self.model_button {
+                Some(button) => gpui::deferred(
+                    gpui::anchored()
+                        .anchor(gpui::Anchor::BottomLeft)
+                        .position(gpui::point(button.origin.x, button.origin.y - px(6.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(panel),
+                )
+                .with_priority(2)
+                .into_any_element(),
+                None => div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .items_center()
+                    .pb(px(168.0))
+                    .child(panel)
+                    .into_any_element(),
+            },
+            Overlay::Project => div()
                 .absolute()
-                .inset_0()
-                .flex()
-                .flex_col()
-                .justify_end()
-                .items_center()
-                .pb(px(168.0))
-                .child(panel),
-            Overlay::Project => div().absolute().left(px(8.0)).top(px(52.0)).child(panel),
+                .left(px(8.0))
+                .top(px(52.0))
+                .child(panel)
+                .into_any_element(),
             _ => div()
                 .absolute()
                 .inset_0()
@@ -137,7 +156,8 @@ impl Workspace {
                 .flex_col()
                 .items_center()
                 .pt(px((f32::from(h) * 0.16).max(40.0)))
-                .child(panel),
+                .child(panel)
+                .into_any_element(),
         };
         div().absolute().inset_0().child(backdrop).child(positioned)
     }
@@ -396,6 +416,14 @@ impl Workspace {
         let this = cx.entity();
         let model_mode = self.overlay == Overlay::Model;
         let sel = self.overlay_sel;
+        // Tall enough to be useful, never taller than the space above the button it opens from.
+        let list_cap = {
+            let cap = 420.0 * t.scale.max(1.0);
+            match (model_mode, self.model_button) {
+                (true, Some(b)) => (f32::from(b.origin.y) - 24.0).clamp(120.0, cap),
+                _ => cap,
+            }
+        };
         let entries: Vec<(String, String, bool)> = {
             let s = self.state(cx);
             if model_mode {
@@ -428,42 +456,53 @@ impl Workspace {
             .flex()
             .flex_col()
             .occlude()
-            .children(
-                entries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (name, note, checked))| {
-                        let this = this.clone();
-                        menu_row(("menu", i), i == sel, cx)
-                            .role(Role::MenuItem)
-                            .aria_label(name.clone())
-                            .on_click(move |_, window, cx| {
-                                this.update(cx, |t, cx| {
-                                    t.overlay_sel = i;
-                                    t.confirm_selection(window, cx);
-                                })
-                            })
-                            .child(div().w(px(16.0)).child(if checked {
-                                icon("check", px(14.0), c.accent).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().truncate().child(name))
+            .child(
+                // A long list (every model a provider offers) scrolls inside the menu instead
+                // of running off the window.
+                div()
+                    .id("menu-list")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(list_cap))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.menu_scroll)
+                    .children(
+                        entries
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, (name, note, checked))| {
+                                let this = this.clone();
+                                menu_row(("menu", i), i == sel, cx)
+                                    .role(Role::MenuItem)
+                                    .aria_label(name.clone())
+                                    .on_click(move |_, window, cx| {
+                                        this.update(cx, |t, cx| {
+                                            t.overlay_sel = i;
+                                            t.confirm_selection(window, cx);
+                                        })
+                                    })
+                                    .child(div().w(px(16.0)).child(if checked {
+                                        icon("check", px(14.0), c.accent).into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    }))
                                     .child(
                                         div()
-                                            .truncate()
-                                            .text_size(t.small_size())
-                                            .text_color(c.text_faint)
-                                            .child(note),
-                                    ),
-                            )
-                    }),
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .child(div().truncate().child(name))
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_size(t.small_size())
+                                                    .text_color(c.text_faint)
+                                                    .child(note),
+                                            ),
+                                    )
+                            }),
+                    ),
             )
     }
 

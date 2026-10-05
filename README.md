@@ -4,12 +4,14 @@ Native Rust/GPUI desktop client for Pi. Started as a single-pass prototype ([`do
 
 ```sh
 # system: Wayland compositor, Vulkan driver, fontconfig, xkbcommon; Rust 1.99.0 (rust-toolchain.toml)
-# real mode (default): a client for a running Pi experimental server, or one it launches and owns (--pi-repo)
+# real mode (default): launches and owns the bundled engine of an installation (see docs/packaging.md), else a client for a running Pi experimental server, or one it launches and owns (--pi-repo)
 cargo run -p pipkin-app --release -- [--pi-dir DIR] [--pi-server-id UUID] [--pi-repo DIR --pi-agent-dir DIR [--pi-extension DIR]...] [--project DIR] [--data-dir DIR] [--editor CMD] [--terminal CMD]
 # simulated agent, for regression and demos only
 cargo run -p pipkin-app --release -- --demo normal [--data-dir DIR] [--speed 1.0]
 cargo test --workspace && cargo clippy --workspace --all-targets && cargo fmt --all --check
 ```
+
+Install, packaging, upgrade, rollback and diagnostics (`pipkin --version`, `--diagnose [--probe]`): [`docs/packaging.md`](docs/packaging.md). Owner-run checks: [`docs/native-gate-testing.md`](docs/native-gate-testing.md).
 
 Real mode needs a Pi engine; `scripts/try-m2.sh <pi checkout>` launches the app against a managed engine and a scripted offline provider (a prompt containing "slow" holds the run so it can be steered, queued and stopped). It needs a Pi server; `scripts/pi-test-server.sh` starts an isolated throwaway one (setup notes are in the plan's "Implementation status"). The opt-in real-server tests are `cargo test -p pipkin-app real_pi -- --ignored`.
 

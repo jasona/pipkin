@@ -28,6 +28,8 @@ const MAX_BATCH: usize = 512;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Options {
+    /// What to do: run the application, or print a report and exit.
+    pub action: Action,
     pub mode: Mode,
     pub scenario: String,
     pub data_dir: Option<PathBuf>,
@@ -51,9 +53,22 @@ pub struct Options {
     pub terminal: Option<String>,
 }
 
+/// What a launch is for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Action {
+    #[default]
+    Run,
+    /// `--version`: print the version and exit.
+    Version,
+    /// `--diagnose [--probe]`: print an installation report and exit; `probe` also starts a
+    /// throwaway engine to check it answers.
+    Diagnose { probe: bool },
+}
+
 impl Default for Options {
     fn default() -> Self {
         Options {
+            action: Action::Run,
             mode: Mode::Real,
             scenario: "normal".into(),
             data_dir: None,
@@ -68,6 +83,12 @@ impl Default for Options {
             terminal: None,
         }
     }
+}
+
+/// A path made absolute against the current directory. The engine is started from the home
+/// directory, so a relative `--pi-repo ../pi-fork/pi` would point somewhere else there.
+fn absolute(path: String) -> Result<PathBuf, String> {
+    std::path::absolute(&path).map_err(|e| format!("{path}: {e}"))
 }
 
 impl Options {
@@ -104,9 +125,16 @@ impl Options {
                     options.scenario = name;
                     options.mode = Mode::Demo;
                 }
-                "--data-dir" => options.data_dir = Some(PathBuf::from(value("--data-dir")?)),
-                "--pi-dir" => options.pi_dir = Some(PathBuf::from(value("--pi-dir")?)),
-                "--pi-repo" => options.pi_repo = Some(PathBuf::from(value("--pi-repo")?)),
+                "--version" | "-V" => options.action = Action::Version,
+                "--diagnose" => {
+                    options.action = Action::Diagnose {
+                        probe: matches!(options.action, Action::Diagnose { probe: true }),
+                    }
+                }
+                "--probe" => options.action = Action::Diagnose { probe: true },
+                "--data-dir" => options.data_dir = Some(absolute(value("--data-dir")?)?),
+                "--pi-dir" => options.pi_dir = Some(absolute(value("--pi-dir")?)?),
+                "--pi-repo" => options.pi_repo = Some(absolute(value("--pi-repo")?)?),
                 "--project" => options.projects.push(PathBuf::from(value("--project")?)),
                 "--pi-extension" => {
                     let path = PathBuf::from(value("--pi-extension")?);
@@ -118,7 +146,7 @@ impl Options {
                 "--editor" => options.editor = Some(value("--editor")?),
                 "--terminal" => options.terminal = Some(value("--terminal")?),
                 "--pi-agent-dir" => {
-                    options.pi_agent_dir = Some(PathBuf::from(value("--pi-agent-dir")?))
+                    options.pi_agent_dir = Some(absolute(value("--pi-agent-dir")?)?)
                 }
                 "--pi-server-id" => {
                     let id = value("--pi-server-id")?;
@@ -197,6 +225,38 @@ fn namespace(options: &Options) -> String {
             "pi:{:x}",
             stable_id(&profile_dir(options).display().to_string())
         ),
+    }
+}
+
+/// The engine directory to launch and own: `--pi-repo`, else, when no running server was named
+/// (`--pi-dir`, `--pi-server-id`), the bundled engine of an installation.
+fn engine_to_launch(options: &Options) -> Option<PathBuf> {
+    if let Some(repo) = &options.pi_repo {
+        return Some(repo.clone());
+    }
+    if options.pi_dir.is_some() || options.pi_server_id.is_some() {
+        return None;
+    }
+    let candidates = crate::install::engine_search_dirs(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os(crate::install::ENGINE_DIR_ENV).map(PathBuf::from),
+    );
+    match crate::install::find_engine(&candidates) {
+        Ok((dir, manifest)) => {
+            log::info!(
+                "using the bundled engine {} at {}",
+                manifest.version,
+                dir.display()
+            );
+            Some(dir)
+        }
+        Err(reasons) => {
+            log::info!(
+                "no bundled engine ({}); looking for a running server",
+                reasons.join("; ")
+            );
+            None
+        }
     }
 }
 
@@ -490,8 +550,8 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     let backend: Arc<dyn Backend> = match &demo {
         Some(demo) => demo.clone(),
         None => {
-            let config = match &options.pi_repo {
-                Some(repo) => match managed_engine(&options, repo) {
+            let config = match engine_to_launch(&options) {
+                Some(repo) => match managed_engine(&options, &repo) {
                     Ok(engine) => PiConfig::managed(engine),
                     Err(error) => {
                         // Say why the engine cannot be launched; do not quietly fall back.
@@ -954,6 +1014,23 @@ mod tests {
         assert_eq!(o.mode, Mode::Demo);
         assert_eq!(o.data_dir, Some(PathBuf::from("/tmp/x")));
         assert_eq!(o.speed, 0.5);
+    }
+
+    #[test]
+    fn relative_paths_become_absolute_because_the_engine_starts_elsewhere() {
+        let here = std::env::current_dir().unwrap();
+        let o = parse(&[
+            "--pi-repo=../pi-fork/pi",
+            "--pi-agent-dir",
+            "agent",
+            "--data-dir=d",
+            "--pi-dir=s",
+        ])
+        .unwrap();
+        for path in [&o.pi_repo, &o.pi_agent_dir, &o.data_dir, &o.pi_dir] {
+            assert!(path.as_ref().unwrap().is_absolute(), "{path:?}");
+        }
+        assert_eq!(o.pi_agent_dir, Some(here.join("agent")));
     }
 
     #[test]

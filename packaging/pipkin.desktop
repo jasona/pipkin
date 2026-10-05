@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Pipkin
+GenericName=Coding agent client
+Comment=Native desktop client for the Pi coding agent
+Exec=pipkin
+Icon=pipkin
+Terminal=false
+Categories=Development;
+Keywords=pi;agent;coding;chat;
+StartupWMClass=pipkin
+StartupNotify=true

@@ -12,4 +12,13 @@ These checks need a person at the machine and a real desktop session. They are *
 | 6 | 150% scale | Set the display to 150% (Hyprland may snap to 1.6). Check light and dark themes, enlarged text, focus rings, a narrow window. | No clipped text or controls; focus ring visible; layout usable. One capture at 1.6 looked correct. | partial |
 | 7 | Presentation latency | Needs a high-speed camera or compositor timing. | Not measurable from inside the app. | unverified |
 
+## Install gates (need sudo, so owner-run)
+
+| # | Gate | Steps | Pass when | Result |
+|---|------|-------|-----------|--------|
+| 8 | Clean install | `cd packaging && makepkg -d -f`, then `sudo pacman -U pipkin-*.pkg.tar.zst` on a machine or fresh user with no Pi checkout. | Pipkin appears in the launcher (Walker/rofi) with its icon; opening it shows the window; `pipkin --diagnose --probe` ends with no problems; a conversation with a real provider works. | unverified |
+| 9 | Upgrade | Install again over it (bump `pkgrel`); open Pipkin with a saved draft first. | Draft and history are still there; `--diagnose` shows the new engine. | unverified |
+| 10 | Rollback | `sudo pacman -U` the older package after the upgrade. | If the schema changed, Pipkin says the database is newer and stays untouched; restoring the backup works. | unverified |
+| 11 | Long soak | `PIPKIN_SOAK_ROUNDS=20000` (see docs/packaging.md), and the real app open for a day. | Memory and open files stay flat. | partial (1500 prompts run) |
+
 Record results here with the date, compositor, scale and input-method engine used.

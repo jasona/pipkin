@@ -236,6 +236,8 @@ pub fn menu_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<
     div()
         .id(id)
         .flex()
+        // A row keeps its height: in a scrolling list it must scroll, not squeeze.
+        .flex_none()
         .items_center()
         .gap(px(8.0))
         .min_h(t.control_height())

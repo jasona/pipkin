@@ -2558,3 +2558,77 @@ fn seed_a_profile_to_look_at() {
     println!("SEED_SERVER_ID={server_id}");
     println!("SEED_NAMESPACE={namespace}");
 }
+
+/// Resident memory in KiB of the given processes, from `/proc`.
+fn rss_kib(pids: &[u32]) -> u64 {
+    pids.iter()
+        .filter_map(|pid| std::fs::read_to_string(format!("/proc/{pid}/statm")).ok())
+        .filter_map(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map(|pages| pages * 4)
+        .sum()
+}
+
+fn open_fds() -> usize {
+    std::fs::read_dir("/proc/self/fd").map_or(0, Iterator::count)
+}
+
+/// A soak: many prompts through one conversation of a real engine, watching that memory and open
+/// files stop growing. `PIPKIN_SOAK_ROUNDS` (default 40) sets the length; a long run is the same
+/// test with a bigger number. Not a leak proof, a tripwire for steady growth per prompt.
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn many_prompts_in_one_conversation_do_not_grow_memory_or_open_files() {
+    let rounds: usize = std::env::var("PIPKIN_SOAK_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let fx = Fixture::start(|_, n| Reply::Text(format!("answer {n}: {}", "words ".repeat(40))));
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+
+    let warmup = (rounds / 4).max(3).min(rounds);
+    let (mut engine_base, mut app_base, mut fds_base) = (0, 0, 0);
+    let (mut engine_peak, mut app_peak, mut fds_peak) = (0, 0, 0);
+    for round in 1..=rounds {
+        h.send(&format!("prompt {round}"));
+        h.until("the answer arrives", |s| {
+            is_idle(s) && assistant_texts(s).len() >= round
+        });
+        fx.provider.forget_requests();
+        let engine = rss_kib(&profile_pids(&fx.server_dir, &fx.server_id));
+        let app = rss_kib(&[std::process::id()]);
+        let fds = open_fds();
+        if round == warmup {
+            (engine_base, app_base, fds_base) = (engine, app, fds);
+        }
+        if round > warmup {
+            engine_peak = engine_peak.max(engine);
+            app_peak = app_peak.max(app);
+            fds_peak = fds_peak.max(fds);
+        }
+    }
+    println!(
+        "soak {rounds} prompts: engine {engine_base} -> {engine_peak} KiB, app {app_base} -> {app_peak} KiB, fds {fds_base} -> {fds_peak}"
+    );
+    assert_eq!(h.user_messages().len(), rounds);
+    // Generous bounds: transcripts legitimately grow, so allow a little per prompt, but not a
+    // multiple of the baseline or a file handle per prompt.
+    let per_prompt = 600; // KiB
+    let allowed = (rounds - warmup) as u64 * per_prompt + 64 * 1024;
+    assert!(
+        engine_peak <= engine_base + allowed,
+        "engine memory grew {engine_base} -> {engine_peak} KiB over {rounds} prompts"
+    );
+    assert!(
+        app_peak <= app_base + allowed,
+        "app memory grew {app_base} -> {app_peak} KiB over {rounds} prompts"
+    );
+    assert!(
+        fds_peak <= fds_base + 8,
+        "open files grew {fds_base} -> {fds_peak}"
+    );
+    h.storage.shutdown();
+    h.backend.shutdown();
+}
