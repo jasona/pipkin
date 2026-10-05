@@ -1482,8 +1482,10 @@ fn workspace_changes_follow_the_session_directory_and_update_when_a_tool_finishe
             }
         }
     };
-    // Opening scans the session's directory: clean at first.
-    assert!(changes(&env).is_empty());
+    // A fresh session starts with a fresh inspector. Its first workspace scan waits
+    // for work in this session rather than showing pre-existing project changes.
+    assert!(matches!(env.next_event().kind, EventKind::Opened { .. }));
+    env.no_event_within(150);
 
     // A tool edits a tracked file and creates a new one; the transcript shows a finished tool.
     std::fs::write(

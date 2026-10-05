@@ -731,6 +731,19 @@ fn a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history() {
     again.until("the workspace changes load", |s| {
         s.current().unwrap().changes.len() == 2
     });
+    // A fresh conversation in the same dirty repository must not start with the
+    // previous session's workspace diff; returning to the old one retains its view.
+    again.dispatch(Command::NewConversation);
+    again.until("new conversation opens", |s| {
+        s.selected != Some(conversation) && s.current().is_some_and(|c| c.opened)
+    });
+    thread::sleep(Duration::from_millis(150));
+    assert!(again.state.current().unwrap().changes.is_empty());
+    again.dispatch(Command::SelectConversation(conversation));
+    again.until("old conversation's changes return", |s| {
+        s.current()
+            .is_some_and(|c| c.id == conversation && c.changes.len() == 2)
+    });
     again.stop();
 }
 

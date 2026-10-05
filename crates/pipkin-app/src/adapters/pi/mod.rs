@@ -599,6 +599,8 @@ struct Current {
     /// What the last transcript showed, to notice when tools finish or a run ends.
     tools_done: usize,
     busy: bool,
+    /// A new, untouched session must not inherit the project's already-dirty diff.
+    workspace_ready: bool,
     /// The oldest entry the live view held last time, to notice a compaction or reset moving it.
     oldest_entry: Option<u64>,
 }
@@ -1226,6 +1228,9 @@ impl Live {
             worker.runs.remove(&op);
             worker.cancelling.remove(&op);
             worker.emit_op(run.conversation, run.generation, op, event);
+            if let Some(current) = self.current.as_mut() {
+                current.workspace_ready = true;
+            }
             self.schedule_changes(worker);
         }
         self.resolve_queue_unknown(worker);
@@ -1465,6 +1470,9 @@ impl Live {
     /// time (a request during a scan asks for one more afterwards).
     fn schedule_changes(&mut self, worker: &Worker) {
         let Some(current) = &self.current else { return };
+        if !current.workspace_ready {
+            return;
+        }
         let Some(cwd) = current.cwd.clone() else {
             return;
         };
@@ -1608,6 +1616,7 @@ impl Live {
         let oldest_entry = transcript::oldest_entry_id(&view);
         let mapped = transcript::map_view(&view);
         let (tools_done, busy) = (tools_done(&mapped), mapped.busy);
+        let workspace_ready = !mapped.items.is_empty();
         let queue = mapped.queue.clone();
         let kind = if initial {
             EventKind::Opened {
@@ -1662,6 +1671,7 @@ impl Live {
             cwd: session.cwd,
             tools_done,
             busy,
+            workspace_ready,
             oldest_entry,
         });
         self.schedule_changes(worker);
@@ -1829,6 +1839,7 @@ impl Live {
                     .as_mut()
                     .map(|c| {
                         let changed = c.tools_done != done || c.busy != busy;
+                        c.workspace_ready |= c.tools_done != done || (c.busy && !busy);
                         c.tools_done = done;
                         c.busy = busy;
                         changed
