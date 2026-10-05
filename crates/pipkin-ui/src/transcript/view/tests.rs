@@ -791,6 +791,38 @@ fn a_reply_after_steps_or_thinking_is_labelled_but_one_after_a_reply_is_not() {
     assert!(!starts_reply(Some(&reply)), "a second part of one reply");
 }
 
+#[test]
+fn collapsed_work_shows_latest_explanation_then_outcome_not_tool_details() {
+    let items = vec![
+        notice(1, "Thinking\n**Inspecting llm-docs file**"),
+        tool(2),
+        notice(3, "Thinking\n**Preparing two commits**"),
+        tool(4),
+    ];
+    let summary = "Read 1 file, ran 2 commands · 9s";
+    assert_eq!(
+        activity_caption(&items, true, false, summary),
+        "Preparing two commits"
+    );
+    assert_eq!(
+        activity_caption(&items, false, false, summary),
+        "Read 1 file, ran 2 commands · 9s · Done."
+    );
+    assert_eq!(
+        activity_caption(&items, false, true, summary),
+        "Read 1 file, ran 2 commands · 9s · Finished with errors."
+    );
+    assert_eq!(activity_caption(&items, false, false, ""), "Done.");
+    assert_eq!(
+        activity_caption(&items[1..2], true, false, summary),
+        "Working…"
+    );
+    assert_eq!(
+        activity_caption(&[notice(5, "Thinking (not shown)")], true, false, summary),
+        "Working…"
+    );
+}
+
 #[gpui::test]
 fn thinking_and_steps_between_a_prompt_and_its_reply_fold_into_one_line(cx: &mut TestAppContext) {
     let (h, cx) = setup(cx, 0);

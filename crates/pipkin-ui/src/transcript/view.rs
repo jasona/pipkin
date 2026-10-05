@@ -25,8 +25,8 @@ use gpui::{
     list, point, prelude::*, px, svg,
 };
 use pipkin_core::{
-    Attachment, Command, ConversationId, Delivery, ItemId, ItemKind, Note, NoticeLevel, ToolCall,
-    ToolStatus, TranscriptItem,
+    Attachment, Command, ConversationId, Delivery, ItemId, ItemKind, Note, NoticeLevel, RunState,
+    ToolCall, ToolStatus, TranscriptItem,
 };
 
 use super::blocks::{BaseText, BlockText, FrameStats, SharedRegistry, build_runs};
@@ -183,15 +183,46 @@ fn shorten(text: &str, max: usize) -> String {
     }
 }
 
-/// The fold control of a run of two or more tool calls.
+/// What a collapsed work run says instead of exposing commands and file paths.
+fn activity_caption(items: &[TranscriptItem], active: bool, failed: bool, summary: &str) -> String {
+    if !active {
+        let outcome = if failed {
+            "Finished with errors."
+        } else {
+            "Done."
+        };
+        return if summary.is_empty() {
+            outcome.into()
+        } else {
+            format!("{summary} · {outcome}")
+        };
+    }
+    items
+        .iter()
+        .rev()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Notice {
+                level: NoticeLevel::Info,
+                text,
+            } if super::tools::is_thinking(text) => {
+                let first = super::tools::thinking_first_line(text);
+                (!first.is_empty() && first != "(not shown)").then_some(first)
+            }
+            _ => None,
+        })
+        .next()
+        .unwrap_or_else(|| "Working…".into())
+}
+
+/// The fold control of a run of two or more work items.
 struct StepsLine {
     count: usize,
     open: bool,
     first: ItemId,
     /// "Read 2 files, ran 3 commands".
     summary: String,
-    /// What the latest step acts on, shown beside the summary while the run is folded.
-    latest: String,
+    /// Latest human-readable thinking while active; work summary and outcome once finished.
+    caption: String,
     /// How the run stands: still going, any step failed, or all done.
     running: bool,
     failed: bool,
@@ -833,25 +864,19 @@ impl TranscriptView {
                 // The fold line sits on the latest step while folded, on the first when open.
                 if item_ix == if open { first } else { last } {
                     let mut names = Vec::new();
-                    let (mut running, mut failed) = (false, false);
+                    let mut failed = false;
                     for step in &conv.items[first..=last] {
                         if let ItemKind::Tool(t) = &step.kind {
                             names.push(t.name.as_str());
-                            running |= t.status == ToolStatus::Running;
                             failed |= t.status == ToolStatus::Failed;
                         }
                     }
-                    // Still going if the run is busy and this stretch is the newest thing in it.
-                    let live = conv.run.is_busy() && last + 1 == conv.items.len();
-                    running |= live;
-                    let latest = match &conv.items[last].kind {
-                        ItemKind::Tool(t) => super::tools::label(&t.name, &t.input).target,
-                        ItemKind::Notice { text, .. } => {
-                            format!("Thinking: {}", super::tools::thinking_first_line(text))
-                        }
-                        _ => String::new(),
-                    };
-                    let end = if live {
+                    // Only the newest stretch can still be running; a stale tool status in
+                    // history must not leave a completed run saying "Working…" forever.
+                    let running = conv.run.is_busy() && last + 1 == conv.items.len();
+                    failed |=
+                        matches!(conv.run, RunState::Failed { .. }) && last + 1 == conv.items.len();
+                    let end = if running {
                         self.model.read(cx).state.now().max(conv.items[last].at)
                     } else {
                         conv.items[last].at
@@ -863,12 +888,14 @@ impl TranscriptView {
                     if let Some(took) = super::tools::format_elapsed(end - conv.items[first].at) {
                         summary = format!("{summary} \u{b7} {took}");
                     }
+                    let caption =
+                        activity_caption(&conv.items[first..=last], running, failed, &summary);
                     steps = Some(StepsLine {
                         count: last - first + 1,
                         open,
                         first: first_id,
                         summary,
-                        latest: shorten(&latest, TOOL_TARGET_CHARS),
+                        caption,
                         running,
                         failed,
                     });
@@ -1203,7 +1230,7 @@ impl TranscriptView {
                 return div()
                     .id(ElementId::NamedInteger("msg".into(), item.id.0))
                     .role(Role::Article)
-                    .aria_label(format!("{}. Show all {} steps", line.summary, line.count))
+                    .aria_label(format!("{}. Show all {} steps", line.caption, line.count))
                     .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
                     .child(self.render_run_line(line, theme, cx))
                     .into_any_element();
@@ -1309,8 +1336,8 @@ impl TranscriptView {
             .into_any_element()
     }
 
-    /// The line that stands for a run of steps: a status mark, what was done, and (while folded)
-    /// what the latest step is, with a chevron at the end. Clicking it opens or folds the run.
+    /// Folded: only the latest thinking explanation (or outcome). Expanded: the technical
+    /// summary and each underlying step. Clicking the line switches between the two.
     fn render_run_line(
         &self,
         line: &StepsLine,
@@ -1327,9 +1354,19 @@ impl TranscriptView {
             ("check", c.success)
         };
         let hint = if line.open {
-            "Show only the latest step"
+            "Collapse progress"
         } else {
             "Show all steps"
+        };
+        let label = if line.open || !line.running {
+            line.summary.as_str()
+        } else {
+            line.caption.as_str()
+        };
+        let accessible_label = if line.open {
+            line.summary.as_str()
+        } else {
+            line.caption.as_str()
         };
         div()
             .id(ElementId::NamedInteger("steps".into(), first.0))
@@ -1345,33 +1382,34 @@ impl TranscriptView {
             .hover(|s| s.bg(c.bg_hover))
             .focus_visible(|s| s.border_1().border_color(c.accent))
             .role(Role::Button)
-            .aria_label(format!("{}. {hint}", line.summary))
+            .aria_label(format!("{accessible_label} {hint}"))
             .aria_expanded(line.open)
             .on_mouse_down(MouseButton::Left, stop_mouse_down)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_steps(conv, first, cx)))
             .child(icon(mark, 14.0, color))
             .child(
                 div()
-                    .flex_none()
-                    .text_size(theme.small_size())
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(c.text_muted)
-                    .child(line.summary.clone()),
-            )
-            .child(
-                div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .font_family(theme.mono_font())
                     .text_size(theme.small_size())
-                    .text_color(c.text_faint)
-                    .child(if line.open {
-                        String::new()
-                    } else {
-                        line.latest.clone()
-                    }),
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(c.text_muted)
+                    .child(label.to_owned()),
             )
+            .when(!line.open && !line.running, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(theme.small_size())
+                        .text_color(if line.failed { c.danger } else { c.text_muted })
+                        .child(if line.failed {
+                            "· Finished with errors."
+                        } else {
+                            "· Done."
+                        }),
+                )
+            })
             .child(icon(
                 if line.open {
                     "chevron-down"
@@ -1407,13 +1445,13 @@ impl TranscriptView {
         let id = item.id;
         let expanded = ctx.expanded;
         let model = self.model.clone();
-        // A folded run is just its fold line (the summary and the latest step); the steps
+        // A folded run is just its human-readable progress line; the steps
         // themselves come back, one slim line each, when it is opened.
         if let Some(line) = ctx.steps.as_ref().filter(|l| !l.open) {
             return div()
                 .id(ElementId::NamedInteger("msg".into(), id.0))
                 .role(Role::Article)
-                .aria_label(format!("{}. Show all {} steps", line.summary, line.count))
+                .aria_label(format!("{}. Show all {} steps", line.caption, line.count))
                 .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
                 .child(self.render_run_line(line, theme, cx))
                 .into_any_element();
