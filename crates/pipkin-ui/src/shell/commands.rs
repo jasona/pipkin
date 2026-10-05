@@ -115,6 +115,27 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(CancelRun)),
         ),
         cmd(
+            "Refresh models",
+            "Composer",
+            None,
+            a.refresh_models,
+            Run::Dispatch(Command::RefreshModels),
+        ),
+        cmd(
+            "Retry saving draft",
+            "Composer",
+            None,
+            a.retry_save,
+            Run::Dispatch(Command::RetrySave),
+        ),
+        cmd(
+            "Dismiss saved-data notice",
+            "Application",
+            None,
+            state.storage_issue.is_some(),
+            Run::Dispatch(Command::DismissStorageIssue),
+        ),
+        cmd(
             "Check submission status",
             "Run",
             None,
@@ -178,6 +199,36 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(OpenPreferences)),
         ),
     ];
+    // Queued input can be withdrawn without a pointer: one palette entry per queued item.
+    if let Some(conversation) = state.current() {
+        for queued in conversation.queue.iter().take(8) {
+            let text: String = queued.text.chars().take(48).collect();
+            let more = if queued.text.chars().count() > 48 {
+                "\u{2026}"
+            } else {
+                ""
+            };
+            v.push(cmd(
+                &format!("Remove queued: {text}{more}"),
+                "Run",
+                None,
+                true,
+                Run::Dispatch(Command::RemoveQueued(queued.id)),
+            ));
+        }
+    }
+    // So can the attachments on the draft.
+    if let Some(conversation) = state.current() {
+        for (i, attachment) in conversation.draft.attachments.iter().enumerate() {
+            v.push(cmd(
+                &format!("Remove attachment: {}", attachment.name),
+                "Composer",
+                None,
+                true,
+                Run::Dispatch(Command::RemoveAttachment(i)),
+            ));
+        }
+    }
     let theme = state.prefs.theme;
     let mut c = cmd(
         "Theme: Dark",
@@ -286,5 +337,85 @@ mod tests {
         assert!(fuzzy_score("zz", "New conversation").is_none());
         assert!(fuzzy_score("new", "New conversation") < fuzzy_score("nwc", "New conversation"));
         assert_eq!(fuzzy_score("", "x"), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use pipkin_core::*;
+
+    use super::*;
+
+    fn state_with_queue_and_attachments() -> AppState {
+        let boot = Bootstrap {
+            projects: vec![Project {
+                id: ProjectId(1),
+                name: "p".into(),
+                path: "/p".into(),
+            }],
+            models: vec![],
+            conversations: vec![(ConversationId(1), ProjectId(1), "one".into(), 1)],
+            now: 1,
+        };
+        let mut s = AppState::new(boot, Prefs::default());
+        s.prefs.selected_project = Some(ProjectId(1));
+        s.dispatch(Command::SelectConversation(ConversationId(1)));
+        let c = &mut s.conversations[0];
+        c.queue = vec![
+            QueuedPrompt {
+                id: QueueId(7),
+                text: "tidy the imports".into(),
+                mode: QueueMode::FollowUp,
+            },
+            QueuedPrompt {
+                id: QueueId(9),
+                text: "x".repeat(80),
+                mode: QueueMode::Steer,
+            },
+        ];
+        c.draft.attachments = vec![Attachment {
+            path: "/p/notes.txt".into(),
+            name: "notes.txt".into(),
+            size: Some(3),
+            error: None,
+        }];
+        s
+    }
+
+    fn find<'a>(commands: &'a [Cmd], title: &str) -> &'a Cmd {
+        commands
+            .iter()
+            .find(|c| c.title == title)
+            .unwrap_or_else(|| panic!("no command {title:?}"))
+    }
+
+    #[test]
+    fn queued_input_and_attachments_can_be_removed_from_the_palette() {
+        let state = state_with_queue_and_attachments();
+        let commands = build(&state, None);
+        assert!(matches!(
+            find(&commands, "Remove queued: tidy the imports").run,
+            Run::Dispatch(Command::RemoveQueued(QueueId(7)))
+        ));
+        // Long text is shortened so the entry stays one line.
+        let long = commands
+            .iter()
+            .find(|c| c.title.starts_with("Remove queued: xxxx"))
+            .unwrap();
+        assert_eq!(long.title.chars().count(), "Remove queued: ".len() + 48 + 1);
+        assert!(long.title.ends_with('\u{2026}'));
+        assert!(matches!(
+            find(&commands, "Remove attachment: notes.txt").run,
+            Run::Dispatch(Command::RemoveAttachment(0))
+        ));
+    }
+
+    #[test]
+    fn with_nothing_queued_or_attached_there_are_no_removal_entries() {
+        let mut state = state_with_queue_and_attachments();
+        state.conversations[0].queue.clear();
+        state.conversations[0].draft.attachments.clear();
+        let commands = build(&state, None);
+        assert!(!commands.iter().any(|c| c.title.starts_with("Remove ")));
     }
 }

@@ -113,10 +113,52 @@ pub struct FileChange {
     pub hunks: Vec<Hunk>,
 }
 
+/// How queued input joins a run: steering lands at the next boundary inside the run, a
+/// follow-up waits for the run to finish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QueueMode {
+    Steer,
+    #[default]
+    FollowUp,
+}
+
+/// Input waiting behind a run. In real mode the engine owns the queue and `id` is its entry
+/// id; in the demo the id is local.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueuedPrompt {
     pub id: QueueId,
     pub text: String,
+    pub mode: QueueMode,
+}
+
+/// Whether the engine has confirmed it holds a queue request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueSend {
+    /// Sent; no answer yet.
+    Sending,
+    /// The acknowledgment was lost. Never resent; the engine is asked about its key instead.
+    Unknown,
+}
+
+/// A steer or follow-up that is journaled and sent but not yet confirmed by the engine. Shown
+/// beside the engine's queue so the user's text never disappears between pressing the key and
+/// the engine reporting it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingQueued {
+    pub request: RequestId,
+    pub text: String,
+    pub attachments: Vec<Attachment>,
+    pub mode: QueueMode,
+    pub state: QueueSend,
+}
+
+/// What withdrawing a queued input did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    Cancelled,
+    /// A run already took it.
+    AlreadyConsumed,
+    NotFound,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -300,6 +342,10 @@ pub enum IntentOrigin {
     Retry,
     /// The next client-side queued prompt (demo only; the engine owns the queue in real mode).
     Queue,
+    /// Steering input for the active run (real mode).
+    Steer,
+    /// Input queued after the active run (real mode).
+    FollowUp,
 }
 
 /// A submission whose intent is being made durable. Nothing is sent and the draft is untouched

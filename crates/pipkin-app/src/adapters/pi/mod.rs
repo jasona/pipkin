@@ -12,9 +12,15 @@
 //! attachment only after its in-flight calls finish, so a call that waited for the whole run
 //! would block switching sessions.
 //!
-//! The adapter never replays a request after a disconnect. It reconnects, resubscribes and
+//! Steers and follow-ups go through the same controller with their own journaled keys. The
+//! engine owns the queue (`pi.inbox`), so the queue shown is whatever the engine reports. One
+//! lost acknowledgment is resolved by asking the engine about its key and, if it never saw it,
+//! sending the very same key again: the engine admits a key once, so that cannot duplicate.
+//!
+//! The adapter never replays a *prompt* after a disconnect. It reconnects, resubscribes and
 //! refreshes what is shown; anything that mutates stays the user's explicit decision.
 
+pub mod attach;
 pub mod engine;
 pub mod session;
 pub mod transcript;
@@ -33,8 +39,9 @@ use pi_client::client::{Client, ClientEvent, ClientOptions, Subscription};
 use pi_client::protocol::RpcTarget;
 use pi_client::unix::{self, ServerRoute};
 use pipkin_core::{
-    Backend, BackendEvent, BackendRequest, Connection, ConversationId, EventKind, LifecycleEvent,
-    LifecycleSink, ModelInfo, OperationId, RequestId,
+    Attachment, Backend, BackendEvent, BackendRequest, CancelOutcome, Connection, ConversationId,
+    EventKind, LifecycleEvent, LifecycleSink, ModelInfo, OperationId, QueueId, QueueMode,
+    RequestId,
 };
 use serde_json::{Value, json};
 
@@ -160,6 +167,8 @@ impl Backend for PiBackend {
             ever_connected: false,
             runs: HashMap::new(),
             cancelling: HashSet::new(),
+            queue_unknown: Vec::new(),
+            last_refresh_warning: None,
         };
         let handle = thread::Builder::new()
             .name("pi-backend".into())
@@ -191,6 +200,17 @@ impl Backend for PiBackend {
     }
 }
 
+/// A steer or follow-up in flight to the engine.
+#[derive(Clone, Debug)]
+struct QueueReq {
+    conversation: ConversationId,
+    generation: u64,
+    request: RequestId,
+    mode: QueueMode,
+    text: String,
+    attachments: Vec<Attachment>,
+}
+
 /// A prompt the engine accepted whose outcome has not been seen yet.
 #[derive(Clone, Debug)]
 struct Run {
@@ -214,6 +234,10 @@ struct Worker {
     runs: HashMap<OperationId, Run>,
     /// Runs the user asked to stop, so their `aborted` outcome reads as a stop, not a failure.
     cancelling: HashSet<OperationId>,
+    /// Queue requests whose acknowledgment was lost, resolved when the conversation is attached.
+    queue_unknown: Vec<QueueReq>,
+    /// The last model-refresh warning shown, so it is said once.
+    last_refresh_warning: Option<String>,
 }
 
 enum Outcome {
@@ -277,6 +301,28 @@ impl Worker {
         });
     }
 
+    fn queue_refused(&self, req: &QueueReq, reason: String) {
+        self.emit(
+            req.conversation,
+            req.generation,
+            EventKind::QueueRefused {
+                request: req.request.clone(),
+                reason,
+            },
+        );
+    }
+
+    fn queue_lost(&mut self, req: &QueueReq) {
+        self.queue_unknown.push(req.clone());
+        self.emit(
+            req.conversation,
+            req.generation,
+            EventKind::QueueAckLost {
+                request: req.request.clone(),
+            },
+        );
+    }
+
     /// Sleep out the retry delay, still answering requests so nothing waits on a dead link.
     /// Returns true on shutdown.
     fn wait_to_retry(&mut self) -> bool {
@@ -331,13 +377,28 @@ impl Worker {
                     has_older: false,
                 },
             ),
+            // Nothing was sent: the text goes back to the draft.
+            BackendRequest::Queue {
+                conversation,
+                generation,
+                request,
+                ..
+            } => self.emit(
+                conversation,
+                generation,
+                EventKind::QueueRefused {
+                    request,
+                    reason: OFFLINE.into(),
+                },
+            ),
             BackendRequest::CreateConversation { .. } | BackendRequest::SetModel { .. } => {
                 self.notice(OFFLINE.into())
             }
-            // Cancelling and checking a status need the engine; the user can try again.
-            BackendRequest::Cancel { .. } | BackendRequest::CheckStatus { .. } => {
-                self.notice(OFFLINE.into())
-            }
+            // These need the engine; the user can try again.
+            BackendRequest::Cancel { .. }
+            | BackendRequest::CheckStatus { .. }
+            | BackendRequest::CancelQueued { .. }
+            | BackendRequest::RefreshModels { .. } => self.notice(OFFLINE.into()),
             other => log::warn!("not supported while offline: {other:?}"),
         }
     }
@@ -563,12 +624,24 @@ fn outcome_event(reason: Option<&str>, detail: Option<&str>, cancelled: bool) ->
     }
 }
 
+/// The `AgentController` prompt/steer/followUp argument for a prepared message.
+fn prompt_args(prepared: attach::Prepared, request: &RequestId) -> Value {
+    let images = if prepared.images.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(prepared.images)
+    };
+    json!({ "message": prepared.message, "images": images, "requestId": request.0 })
+}
+
 /// What `AgentController.lookup` said about a request key.
 enum Lookup {
     Unknown,
     Known {
         /// Running or queued.
         open: bool,
+        /// The engine's id for the submission, which is its queue entry id while queued.
+        operation: Option<u64>,
         reason: Option<String>,
         detail: Option<String>,
     },
@@ -580,6 +653,7 @@ fn parse_lookup(value: &Value) -> Option<Lookup> {
         let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
         Some(Lookup::Known {
             open: matches!(status, "queued" | "placed"),
+            operation: text("operationId").and_then(|id| id.parse().ok()),
             reason: text("reason"),
             detail: text("detail"),
         })
@@ -696,8 +770,34 @@ impl Live {
                 op,
                 request,
                 text,
-                !attachments.is_empty(),
+                attachments,
             ),
+            BackendRequest::Queue {
+                conversation,
+                generation,
+                request,
+                mode,
+                text,
+                attachments,
+            } => self.queue_request(
+                worker,
+                QueueReq {
+                    conversation,
+                    generation,
+                    request,
+                    mode,
+                    text,
+                    attachments,
+                },
+            ),
+            BackendRequest::CancelQueued {
+                conversation,
+                generation,
+                entry,
+            } => self.cancel_queued(worker, conversation, generation, entry),
+            BackendRequest::RefreshModels { conversation, .. } => {
+                self.refresh_models(worker, conversation)
+            }
             BackendRequest::Cancel {
                 conversation, op, ..
             } => self.cancel(worker, conversation, op),
@@ -727,9 +827,9 @@ impl Live {
                     has_older: false,
                 },
             ),
-            // Steering is not wired yet; say so on the run instead of dropping it silently.
+            // The demo's steer; real steers arrive as `Queue`.
             BackendRequest::Steer { .. } => {
-                worker.notice("Steering a running prompt is not available yet.".into())
+                worker.notice("This engine steers through the queue.".into())
             }
         }
     }
@@ -751,7 +851,7 @@ impl Live {
         op: OperationId,
         request: RequestId,
         text: String,
-        has_attachments: bool,
+        attachments: Vec<Attachment>,
     ) {
         let reject = |reason: &str| {
             worker.emit_op(
@@ -764,16 +864,17 @@ impl Live {
             )
         };
         // Everything below sends nothing, so each is a definite refusal.
-        if has_attachments {
-            return reject("Attachments are not supported yet.");
-        }
         let Some(target) = self.target_for(conversation) else {
             return reject("The session is not open on the Pi server.");
+        };
+        let prepared = match self.prepare(&text, &attachments) {
+            Ok(prepared) => prepared,
+            Err(reason) => return reject(&reason),
         };
         let call = ServiceCall::new(
             "pi.agent-controller",
             "prompt",
-            vec![json!({ "message": text, "images": null, "requestId": request.0 })],
+            vec![prompt_args(prepared, &request)],
         );
         let pending = match self.client.request(&target, &call) {
             Ok(p) => p,
@@ -816,6 +917,173 @@ impl Live {
             }
             // Connection loss or anything else after sending: the outcome is unknown.
             Err(_) | Ok(None) => ack_lost(worker),
+        }
+    }
+
+    /// Re-check the attachments against their files and build the message Pi takes.
+    fn prepare(&self, text: &str, attachments: &[Attachment]) -> Result<attach::Prepared, String> {
+        let cwd = self.current.as_ref().and_then(|c| c.cwd.clone());
+        attach::prepare(text, attachments, cwd.as_deref().map(Path::new))
+    }
+
+    /// Steer the active run or queue a follow-up. Both go to the engine under the journaled
+    /// key, so sending one again (after a lost acknowledgment) cannot admit it twice.
+    fn queue_request(&mut self, worker: &mut Worker, req: QueueReq) {
+        worker.queue_unknown.retain(|u| u.request != req.request);
+        let Some(target) = self.target_for(req.conversation) else {
+            return worker.queue_refused(&req, "The session is not open on the Pi server.".into());
+        };
+        let prepared = match self.prepare(&req.text, &req.attachments) {
+            Ok(prepared) => prepared,
+            Err(reason) => return worker.queue_refused(&req, reason),
+        };
+        let member = match req.mode {
+            QueueMode::Steer => "steer",
+            QueueMode::FollowUp => "followUp",
+        };
+        let call = ServiceCall::new(
+            "pi.agent-controller",
+            member,
+            vec![prompt_args(prepared, &req.request)],
+        );
+        let pending = match self.client.request(&target, &call) {
+            Ok(p) => p,
+            // The call never left: a definite refusal.
+            Err(error) => {
+                return worker.queue_refused(&req, format!("Could not send it: {error}"));
+            }
+        };
+        match pending.wait_timeout(CALL_TIMEOUT) {
+            Ok(Some(reply)) => match reply.get("accepted").and_then(Value::as_bool) {
+                Some(true) => {
+                    let entry = reply
+                        .get("entryId")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.parse::<u64>().ok());
+                    match entry {
+                        Some(entry) => {
+                            worker.emit(
+                                req.conversation,
+                                req.generation,
+                                EventKind::QueueAdmitted {
+                                    request: req.request.clone(),
+                                    entry: QueueId(entry),
+                                },
+                            );
+                            self.schedule_changes(worker);
+                        }
+                        // Admitted, but we cannot tell which entry: ask again.
+                        None => worker.queue_lost(&req),
+                    }
+                }
+                Some(false) => {
+                    let reason = reply["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Pi did not accept it.")
+                        .to_owned();
+                    worker.queue_refused(&req, reason);
+                }
+                None => worker.queue_lost(&req),
+            },
+            Err(Error::Server { code, .. }) if code == "internal_error" => worker.queue_lost(&req),
+            Err(Error::Server { message, .. }) => worker.queue_refused(&req, message),
+            Err(Error::Timeout) => {
+                pending.cancel();
+                worker.queue_lost(&req);
+            }
+            Err(_) | Ok(None) => worker.queue_lost(&req),
+        }
+    }
+
+    /// Settle the queue requests whose acknowledgment was lost: ask the engine about each key,
+    /// and send the key again if it has no record of it. The engine admits a key once, so a
+    /// resend after a request that did arrive just returns the original.
+    fn resolve_queue_unknown(&mut self, worker: &mut Worker) {
+        let Some(open) = self.current.as_ref().map(|c| c.conversation) else {
+            return;
+        };
+        let pending: Vec<QueueReq> = worker
+            .queue_unknown
+            .iter()
+            .filter(|u| u.conversation == open)
+            .cloned()
+            .collect();
+        for req in pending {
+            let Some(target) = self.target_for(req.conversation) else {
+                continue;
+            };
+            let answer = self
+                .call(
+                    &target,
+                    "pi.agent-controller",
+                    "lookup",
+                    vec![json!(req.request.0)],
+                )
+                .map(|v| v.as_ref().and_then(parse_lookup));
+            match answer {
+                Ok(Some(Lookup::Known {
+                    operation: Some(entry),
+                    ..
+                })) => {
+                    worker.queue_unknown.retain(|u| u.request != req.request);
+                    worker.emit(
+                        req.conversation,
+                        req.generation,
+                        EventKind::QueueAdmitted {
+                            request: req.request.clone(),
+                            entry: QueueId(entry),
+                        },
+                    );
+                }
+                Ok(Some(Lookup::Unknown)) => self.queue_request(worker, req),
+                // Could not ask, or an answer we cannot read: look again next time.
+                _ => {}
+            }
+        }
+    }
+
+    fn cancel_queued(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        entry: QueueId,
+    ) {
+        let Some(target) = self.target_for(conversation) else {
+            return worker
+                .notice("Open the conversation first, then remove it from the queue.".into());
+        };
+        let answer = self.call(
+            &target,
+            "pi.agent-controller",
+            "cancelQueued",
+            vec![json!(entry.0.to_string())],
+        );
+        let outcome = match answer {
+            Ok(Some(v)) => match v.get("outcome").and_then(Value::as_str) {
+                Some("cancelled") => CancelOutcome::Cancelled,
+                Some("already_consumed") => CancelOutcome::AlreadyConsumed,
+                Some("not_found") => CancelOutcome::NotFound,
+                _ => return worker.notice("Pi gave an answer that could not be read.".into()),
+            },
+            Ok(None) => return worker.notice("Pi gave no answer; try again.".into()),
+            Err(error) => {
+                return worker.notice(format!("Could not remove it from the queue: {error}"));
+            }
+        };
+        worker.emit(
+            conversation,
+            generation,
+            EventKind::QueueCancelled { entry, outcome },
+        );
+    }
+
+    fn refresh_models(&mut self, worker: &mut Worker, conversation: ConversationId) {
+        let Some(target) = self.target_for(conversation) else {
+            return worker.notice("Open a conversation first, then refresh the models.".into());
+        };
+        if let Err(error) = self.call(&target, "pi.models", "refresh", vec![]) {
+            worker.notice(format!("Could not refresh the models: {error}"));
         }
     }
 
@@ -866,6 +1134,7 @@ impl Live {
                 open,
                 reason,
                 detail,
+                ..
             })) => {
                 worker.emit_op(
                     conversation,
@@ -930,6 +1199,7 @@ impl Live {
             worker.emit_op(run.conversation, run.generation, op, event);
             self.schedule_changes(worker);
         }
+        self.resolve_queue_unknown(worker);
     }
 
     fn has_runs(&self, worker: &Worker) -> bool {
@@ -938,6 +1208,10 @@ impl Live {
                 .runs
                 .values()
                 .any(|r| r.conversation == c.conversation)
+                || worker
+                    .queue_unknown
+                    .iter()
+                    .any(|u| u.conversation == c.conversation)
         })
     }
 
@@ -1106,6 +1380,7 @@ impl Live {
         };
         let mapped = transcript::map_view(&view);
         let (tools_done, busy) = (tools_done(&mapped), mapped.busy);
+        let queue = mapped.queue.clone();
         let kind = if initial {
             EventKind::Opened {
                 items: mapped.items,
@@ -1118,6 +1393,11 @@ impl Live {
             }
         };
         worker.emit(conversation, generation, kind);
+        worker.emit(
+            conversation,
+            generation,
+            EventKind::EngineState { busy, queue },
+        );
         if let Some(models) = &models {
             let state = models.read(|r| r.state("state").cloned()).flatten();
             self.models = state
@@ -1217,7 +1497,7 @@ impl Live {
     }
 
     /// Turn the batch's changes into one refresh each.
-    fn flush(&mut self, worker: &Worker, dirty: Dirty) {
+    fn flush(&mut self, worker: &mut Worker, dirty: Dirty) {
         if dirty.directory {
             self.refresh_directory();
         }
@@ -1230,6 +1510,14 @@ impl Live {
             (worker.sink)(LifecycleEvent::ModelSelected(session::selected_model(
                 &state,
             )));
+            // A provider the engine could not read (expired login, bad key) is said once.
+            let warning = session::refresh_warning(&state);
+            if warning != worker.last_refresh_warning {
+                if let Some(text) = &warning {
+                    worker.notice(text.clone());
+                }
+                worker.last_refresh_warning = warning;
+            }
         }
         if dirty.directory || dirty.models {
             (worker.sink)(LifecycleEvent::Catalog(self.catalog()));
@@ -1244,12 +1532,18 @@ impl Live {
             if let Some((conversation, generation, view)) = view {
                 let mapped = transcript::map_view(&view);
                 let (done, busy) = (tools_done(&mapped), mapped.busy);
+                let queue = mapped.queue.clone();
                 worker.emit(
                     conversation,
                     generation,
                     EventKind::Synced {
                         items: mapped.items,
                     },
+                );
+                worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::EngineState { busy, queue },
                 );
                 // Files change when a tool finishes or a run ends.
                 let changed = self

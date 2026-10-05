@@ -26,7 +26,7 @@ impl Workspace {
         let c = &t.colors;
         let nav_docked = self.nav_docked(window);
         let insp_docked = self.inspector_docked(window, cx);
-        let (title, project, has_conv, demo, banner) = {
+        let (title, project, has_conv, demo, banner, storage_issue) = {
             let s = self.state(cx);
             (
                 s.current().map(|c| c.title.clone()),
@@ -36,9 +36,30 @@ impl Workspace {
                 s.current().is_some(),
                 s.mode == Mode::Demo,
                 s.connection.banner(),
+                s.storage_issue.clone(),
             )
         };
         let this = cx.entity();
+        let storage_strip = storage_issue.map(|message| {
+            let this = this.clone();
+            div().px(px(12.0)).pt(px(8.0)).flex_none().child(strip(
+                cx,
+                "triangle-alert",
+                c.warning,
+                "Saved data",
+                &message,
+                vec![
+                    Btn::new("dismiss-storage-issue")
+                        .icon("x")
+                        .aria("Dismiss")
+                        .compact()
+                        .on_click(move |_, cx| {
+                            this.update(cx, |t, cx| t.dispatch(Command::DismissStorageIssue, cx))
+                        })
+                        .into_any_element(),
+                ],
+            ))
+        });
         let nav_toggle = (!nav_docked).then(|| {
             let this = this.clone();
             Btn::new("toggle-nav")
@@ -148,6 +169,7 @@ impl Workspace {
             .h_full()
             .bg(c.bg_surface)
             .child(header)
+            .children(storage_strip)
             .child(body)
             .children(has_conv.then(|| self.render_bottom(window, cx)))
     }
@@ -166,6 +188,8 @@ impl Workspace {
             model_id,
             retry_hint,
             intent_error,
+            pending_queue,
+            real,
         ) = {
             let s = self.state(cx);
             let cv = s.current().unwrap();
@@ -179,6 +203,8 @@ impl Workspace {
                 s.prefs.model.clone(),
                 cv.last_submission.is_some(),
                 cv.intent_error.clone(),
+                cv.pending_queue.clone(),
+                s.mode == Mode::Real,
             )
         };
         let _ = retry_hint;
@@ -197,15 +223,14 @@ impl Workspace {
             });
         let this = cx.entity();
 
-        // ---- status strip
-        let status: Option<gpui::AnyElement> = match &run {
-            // The prompt could not be recorded, so it was not sent; it is still in the composer.
-            RunState::Idle if intent_error.is_some() => Some(strip(
+        // ---- not-sent strip: the text was not sent (or not queued) and is still in the composer
+        let not_sent: Option<gpui::AnyElement> = intent_error.as_deref().map(|message| {
+            strip(
                 cx,
                 "circle-alert",
                 c.danger,
                 "Not sent",
-                intent_error.as_deref().unwrap_or_default(),
+                message,
                 vec![
                     Btn::new("dismiss-intent-error")
                         .icon("x")
@@ -215,6 +240,33 @@ impl Workspace {
                             let this = this.clone();
                             move |_, cx| {
                                 this.update(cx, |t, cx| t.dispatch(Command::DismissFailure, cx))
+                            }
+                        })
+                        .into_any_element(),
+                ],
+            )
+        });
+
+        // ---- status strip
+        let status: Option<gpui::AnyElement> = match &run {
+            // The engine has no model Pipkin can offer: say what to do about it.
+            RunState::Idle if real && no_models && read_only.is_none() => Some(strip(
+                cx,
+                "circle-help",
+                c.warning,
+                "No model is ready",
+                "Pi has no model it can use. Sign in or add an API key with Pi (run `pi`, then /login), then refresh the models.",
+                vec![
+                    Btn::new("refresh-models")
+                        .icon("refresh-cw")
+                        .label("Refresh models")
+                        .kind(BtnKind::Subtle)
+                        .compact()
+                        .disabled(!avail.refresh_models)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, cx| {
+                                this.update(cx, |t, cx| t.dispatch(Command::RefreshModels, cx))
                             }
                         })
                         .into_any_element(),
@@ -263,7 +315,7 @@ impl Workspace {
                 "circle-help",
                 c.warning,
                 "Outcome unknown",
-                "The app or connection stopped before the prompt was acknowledged. It will not be resent automatically.",
+                "The app or connection stopped before the prompt was acknowledged. Pipkin is asking the engine what happened; the prompt is never resent automatically.",
                 vec![
                     Btn::new("check-status")
                         .icon("refresh-cw")
@@ -313,11 +365,49 @@ impl Workspace {
         };
 
         // ---- queue
-        let queue_el = (!queue.is_empty()).then(|| {
+        // The engine's queue, then what was sent and not yet confirmed. Only what the engine
+        // holds can be removed.
+        let queue_total = queue.len() + pending_queue.len();
+        let queue_el = (queue_total > 0).then(|| {
+            let row = |i: usize, mode: QueueMode, text: String, note: Option<&'static str>| {
+                let label = match mode {
+                    QueueMode::Steer => "Steer",
+                    QueueMode::FollowUp => "Follow-up",
+                };
+                div()
+                    .id(("queued", i))
+                    .role(Role::ListItem)
+                    .aria_label(format!("{label}: {text}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(div().text_color(c.text_faint).child(format!("{}.", i + 1)))
+                    .child(
+                        div()
+                            .text_size(t.small_size())
+                            .text_color(c.accent)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(c.text_muted)
+                            .child(text),
+                    )
+                    .children(note.map(|n| {
+                        div()
+                            .text_size(t.small_size())
+                            .text_color(c.text_faint)
+                            .child(n)
+                    }))
+            };
+            let held = queue.len();
             div()
                 .id("queue")
                 .role(Role::List)
-                .aria_label("Queued follow-ups")
+                .aria_label("Queued input")
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
@@ -326,37 +416,27 @@ impl Workspace {
                     div()
                         .text_size(t.small_size())
                         .text_color(c.text_faint)
-                        .child(format!("Queued follow-ups ({})", queue.len())),
+                        .child(format!("Queued ({queue_total})")),
                 )
                 .children(queue.into_iter().enumerate().map(|(i, q)| {
                     let this = this.clone();
                     let qid = q.id;
-                    div()
-                        .id(("queued", i))
-                        .role(Role::ListItem)
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(div().text_color(c.text_faint).child(format!("{}.", i + 1)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(c.text_muted)
-                                .child(q.text),
-                        )
-                        .child(
-                            Btn::new(("unqueue", qid.0 as usize))
-                                .icon("x")
-                                .compact()
-                                .aria("Remove queued prompt")
-                                .on_click(move |_, cx| {
-                                    this.update(cx, |t, cx| {
-                                        t.dispatch(Command::RemoveQueued(qid), cx)
-                                    })
-                                }),
-                        )
+                    row(i, q.mode, q.text, None).child(
+                        Btn::new(("unqueue", qid.0 as usize))
+                            .icon("x")
+                            .compact()
+                            .aria("Remove queued prompt")
+                            .on_click(move |_, cx| {
+                                this.update(cx, |t, cx| t.dispatch(Command::RemoveQueued(qid), cx))
+                            }),
+                    )
+                }))
+                .children(pending_queue.into_iter().enumerate().map(|(i, p)| {
+                    let note = match p.state {
+                        QueueSend::Sending => "Sending…",
+                        QueueSend::Unknown => "Checking with the engine…",
+                    };
+                    row(held + i, p.mode, p.text, Some(note))
                 }))
         });
 
@@ -406,6 +486,17 @@ impl Workspace {
                             .flex_1()
                             .child(format!("Draft not saved: {e}. Your text is still here.")),
                     )
+                    .child({
+                        let this = this.clone();
+                        Btn::new("retry-save")
+                            .icon("refresh-cw")
+                            .label("Retry save")
+                            .compact()
+                            .disabled(!avail.retry_save)
+                            .on_click(move |_, cx| {
+                                this.update(cx, |t, cx| t.dispatch(Command::RetrySave, cx))
+                            })
+                    })
                     .child({
                         let this = this.clone();
                         Btn::new("copy-draft")
@@ -515,6 +606,7 @@ impl Workspace {
                     .max_w(px(760.0 * t.scale.max(1.0)))
                     .flex()
                     .flex_col()
+                    .children(not_sent)
                     .children(status)
                     .children(queue_el)
                     .child(

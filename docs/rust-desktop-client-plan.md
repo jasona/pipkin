@@ -1,6 +1,6 @@
 # Rust Desktop Client for Pi: prototype to working product
 
-Updated: 2026-10-04. Status: implementation roadmap. M0 is done, M1 is met with caveats, and M2 is complete (exit criteria met by real-engine tests, GUI picker not yet seen); see "Implementation status" near the end of section 10 for exactly where to resume.
+Updated: 2026-10-04. Status: implementation roadmap. M0 is done, M1 is met with caveats, and M2 and M3 are complete (exit criteria met by real-engine tests; the window was checked on screen apart from the file picker); see "Implementation status" near the end of section 10 for exactly where to resume.
 
 ## 1. Continue the application that exists
 
@@ -20,7 +20,7 @@ First ship an Omarchy/Wayland daily-use alpha. Broader Linux, macOS, and Windows
 
 This revision reviewed Pipkin at `807391929ba7a409b1406d60da60ec64a4065103` and the adjacent Pi checkout at `200387122ca450d6387f033949423114a270b96c`. These identify inspected baselines, not a shipped compatibility promise. Record the tested engine revision and service-contract version in a build manifest before integration.
 
-Pi is a separate repository, currently available at `../../pi` relative to this document. The links below point into that checkout; they are not Pipkin package directories or runtime dependencies. A clean build must obtain a pinned engine artifact/source independently of that directory layout. The continuation map's statement that engine sources are absent from this workspace is still true for Pipkin itself; adjacent sources were available for this review.
+Pi is a separate repository; the working copy is the fork at `../../pi-fork/pi` relative to this document (`git@github.com:jasona/pi.git`). The links below point into that checkout; they are not Pipkin package directories or runtime dependencies. A clean build must obtain a pinned engine artifact/source independently of that directory layout. The continuation map's statement that engine sources are absent from this workspace is still true for Pipkin itself; adjacent sources were available for this review.
 
 ### What the prototype actually implements
 
@@ -42,12 +42,12 @@ Inspect these contracts before changing either repository:
 
 | Pi source | Available baseline | Required continuation |
 | --- | --- | --- |
-| [Protocol](../../pi/packages/protocol/README.md), [client](../../pi/packages/client/README.md) | Protocol v8 framed CBOR, server/session routes, attachment fencing; Chord service snapshots and updates | Experimental, no compatibility guarantee; peer authentication is not implemented; Rust must implement the required Chord semantics as well as envelopes |
-| [Session contracts](../../pi/packages/coding-agent/src/experimental/services/sessions.ts) | List, create, remove, attach, detach | Summaries expose server/session IDs and creation time, not title/cwd/activity; creation options lack project cwd; add project metadata and rename |
-| [Agent controller](../../pi/packages/coding-agent/src/experimental/services/agent-controller.ts) and [provider](../../pi/packages/coding-agent/src/experimental/services/agent-controller-provider.ts) | Prompt, steer, follow-up, cancel queued entry, abort, compact, wait for known prompt ID | No client idempotency key or lookup by client request ID; distinguish operation acceptance from settlement; define stop/queue semantics |
-| [Models](../../pi/packages/coding-agent/src/experimental/services/models.ts) | Provider/model identity, catalog, selection, thinking levels, refresh | Native credential onboarding and auth status contract; model selection is session service state, not a field on `prompt()` |
-| [Transcript](../../pi/packages/coding-agent/src/experimental/services/transcript.ts), [service overview](../../pi/packages/coding-agent/src/experimental/services/README.md) | Durable conversation view, including active entries and live/inbox/agent/usage documents | Complete history before reset/compaction needs paging over durable entries; root conversation only, no tree/subagent navigation contract |
-| [Durable runtime](../../pi/packages/durable/README.md) | Worker-owned execution and persistence | Verify process/power-loss guarantees; package experimental server/worker paths, which are currently excluded from published packages and standalone binaries |
+| [Protocol](../../pi-fork/pi/packages/protocol/README.md), [client](../../pi-fork/pi/packages/client/README.md) | Protocol v8 framed CBOR, server/session routes, attachment fencing; Chord service snapshots and updates | Experimental, no compatibility guarantee; peer authentication is not implemented; Rust must implement the required Chord semantics as well as envelopes |
+| [Session contracts](../../pi-fork/pi/packages/coding-agent/src/experimental/services/sessions.ts) | List, create, remove, attach, detach | Summaries expose server/session IDs and creation time, not title/cwd/activity; creation options lack project cwd; add project metadata and rename |
+| [Agent controller](../../pi-fork/pi/packages/coding-agent/src/experimental/services/agent-controller.ts) and [provider](../../pi-fork/pi/packages/coding-agent/src/experimental/services/agent-controller-provider.ts) | Prompt, steer, follow-up, cancel queued entry, abort, compact, wait for known prompt ID | No client idempotency key or lookup by client request ID; distinguish operation acceptance from settlement; define stop/queue semantics |
+| [Models](../../pi-fork/pi/packages/coding-agent/src/experimental/services/models.ts) | Provider/model identity, catalog, selection, thinking levels, refresh | Native credential onboarding and auth status contract; model selection is session service state, not a field on `prompt()` |
+| [Transcript](../../pi-fork/pi/packages/coding-agent/src/experimental/services/transcript.ts), [service overview](../../pi-fork/pi/packages/coding-agent/src/experimental/services/README.md) | Durable conversation view, including active entries and live/inbox/agent/usage documents | Complete history before reset/compaction needs paging over durable entries; root conversation only, no tree/subagent navigation contract |
+| [Durable runtime](../../pi-fork/pi/packages/durable/README.md) | Worker-owned execution and persistence | Verify process/power-loss guarantees; package experimental server/worker paths, which are currently excluded from published packages and standalone binaries |
 
 Do not assume the demo's `Token`, `ToolStarted`, or `StatusResolved` variants exist on the wire. Pi publishes replicated service state. The adapter must translate that state and its revisions into stable presentation updates.
 
@@ -254,24 +254,56 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done, M1 is met with caveats, and M2 is complete.** M2 work (Pipkin tree and the Pi branch `pipkin-m2`) is uncommitted. The Pi changes are saved as `patches/pi-m2.patch`.
+**Where we are: M0 is done, M1 is met with caveats, and M2 and M3 are complete.** M2 is committed and pushed (`97dc6f7`). M3 is in the working tree, uncommitted. M3 needed no new Pi changes; the Pi changes are the M2 ones, now committed and pushed in the fork (`../pi-fork/pi`, branch `client-session-cwd-and-request-ids`, `646a5841a`). The older `../pi` checkout is no longer used.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
 | M0 preserve and prepare | **Done** (open: source/version manifest) | Explicit `Mode`, `Connection` state, async `Backend::start(sink)`, namespaced storage v3, crash-safe submit journal v4 |
 | M1 real read path | **Met, with caveats** | Real handshake, trust checks, catalogue, Delta hydration, session listing, attach, `Transcript` subscription and switching all pass against a real Pi server (3 opt-in tests, run repeatedly). The app was launched against it and showed the real session list and an opened session |
 | M2 first real workflow | **Complete** (caveats below) | 7 real-engine e2e tests: a real Pi engine plus a deterministic stub provider runs a file-changing tool; Pipkin shows output and diff and reopens the same history; dropped ack and lost prompt then relaunch do not accept the prompt twice; engine crash restart and lifecycle |
-| M3 and later | Not started | |
+| M3 daily-use execution and recovery | **Complete** (caveats below) | 16 more real-engine e2e tests (23 in all, run repeatedly, in parallel): stop, steer, follow-up, remove-queued, resume after restart, run started elsewhere, switching conversations, attachments (text, image) and their survival across a restart, lost acknowledgments (reply dropped, request dropped, app killed before it could ask), connection cut mid-run, engine killed mid-run, storage refusing the journal, provider configured after start |
+| M4 and later | Not started | |
 
-`cargo test --workspace`: 353 pass, 10 ignored (real-server and real-engine tests). Clippy and fmt clean.
+`cargo test --workspace`: 408 pass, 26 ignored (real-server and real-engine tests, which need `PIPKIN_PI_REPO`). Clippy and fmt clean.
+
+#### M3 summary and caveats
+
+Built, all against Pi's own `AgentController` (`steer`, `followUp`, `cancelQueued`, `abort`, `lookup`); no new Pi code was needed:
+
+- **Steer, follow-up (queue), remove-queued, stop.** Each steer and follow-up is journaled before it is sent, under its own request key (journal state `queued` once the engine admits it). The engine owns the queue (`pi.inbox`), so the queue shown is the engine's own report, refreshed with every transcript update; a request sent and not yet confirmed shows as "Sending…" (or "Checking with the engine…"). Removing an input asks the engine and waits for its answer (`cancelled`, `already_consumed`, `not_found`). Stop stays "Stopping" until the engine settles it, and the engine withdraws the queue with it.
+- **The engine is the authority on the run.** Every refresh carries `EngineState { busy, queue }`. A run this window did not start (the app was closed and reopened, or another client started it) is shown as running and can be stopped; only the engine's report ends such a run. A run this window started is still ended by its own settlement, never by a stale "idle" report.
+- **Reconnect and settlement.** A submission in doubt (journal entry restored after a restart, or cut off by a lost link) is looked up automatically on opening and on reconnecting; looking up sends nothing. A prompt is never resent automatically: if the engine proves it never arrived, the user's explicit Retry sends it. A lost *queue* acknowledgment is resolved by asking the engine about the key and, if it never saw it, sending the very same key again, which the engine admits once. Settlements (what became of a run or request) apply however many times the conversation was re-attached meanwhile; transcript content from an older attachment is still refused.
+- **Switching.** Returning to a conversation that was already opened now re-attaches it in real mode (see findings).
+- **Credentials.** Pi's own mechanism is reused (login, API keys, `models.json`). Pipkin shows the status: a "No model is ready" strip with what to do and a Refresh models button and palette command (`pi.models.refresh`), and a one-line notice when a provider could not be read (expired login, bad key). There is no native sign-in or key-entry flow.
+- **Attachments.** Re-checked against the file at send time, then sent as an image part (PNG, JPEG, GIF, WebP by content, at most 4 images of 4 MB), as inline text in a marked block (text files to 128 KB, 384 KB in all), or as a reference for a larger or non-text file inside the project that the agent can open itself. Anything else is refused by name before anything is sent; nothing is truncated. A changed or missing file blocks the send. The marked blocks carry their length, so file contents cannot forge or end one, and transcripts show the typed text plus attachment chips instead of the file text. Drafts keep their attachments across restarts (schema v6, written in the same transaction as the text); on restore each file is checked again and flagged if missing or changed in size.
+- **Persistence failures.** A failed background write (preferences, journal update, project) is reported once per kind until it works again. A failed draft save offers Retry save and Copy draft. A damaged database is set aside (kept as `.damaged-<time>`) and replaced by the newest intact migration backup, or by a fresh one, with a notice. A database from a newer build is refused without touching the file. If no database can be opened at all, the app runs against a throwaway one and says plainly that nothing survives the session. A failed load of saved state is reported.
+
+Findings from the M3 tests (all fixed):
+
+1. **Returning to an already-opened conversation never re-attached it** in real mode, so the engine stayed attached to the other session and a prompt there was refused. The M1 switching check did not notice because it only looked at what was shown.
+2. **A completing run re-submitted the engine's queued input.** The demo's "start the next queued prompt" also ran in real mode, so an input the engine still listed could be journaled and sent a second time. Intermittent (it depended on whether the engine's queue report beat the completion). Real mode no longer does it.
+3. **Refusing a newer database modified it** (the journal mode was changed before the version check).
+4. Observed, not a defect: when the engine is killed mid-run and restarted, **Pi's durable recovery resumes the interrupted generation by asking the model again**. Pipkin resends nothing; the prompt stays single in the transcript, the model's context and the journal.
+
+Caveats, not covered:
+
+- **Checked on screen** (a launched instance with a managed engine and the scripted provider, driven only through `scripts/guard.sh`; the user clicked into each launched window once, because a freshly launched window does not take keystrokes until it has had real focus). Seen: a held run with Stop; a follow-up and a steer listed as the engine's "Queued (n)" with Follow-up and Steer labels, then run in order with the real file diff; the engine's queue shown with "Sending…" and then "Checking with the engine…" while the engine was frozen, resolving to one run of the input once it resumed; removing a queued input; Stop ending a run; the palette's new commands with the right ones enabled; the "No model is ready" strip with Refresh models, and Refresh bringing the model back after the provider was configured; a draft restored after a restart with its attachment chips, one flagged "File not found" and Send disabled until it was removed, then the message sent and shown with its attachment chip; and, with the database locked, the "Saved data" strip, "Draft not saved" with Retry save and Copy draft, and Retry save recovering. The drafts typed during these checks also came back after quitting and relaunching.
+- **Found and fixed during the checks:** queued input and draft attachments could be removed only with the mouse (the composer swallows Tab, so the × buttons were unreachable by keyboard). The palette now has "Remove queued: …" and "Remove attachment: …" entries. The "Saved data" strip holds one message, so a later failure replaces an earlier one, and it stays until dismissed even after saving recovers.
+- **Still not seen:** the attach picker (a separate file dialog the keyboard-only guard cannot drive); the "Stopping…" state itself (the engine settled before a capture); clicking the × buttons (the guard has no mouse); an unreadable or newer database at startup, and the throwaway-database fallback (covered by tests only). The other M3 behaviour is verified through the real state machine, backend and storage against a real engine, not through GPUI.
+- Credentials: status and refresh only; no sign-in or key-entry flow in the app.
+- A prompt whose acknowledgment is lost and that the engine proves it never received waits for the user's explicit Retry; only queue requests are re-sent automatically (under their key).
+- Steer is offered only while a run is in flight. A stop that the engine never settles stays "Stopping" with no escape or timeout.
+- A tool that was partway through when the engine died may run again when Pi resumes the generation; Pipkin does not yet warn about this (the plan's partial-execution guidance remains to be built).
+- Attachment re-validation compares size, not content. Backup restore covers migration backups only (made at upgrade), not periodic ones; damage is recognised by SQLite's message text.
+- History paging, search, complete tool results, extension dialogs and the native accessibility/IME/scaling gates are M4.
 
 #### M2 summary and caveats
 
 Built: project and session creation (session `cwd` is Pi-side, validated), engine-authoritative model selection, prompt and tool streaming through `AgentController`, journal-before-send with Pi-side `requestId` dedup and `lookup` settlement (short polls), engine lifecycle (Pipkin launches and owns a pinned engine, identified by env; restarts on crash with a cap; clears a stale launcher lock), read-only Git workspace diffs, an "Open project folder" action, and `--project`.
 
-Run the real-engine suite: apply `patches/pi-m2.patch` in the Pi checkout (`git apply`, uncommitted, branch `pipkin-m2`), `npm ci` there, then `PIPKIN_PI_REPO=<pi> cargo test -p pipkin-app -- --ignored adapters::pi::e2e`. The app takes `--pi-repo`, `--pi-agent-dir` and `--project` to launch a managed engine.
+Run the real-engine suite: Pi changes live in the fork at `../pi-fork/pi`, branch `client-session-cwd-and-request-ids` (pushed to `origin`; the changes are listed in its commit). Dependencies are installed there (`npm ci`) and the generated model data was copied from the older `../pi` checkout (`packages/ai/src/providers/data/`, git-ignored). Then `PIPKIN_PI_REPO=../pi-fork/pi cargo test -p pipkin-app -- --ignored adapters::pi::e2e`. The app takes `--pi-repo`, `--pi-agent-dir` and `--project` to launch a managed engine.
 
-Caveats, not covered: the folder picker and the whole M2 flow were **not verified in the GUI** (e2e drives the real state machine, backend and storage without the window); attachments, steer and queue, and history paging are not done; Pi does not compare the payload when a `requestId` is repeated; the engine launcher is a development entry (runs from the Pi checkout), not a distribution path; Pi changes are not upstream.
+Caveats, not covered: the folder picker and the whole M2 flow were **not verified in the GUI** (e2e drives the real state machine, backend and storage without the window); history paging is not done (attachments, steer and queue were added in M3); Pi does not compare the payload when a `requestId` is repeated; the engine launcher is a development entry (runs from the Pi checkout), not a distribution path; the Pi changes are in the fork, not upstream.
 
 #### M1 caveats (what the real-server runs did NOT cover)
 
@@ -297,7 +329,7 @@ Caveats, not covered: the folder picker and the whole M2 flow were **not verifie
 
 #### How to run the real-server checks
 
-Needs the Pi checkout's dependencies (`npm ci` in `../pi`) and its generated model catalog (`npm run generate-models` in `../pi/packages/ai`, which makes unauthenticated GETs to public catalogs; both were done on this machine). Unix socket paths are limited to about 108 bytes, so keep the root short (for example `/tmp/pipkin-pi`, not a long scratch path).
+Needs the Pi checkout's dependencies (`npm ci` in `../pi-fork/pi`) and its generated model catalog (`npm run generate-models` in `../pi-fork/pi/packages/ai`, which makes unauthenticated GETs to public catalogs; both were done on this machine). Unix socket paths are limited to about 108 bytes, so keep the root short (for example `/tmp/pipkin-pi`, not a long scratch path).
 
 ```
 scripts/pi-test-server.sh /tmp/pipkin-pi          # terminal 1, foreground
@@ -316,10 +348,10 @@ cargo run -p pipkin-app --release -- --pi-dir /tmp/pipkin-pi/server \
 
 #### Next work, in order
 
-1. **Commit and push** the uncommitted M1 and M2 work. Next milestone: M3.
+1. **Commit and push** the M3 work. Next milestone: M4 (complete local product). First, look at the M2 and M3 flows on screen with `scripts/try-m2.sh` (a scripted provider; a prompt containing "slow" holds the run for 30 s, enough to steer, queue and stop it by hand).
 2. **Finish M1 properly:** get a non-empty real transcript through a faux-provider harness and verify the mapper against real entries; look at switching and the offline screens in the GUI; report the attach race to Pi.
 3. **M0 leftovers:** build manifest (tested Pi revision and service-contract version); surface storage fallback and load failures in the UI; restore from backup.
-4. **M2 (done; see its summary above)** originally: `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery for real sessions, journaling of steer and follow-up requests.
+4. **M2 and M3 (done; see their summaries above)**; M2 originally: `AgentController` binding and idempotent submit (needs Pi-side client request ids and lookup, section 5), run/queue state from the engine, model selection via `Models.select`, project cwd and session metadata (Pi-side), real workspace diffs, engine lifecycle (launch and own a pinned engine), journal recovery for real sessions, journaling of steer and follow-up requests.
 5. Smaller gaps: `Synced` replaces all items on each change (coalesce and reconcile by stable id in M2); no `has_older` paging; keyed-service replica support is untested against a real server.
 
 ## 11. Verification and release gates

@@ -19,6 +19,8 @@ pub struct ConversationState {
     pub generation: u64,
     pub run: RunState,
     pub queue: Vec<QueuedPrompt>,
+    /// Steers and follow-ups sent to the engine and not yet confirmed (real mode).
+    pub pending_queue: Vec<PendingQueued>,
     pub draft: Draft,
     pub changes: Vec<FileChange>,
     pub selected_change: Option<usize>,
@@ -31,6 +33,9 @@ pub struct ConversationState {
     /// Request behind the live (or unresolved) operation, for journal updates.
     current_request: Option<RequestId>,
     streaming_item: Option<usize>,
+    /// The run shown as `Running` was not started by this window (the engine reported it busy),
+    /// so only the engine's own state can end it.
+    adopted: Option<OperationId>,
 }
 
 impl ConversationState {
@@ -47,6 +52,7 @@ impl ConversationState {
             generation: 0,
             run: RunState::Idle,
             queue: Vec::new(),
+            pending_queue: Vec::new(),
             draft: Draft::default(),
             changes: Vec::new(),
             selected_change: None,
@@ -55,6 +61,7 @@ impl ConversationState {
             intent_error: None,
             current_request: None,
             streaming_item: None,
+            adopted: None,
         }
     }
 
@@ -82,6 +89,8 @@ pub struct AppState {
     pub can_create: bool,
     /// A background action failed and there is no conversation to show it on.
     pub notice: Option<String>,
+    /// Saved state could not be read or written as usual; shown until dismissed.
+    pub storage_issue: Option<String>,
     /// Project folders the user opened, kept across catalogs.
     bookmarks: Vec<Project>,
     /// A conversation creation waiting for the backend to report it.
@@ -131,6 +140,7 @@ impl AppState {
             read_only: None,
             can_create: false,
             notice: None,
+            storage_issue: None,
             bookmarks: Vec::new(),
             pending_create: None,
             request_prefix: "req".into(),
@@ -269,10 +279,43 @@ impl AppState {
     pub fn set_connection(&mut self, connection: Connection) -> Outcome {
         let mut out = Outcome::default();
         if self.connection != connection {
+            let was_ready = self.connection.is_ready();
             self.connection = connection;
             out.notes.push(Note::Other);
+            // Asking the engine what became of a submission is read-only, so it needs no
+            // confirmation once the engine is reachable again.
+            if !was_ready && self.connection.is_ready() {
+                out.merge(self.check_unknown());
+            }
         }
         out
+    }
+
+    /// Ask about the submission in doubt in the open conversation, if there is one.
+    fn check_unknown(&mut self) -> Outcome {
+        let mut out = Outcome::default();
+        let Some(c) = self.current() else { return out };
+        if c.opened
+            && let RunState::OutcomeUnknown { op } = c.run
+        {
+            out.effects
+                .push(Effect::Backend(BackendRequest::CheckStatus {
+                    conversation: c.id,
+                    generation: c.generation,
+                    op,
+                    request: c.current_request.clone(),
+                }));
+        }
+        out
+    }
+
+    /// Record that saved state could not be used as usual.
+    pub fn set_storage_issue(&mut self, message: String) -> Outcome {
+        self.storage_issue = Some(message);
+        Outcome {
+            notes: vec![Note::Other],
+            ..Outcome::default()
+        }
     }
 
     pub fn availability(&self) -> Availability {
@@ -297,16 +340,21 @@ impl AppState {
             matches!(c.run, RunState::Idle | RunState::Failed { .. }) && c.pending_intent.is_none();
         // A read-only build offers no way to send, steer, queue or retry.
         let can_send = self.read_only.is_none();
+        // Real steers and follow-ups are journaled one at a time, like prompts.
+        let intent_free = self.mode == Mode::Demo || c.pending_intent.is_none();
         Availability {
             new_conversation,
             submit: can_send && idle && ready,
-            steer: can_send && matches!(c.run, RunState::Running { .. }) && has_text,
+            steer: can_send && intent_free && matches!(c.run, RunState::Running { .. }) && ready,
             queue: can_send
+                && intent_free
                 && matches!(
                     c.run,
                     RunState::Running { .. } | RunState::Submitting { .. }
                 )
                 && ready,
+            refresh_models: self.mode == Mode::Real && c.opened,
+            retry_save: matches!(c.draft.save, SaveState::Failed(_)),
             cancel: matches!(
                 c.run,
                 RunState::Running { .. } | RunState::Submitting { .. }
@@ -383,11 +431,12 @@ impl AppState {
                 out.effects.push(Effect::SavePrefs(self.prefs.clone()));
             }
             Command::SelectConversation(id) => {
+                let real = self.mode == Mode::Real;
+                let prev = self.selected;
                 let Some(c) = self.conv_mut(id) else {
                     return out;
                 };
                 let project = c.project;
-                let prev = self.selected;
                 // Flush the outgoing draft before leaving it.
                 if let Some(prev) = prev.filter(|p| *p != id) {
                     out.merge(self.flush_draft(prev));
@@ -396,7 +445,9 @@ impl AppState {
                 self.prefs.selected_project = Some(project);
                 self.prefs.selected_conversation = Some(id);
                 let c = self.conv_mut(id).unwrap();
-                if !c.opened {
+                // A real engine is attached to one session at a time, so coming back to a
+                // conversation attaches it again; the demo keeps what it already loaded.
+                if !c.opened || (real && prev != Some(id)) {
                     c.generation += 1;
                     out.effects.push(Effect::Backend(BackendRequest::Open {
                         conversation: id,
@@ -504,6 +555,8 @@ impl AppState {
                     let c = self.conv_mut(id).unwrap();
                     if i < c.draft.attachments.len() {
                         c.draft.attachments.remove(i);
+                        c.draft.rev += 1;
+                        c.draft.save = SaveState::Dirty;
                         out.notes.push(Note::Other);
                     }
                 }
@@ -529,31 +582,79 @@ impl AppState {
 
             Command::Submit => {
                 if self.availability().submit {
-                    out.merge(self.submit_from_draft());
+                    out.merge(self.submit_from_draft(IntentOrigin::Draft));
                 }
             }
             Command::Steer => {
                 if self.availability().steer {
-                    out.merge(self.steer());
+                    if self.mode == Mode::Real {
+                        out.merge(self.submit_from_draft(IntentOrigin::Steer));
+                    } else {
+                        out.merge(self.steer());
+                    }
                 }
             }
             Command::QueueFollowUp => {
-                if self.availability().queue {
+                if self.availability().queue && self.mode == Mode::Real {
+                    out.merge(self.submit_from_draft(IntentOrigin::FollowUp));
+                } else if self.availability().queue {
                     let id = self.selected.unwrap();
                     let qid = QueueId(self.next_queue);
                     self.next_queue += 1;
                     let c = self.conv_mut(id).unwrap();
                     let text = std::mem::take(&mut c.draft.text);
                     c.draft.attachments.clear();
-                    c.queue.push(QueuedPrompt { id: qid, text });
+                    c.queue.push(QueuedPrompt {
+                        id: qid,
+                        text,
+                        mode: QueueMode::FollowUp,
+                    });
                     out.merge(self.reset_draft(id));
                 }
             }
             Command::RemoveQueued(q) => {
                 if let Some(id) = self.selected {
+                    let real = self.mode == Mode::Real;
                     let c = self.conv_mut(id).unwrap();
-                    c.queue.retain(|x| x.id != q);
+                    if real {
+                        // The engine owns the queue: ask it, and let its answer remove the row.
+                        if c.opened && c.queue.iter().any(|x| x.id == q) {
+                            let generation = c.generation;
+                            out.effects
+                                .push(Effect::Backend(BackendRequest::CancelQueued {
+                                    conversation: id,
+                                    generation,
+                                    entry: q,
+                                }));
+                        }
+                    } else {
+                        c.queue.retain(|x| x.id != q);
+                        out.notes.push(Note::Other);
+                    }
+                }
+            }
+            Command::DismissStorageIssue => {
+                if self.storage_issue.take().is_some() {
                     out.notes.push(Note::Other);
+                }
+            }
+            Command::RefreshModels => {
+                if self.availability().refresh_models {
+                    let id = self.selected.unwrap();
+                    let generation = self.conv(id).generation;
+                    out.effects
+                        .push(Effect::Backend(BackendRequest::RefreshModels {
+                            conversation: id,
+                            generation,
+                        }));
+                }
+            }
+            Command::RetrySave => {
+                if let Some(id) = self.selected
+                    && matches!(self.conv(id).draft.save, SaveState::Failed(_))
+                {
+                    self.conv_mut(id).unwrap().draft.save = SaveState::Dirty;
+                    out.merge(self.flush_draft(id));
                 }
             }
             Command::Cancel => {
@@ -662,6 +763,7 @@ impl AppState {
             out.effects.push(Effect::SaveDraft {
                 conversation: id,
                 text: c.draft.text.clone(),
+                attachments: c.draft.attachments.clone(),
                 rev: c.draft.rev,
             });
             out.notes.push(Note::Other);
@@ -680,12 +782,12 @@ impl AppState {
         out
     }
 
-    fn submit_from_draft(&mut self) -> Outcome {
+    fn submit_from_draft(&mut self, origin: IntentOrigin) -> Outcome {
         let id = self.selected.unwrap();
         let c = self.conv_mut(id).unwrap();
         let text = c.draft.text.trim_end().to_string();
         let atts = c.draft.attachments.clone();
-        self.submit(id, text, atts, IntentOrigin::Draft)
+        self.submit(id, text, atts, origin)
     }
 
     /// First half of a submission: record the intent. The draft stays and nothing is sent until
@@ -752,6 +854,7 @@ impl AppState {
                     QueuedPrompt {
                         id: qid,
                         text: intent.text,
+                        mode: QueueMode::FollowUp,
                     },
                 );
             }
@@ -796,6 +899,46 @@ impl AppState {
                 c.run = RunState::Idle;
             }
             IntentOrigin::Queue => {}
+            IntentOrigin::Steer | IntentOrigin::FollowUp => {
+                // The run is untouched: the engine owns this input from here, and shows it in
+                // its queue and, once placed, in the transcript.
+                let draft_text = c.draft.text.trim_end() == intent.text
+                    && c.draft
+                        .attachments
+                        .iter()
+                        .map(|a| &a.path)
+                        .eq(intent.attachments.iter().map(|a| &a.path));
+                if draft_text {
+                    c.draft.text.clear();
+                    c.draft.attachments.clear();
+                }
+                let mode = if intent.origin == IntentOrigin::Steer {
+                    QueueMode::Steer
+                } else {
+                    QueueMode::FollowUp
+                };
+                c.pending_queue.push(PendingQueued {
+                    request: intent.request.clone(),
+                    text: intent.text.clone(),
+                    attachments: intent.attachments.clone(),
+                    mode,
+                    state: QueueSend::Sending,
+                });
+                let generation = c.generation;
+                out.effects.push(Effect::Backend(BackendRequest::Queue {
+                    conversation: id,
+                    generation,
+                    request: intent.request,
+                    mode,
+                    text: intent.text,
+                    attachments: intent.attachments,
+                }));
+                if draft_text {
+                    out.merge(self.reset_draft(id));
+                }
+                out.notes.push(Note::Other);
+                return out;
+            }
         }
         c.run = RunState::Submitting { op };
         c.last_submission = Some((intent.text.clone(), intent.attachments.clone()));
@@ -864,11 +1007,28 @@ impl AppState {
     pub fn apply_event(&mut self, ev: BackendEvent) -> Outcome {
         let mut out = Outcome::default();
         let id = ev.conversation;
+        let real = self.mode == Mode::Real;
         let Some(c) = self.conv_mut(id) else {
             return out;
         };
-        // Stale generation: an earlier attachment's event must never land here.
-        if ev.generation != c.generation {
+        // Stale generation: an earlier attachment's content must never land here. What became of
+        // a request or a run is not content: the operation or request key identifies it, so it
+        // applies however many times the conversation was attached since.
+        let by_identity = matches!(
+            ev.kind,
+            EventKind::Accepted
+                | EventKind::Rejected { .. }
+                | EventKind::AckLost
+                | EventKind::StatusResolved { .. }
+                | EventKind::Completed
+                | EventKind::Failed { .. }
+                | EventKind::Cancelled
+                | EventKind::QueueAdmitted { .. }
+                | EventKind::QueueRefused { .. }
+                | EventKind::QueueAckLost { .. }
+                | EventKind::QueueCancelled { .. }
+        );
+        if ev.generation != c.generation && !by_identity {
             return out;
         }
         // Operation-scoped events must match the live operation.
@@ -879,6 +1039,11 @@ impl AppState {
                 | EventKind::Synced { .. }
                 | EventKind::OpenFailed { .. }
                 | EventKind::ChangesSynced(_)
+                | EventKind::QueueAdmitted { .. }
+                | EventKind::QueueRefused { .. }
+                | EventKind::QueueAckLost { .. }
+                | EventKind::QueueCancelled { .. }
+                | EventKind::EngineState { .. }
         );
         if scoped && ev.op != c.run.op() {
             return out;
@@ -890,11 +1055,23 @@ impl AppState {
                 changes,
             } => {
                 c.items = items;
+                c.streaming_item = None;
                 c.has_older = has_older;
                 c.opened = true;
                 c.selected_change = (!changes.is_empty()).then_some(0);
                 c.changes = changes;
                 out.notes.push(Note::ItemsReset(id));
+                // A submission in doubt (restored from the journal, or cut off by a reconnect)
+                // is resolved by asking the engine about its key; that never sends anything.
+                if let RunState::OutcomeUnknown { op } = c.run {
+                    out.effects
+                        .push(Effect::Backend(BackendRequest::CheckStatus {
+                            conversation: id,
+                            generation: c.generation,
+                            op,
+                            request: c.current_request.clone(),
+                        }));
+                }
             }
             EventKind::OpenFailed { message } => {
                 if !c.opened {
@@ -1071,6 +1248,91 @@ impl AppState {
                 c.changes = changes;
                 out.notes.push(Note::Other);
             }
+            EventKind::QueueAdmitted { request, entry } => {
+                let pending = c.pending_queue.iter().position(|p| p.request == request);
+                if let Some(i) = pending {
+                    let p = c.pending_queue.remove(i);
+                    if c.queue.iter().all(|q| q.id != entry) {
+                        c.queue.push(QueuedPrompt {
+                            id: entry,
+                            text: p.text,
+                            mode: p.mode,
+                        });
+                    }
+                    out.effects.push(Effect::JournalState {
+                        conversation: id,
+                        request,
+                        state: JournalState::Queued,
+                    });
+                    out.notes.push(Note::Other);
+                }
+            }
+            EventKind::QueueRefused { request, reason } => {
+                if let Some(i) = c.pending_queue.iter().position(|p| p.request == request) {
+                    let p = c.pending_queue.remove(i);
+                    out.effects.push(Effect::JournalState {
+                        conversation: id,
+                        request,
+                        state: JournalState::Rejected,
+                    });
+                    // The text comes back to the draft if the user has not started another.
+                    if c.draft.text.is_empty() && c.draft.attachments.is_empty() {
+                        c.draft.text = p.text;
+                        c.draft.attachments = p.attachments;
+                        c.draft.sync_epoch += 1;
+                        c.draft.rev += 1;
+                        c.draft.save = SaveState::Dirty;
+                    }
+                    c.intent_error = Some(format!("Not queued: {reason}"));
+                    out.notes.push(Note::Other);
+                }
+            }
+            EventKind::QueueAckLost { request } => {
+                if let Some(p) = c.pending_queue.iter_mut().find(|p| p.request == request) {
+                    p.state = QueueSend::Unknown;
+                    out.effects.push(Effect::JournalState {
+                        conversation: id,
+                        request,
+                        state: JournalState::Unknown,
+                    });
+                    out.notes.push(Note::Other);
+                }
+            }
+            EventKind::QueueCancelled { entry, outcome } => {
+                match outcome {
+                    CancelOutcome::Cancelled | CancelOutcome::NotFound => {
+                        c.queue.retain(|q| q.id != entry);
+                    }
+                    CancelOutcome::AlreadyConsumed => {
+                        c.intent_error = Some(
+                            "That input had already started, so it could not be removed.".into(),
+                        );
+                    }
+                }
+                out.notes.push(Note::Other);
+            }
+            EventKind::EngineState { busy, queue } => {
+                if real {
+                    c.queue = queue;
+                    match (busy, c.run.clone()) {
+                        // Work this window did not start: show it and let the engine end it.
+                        (true, RunState::Idle) => {
+                            let op = self.alloc_op();
+                            let c = self.conv_mut(id).unwrap();
+                            c.run = RunState::Running { op };
+                            c.adopted = Some(op);
+                        }
+                        (false, RunState::Running { op } | RunState::Stopping { op })
+                            if c.adopted == Some(op) =>
+                        {
+                            c.run = RunState::Idle;
+                            c.adopted = None;
+                        }
+                        _ => {}
+                    }
+                    out.notes.push(Note::Other);
+                }
+            }
             EventKind::Completed => {
                 c.run = RunState::Idle;
                 journal(c, id, JournalState::Completed, &mut out);
@@ -1129,8 +1391,13 @@ impl AppState {
         }
     }
 
-    /// After a run completes normally, start the next queued prompt.
+    /// After a run completes normally, start the next queued prompt. Only the demo keeps its own
+    /// queue: a real engine consumes the queue it owns, and starting one of its entries from
+    /// here too would run it twice.
     fn after_settled(&mut self, id: ConversationId) -> Outcome {
+        if self.mode == Mode::Real {
+            return Outcome::default();
+        }
         let c = self.conv_mut(id).unwrap();
         if c.queue.is_empty() {
             return Outcome::default();
@@ -1151,13 +1418,20 @@ impl AppState {
         }
     }
 
-    /// Restore a draft read from storage at startup.
-    pub fn restore_draft(&mut self, id: ConversationId, text: String) {
+    /// Restore a draft (text and attachments) read from storage at startup.
+    pub fn restore_draft(
+        &mut self,
+        id: ConversationId,
+        text: String,
+        attachments: Vec<Attachment>,
+    ) {
         if let Some(c) = self.conv_mut(id)
-            && !text.is_empty()
+            && (!text.is_empty() || !attachments.is_empty())
             && c.draft.text.is_empty()
+            && c.draft.attachments.is_empty()
         {
             c.draft.text = text;
+            c.draft.attachments = attachments;
             c.draft.sync_epoch += 1;
             c.draft.save = SaveState::Saved;
         }

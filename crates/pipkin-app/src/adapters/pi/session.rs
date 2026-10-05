@@ -174,6 +174,26 @@ pub fn split_model_id(id: &str) -> Option<(&str, &str)> {
     (!provider.is_empty() && !model.is_empty()).then_some((provider, model))
 }
 
+/// What the engine said went wrong the last time it re-read its providers (expired login,
+/// unreachable provider, a bad key), as one line. `None` when the refresh was clean.
+pub fn refresh_warning(state: &Value) -> Option<String> {
+    let refresh = state.get("refresh")?;
+    if refresh.get("status").and_then(Value::as_str) != Some("warning") {
+        return None;
+    }
+    let mut problems: Vec<String> = refresh
+        .get("errors")
+        .and_then(Value::as_object)?
+        .iter()
+        .map(|(provider, message)| format!("{provider}: {}", message.as_str().unwrap_or("failed")))
+        .collect();
+    problems.sort();
+    Some(format!(
+        "Some providers could not be read ({}). Check their sign-in or API key with Pi, then refresh the models.",
+        problems.join("; ")
+    ))
+}
+
 /// Map `pi.models` state. The configured model comes first so it is the default selection.
 pub fn parse_models(state: &Value) -> Vec<ModelInfo> {
     let configured = selected_model(state);

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Try Pipkin's real-engine workflow offline: a managed Pi engine, a scripted provider, a scratch
-# git project. Usage: scripts/try-m2.sh [path-to-pi-checkout]   (default ../pi)
+# git project. Usage: scripts/try-m2.sh [path-to-pi-checkout]   (default ../pi-fork/pi)
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-pi=$(cd "${1:-$here/../pi}" && pwd)
-root=/tmp/pipkin-try          # keep short: Unix socket paths are limited to ~108 bytes
-port=18765
+pi=$(cd "${1:-$here/../pi-fork/pi}" && pwd)
+root=${PIPKIN_TRY_ROOT:-/tmp/pipkin-try}   # keep short: Unix socket paths are limited to ~108 bytes
+port=${PIPKIN_TRY_PORT:-18765}
 mkdir -p "$root/agent" "$root/server" "$root/data" "$root/project"
 chmod 700 "$root/server"
 cat > "$root/agent/models.json" <<JSON

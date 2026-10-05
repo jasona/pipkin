@@ -13,6 +13,8 @@ pub enum LifecycleEvent {
     ModelSelected(Option<String>),
     /// A background action failed and there is no conversation to attach the failure to.
     Notice(String),
+    /// Saved state could not be read or written as usual (a failed background write, say).
+    StorageIssue(String),
 }
 
 pub type LifecycleSink = Box<dyn Fn(LifecycleEvent) + Send + Sync>;

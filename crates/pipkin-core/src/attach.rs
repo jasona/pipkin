@@ -33,3 +33,13 @@ pub fn describe_attachment(path: &Path) -> Attachment {
         error,
     }
 }
+
+/// Check a saved attachment against the file as it is now: still there, still readable, and
+/// still the size it was when attached.
+pub fn revalidate_attachment(saved: &Attachment) -> Attachment {
+    let mut now = describe_attachment(Path::new(&saved.path));
+    if now.error.is_none() && saved.size.is_some() && saved.size != now.size {
+        now.error = Some("Changed since you attached it".to_string());
+    }
+    now
+}

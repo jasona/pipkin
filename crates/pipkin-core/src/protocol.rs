@@ -19,6 +19,12 @@ pub enum Command {
     AddProject(String),
     /// Dismiss the application-level notice shown after a failed background action.
     DismissNotice,
+    /// Dismiss the notice about saved state (a recovery or an unsaved-work warning).
+    DismissStorageIssue,
+    /// Ask the engine to re-read its provider credentials and model catalogue.
+    RefreshModels,
+    /// Save the current draft again after a failed save.
+    RetrySave,
 
     Submit,
     Steer,
@@ -50,6 +56,8 @@ pub struct Availability {
     pub steer: bool,
     pub queue: bool,
     pub cancel: bool,
+    pub refresh_models: bool,
+    pub retry_save: bool,
     pub check_status: bool,
     pub retry: bool,
     pub load_older: bool,
@@ -81,6 +89,27 @@ pub enum BackendRequest {
         generation: u64,
         op: OperationId,
         text: String,
+    },
+    /// Steer the active run or queue a follow-up (real mode). `request` is the journaled key, so
+    /// the engine admits it once however often it is sent.
+    Queue {
+        conversation: ConversationId,
+        generation: u64,
+        request: RequestId,
+        mode: QueueMode,
+        text: String,
+        attachments: Vec<Attachment>,
+    },
+    /// Withdraw an input the engine still holds in its queue.
+    CancelQueued {
+        conversation: ConversationId,
+        generation: u64,
+        entry: QueueId,
+    },
+    /// Re-read the engine's credentials and model catalogue.
+    RefreshModels {
+        conversation: ConversationId,
+        generation: u64,
     },
     Cancel {
         conversation: ConversationId,
@@ -174,6 +203,31 @@ pub enum EventKind {
     /// The engine confirms a cancel has settled.
     Cancelled,
     SteerAccepted,
+    /// The engine holds the queue request `request` as `entry`.
+    QueueAdmitted {
+        request: RequestId,
+        entry: QueueId,
+    },
+    /// The engine definitely did not take the queue request.
+    QueueRefused {
+        request: RequestId,
+        reason: String,
+    },
+    /// The connection dropped before the engine answered a queue request.
+    QueueAckLost {
+        request: RequestId,
+    },
+    /// Answer to `CancelQueued`.
+    QueueCancelled {
+        entry: QueueId,
+        outcome: CancelOutcome,
+    },
+    /// The engine's own view of the run and its queue. Not tied to any operation: it is how a
+    /// run started elsewhere, or before this window opened, becomes visible and how it ends.
+    EngineState {
+        busy: bool,
+        queue: Vec<QueuedPrompt>,
+    },
 }
 
 /// Work the controller executes on the core's behalf.
@@ -183,6 +237,7 @@ pub enum Effect {
     SaveDraft {
         conversation: ConversationId,
         text: String,
+        attachments: Vec<Attachment>,
         rev: u64,
     },
     SavePrefs(Prefs),
@@ -219,6 +274,8 @@ pub enum JournalState {
     Completed,
     Failed,
     Cancelled,
+    /// The engine admitted a steer or follow-up; its queue owns it from here.
+    Queued,
     /// Replaced by a newer request for the same conversation during recovery.
     Superseded,
 }
@@ -237,6 +294,7 @@ impl JournalState {
             JournalState::Completed => "completed",
             JournalState::Failed => "failed",
             JournalState::Cancelled => "cancelled",
+            JournalState::Queued => "queued",
             JournalState::Superseded => "superseded",
         }
     }

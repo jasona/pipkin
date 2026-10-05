@@ -1,5 +1,7 @@
 // A scripted OpenAI-compatible provider for trying Pipkin against a real Pi engine, offline.
-// Every prompt makes the model write notes.txt with the write tool, then say it did.
+// Every prompt makes the model write notes.txt with the write tool, then say it did. A prompt
+// containing the word "slow" is held for 30 seconds first (or until the client gives up), so a
+// run stays in flight long enough to steer, queue and stop it by hand.
 // Usage: node scripts/stub-provider.mjs [port]   (default 18765)
 import http from "node:http";
 
@@ -16,10 +18,17 @@ const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
 http.createServer((req, res) => {
   let body = "";
   req.on("data", (d) => (body += d));
-  req.on("end", () => {
+  req.on("end", async () => {
     let messages = [];
     try { messages = JSON.parse(body).messages ?? []; } catch {}
     const afterTool = messages.at(-1)?.role === "tool";
+    const last = messages.findLast((m) => m.role === "user");
+    const text = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
+    const hold = !afterTool && /\bslow\b/i.test(text) ? 30000 : 0;
+    let gone = false;
+    res.on("close", () => (gone = true));
+    if (hold) await new Promise((resolve) => { const t = setTimeout(resolve, hold); res.on("close", () => { clearTimeout(t); resolve(); }); });
+    if (gone) return;
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     res.write(chunk({ role: "assistant", content: "" }));
     if (afterTool) {

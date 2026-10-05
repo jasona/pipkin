@@ -17,7 +17,9 @@ use crate::adapters::pi::{PiBackend, PiConfig};
 use crate::adapters::script;
 use crate::adapters::{DemoBackend, DemoOptions};
 use crate::platform;
-use crate::storage::{DEMO_NAMESPACE, DemoConversation, Loaded, OpenRequest, Storage, StoredDraft};
+use crate::storage::{
+    DEMO_NAMESPACE, DemoConversation, Loaded, OpenRequest, Startup, Storage, StoredDraft,
+};
 
 const CLOCK_REFRESH: Duration = Duration::from_secs(15);
 const EVENT_QUEUE: usize = 1024;
@@ -222,13 +224,20 @@ fn managed_engine(options: &Options, pi_repo: &Path) -> Result<EngineConfig, Str
     })
 }
 
-fn open_storage(options: &Options) -> Arc<Storage> {
+/// Open the desktop database, and say when it is not the one the user expects: a damaged file
+/// that was set aside, or no usable database at all. In the second case Pipkin keeps working
+/// against a throwaway database so a prompt can still be journaled, and says plainly that
+/// nothing survives the session.
+fn open_storage(options: &Options) -> (Arc<Storage>, Option<String>) {
     let dir = platform::data_dir(options.data_dir.as_deref());
     let ns = namespace(options);
-    match Storage::open(&platform::db_path(&dir), &ns) {
-        Ok(storage) => Arc::new(storage),
+    match Storage::open_recovering(&platform::db_path(&dir), &ns) {
+        Ok((storage, Startup::Clean)) => (Arc::new(storage), None),
+        Ok((storage, Startup::Recovered(message))) => {
+            log::error!("{message}");
+            (Arc::new(storage), Some(message))
+        }
         Err(e) => {
-            // Keep the app usable; drafts will not survive this session.
             let fallback =
                 std::env::temp_dir().join(format!("pipkin-fallback-{}", std::process::id()));
             log::error!(
@@ -236,7 +245,14 @@ fn open_storage(options: &Options) -> Arc<Storage> {
                 dir.display(),
                 fallback.display()
             );
-            Arc::new(Storage::open(&platform::db_path(&fallback), &ns).expect("fallback storage"))
+            let storage = Storage::open(&platform::db_path(&fallback), &ns)
+                .expect("a throwaway database in the temporary directory");
+            let message = format!(
+                "Pipkin cannot use its saved data ({e}). Your drafts and unfinished sends will \
+                 not survive closing the app, and anything saved earlier is not shown. Copy \
+                 anything you need to keep."
+            );
+            (Arc::new(storage), Some(message))
         }
     }
 }
@@ -273,7 +289,9 @@ impl Restore {
             if state.conversation(d.conversation).is_none() {
                 return true;
             }
-            state.restore_draft(d.conversation, d.text.clone());
+            // The files may have moved or changed since the draft was saved.
+            let attachments = d.attachments.iter().map(revalidate_attachment).collect();
+            state.restore_draft(d.conversation, d.text.clone(), attachments);
             false
         });
         // Never resend: an unresolved request becomes "outcome unknown" for the user to resolve.
@@ -294,9 +312,13 @@ impl Restore {
 }
 
 pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
-    let storage = open_storage(&options);
+    let (storage, mut storage_issue) = open_storage(&options);
     let loaded = storage.load_all().unwrap_or_else(|e| {
         log::error!("cannot read stored state: {e}");
+        storage_issue.get_or_insert(format!(
+            "Pipkin could not read its saved data ({e}), so earlier drafts and unfinished \
+             sends are not shown."
+        ));
         crate::storage::Loaded {
             prefs: Prefs::default(),
             drafts: vec![],
@@ -353,6 +375,9 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
         loaded.prefs.clone(),
     );
     state.mode = options.mode;
+    if let Some(issue) = storage_issue {
+        state.set_storage_issue(issue);
+    }
     state.set_now(now);
     state.set_request_prefix(request_prefix(now));
     state.set_connection(Connection::Connecting);
@@ -399,10 +424,11 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                 Effect::SaveDraft {
                     conversation,
                     text,
+                    attachments,
                     rev,
                 } => {
                     let ack_tx = ack_tx.clone();
-                    storage.save_draft(conversation, text, rev, move |result| {
+                    storage.save_draft(conversation, text, attachments, rev, move |result| {
                         let _ = ack_tx.send_blocking((conversation, rev, result));
                     });
                 }
@@ -543,6 +569,12 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     // Lifecycle updates: connection state and the catalog. The sink never drops an update.
     let (life_tx, life_rx) = async_channel::unbounded::<LifecycleEvent>();
     {
+        let tx = life_tx.clone();
+        storage.set_error_sink(Arc::new(move |message| {
+            let _ = tx.send_blocking(LifecycleEvent::StorageIssue(message));
+        }));
+    }
+    {
         let weak = model.downgrade();
         cx.spawn(async move |cx| {
             while let Ok(event) = life_rx.recv().await {
@@ -565,6 +597,9 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                     }
                     LifecycleEvent::Notice(message) => {
                         m.mutate(|state| state.set_notice(message), cx)
+                    }
+                    LifecycleEvent::StorageIssue(message) => {
+                        m.mutate(|state| state.set_storage_issue(message), cx)
                     }
                 });
                 if alive.is_err() {

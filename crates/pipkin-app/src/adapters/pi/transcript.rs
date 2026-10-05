@@ -8,10 +8,12 @@
 use std::collections::HashMap;
 
 use pipkin_core::{
-    Delivery, ItemId, ItemKind, LOCAL_ITEM_BASE, NoticeLevel, ToolCall, ToolStatus, TranscriptItem,
-    preview_output,
+    Attachment, Delivery, ItemId, ItemKind, LOCAL_ITEM_BASE, NoticeLevel, QueueId, QueueMode,
+    QueuedPrompt, ToolCall, ToolStatus, TranscriptItem, preview_output,
 };
 use serde_json::Value;
+
+use super::attach::split_message;
 
 /// Slots reserved per entry for the items one entry may produce.
 const SLOTS_PER_ENTRY: u64 = 1024;
@@ -23,6 +25,8 @@ pub struct Mapped {
     pub items: Vec<TranscriptItem>,
     /// A run is in progress (`pi.live.run` is present).
     pub busy: bool,
+    /// Steers and follow-ups the engine holds for the next boundary (`pi.inbox`), oldest first.
+    pub queue: Vec<QueuedPrompt>,
     /// Entries shown as "unsupported" notices.
     pub unsupported: usize,
 }
@@ -51,6 +55,78 @@ fn text_of(content: &Value) -> String {
             .join(""),
         _ => String::new(),
     }
+}
+
+/// The text a person typed in a user message's content, and how many images came with it.
+fn user_parts(content: &Value) -> (String, usize) {
+    match content {
+        Value::Array(blocks) => {
+            let mut text = String::new();
+            let mut images = 0;
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        text.push_str(block.get("text").and_then(Value::as_str).unwrap_or(""))
+                    }
+                    Some("image") => images += 1,
+                    _ => {}
+                }
+            }
+            (text, images)
+        }
+        other => (text_of(other), 0),
+    }
+}
+
+/// Attachment chips for a user message: files recorded in marked blocks, then images.
+fn chips_for(content: &Value) -> (String, Vec<Attachment>) {
+    let (raw, images) = user_parts(content);
+    let (text, mut chips) = split_message(&raw);
+    for n in 1..=images {
+        chips.push(Attachment {
+            path: String::new(),
+            name: if images == 1 {
+                "Image".to_owned()
+            } else {
+                format!("Image {n}")
+            },
+            size: None,
+            error: None,
+        });
+    }
+    (text, chips)
+}
+
+fn queued(view: &Value) -> Vec<QueuedPrompt> {
+    let items = view
+        .get("docs")
+        .and_then(|d| d.get("pi.inbox"))
+        .and_then(|i| i.get("items"))
+        .and_then(Value::as_array);
+    items
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let mode = match item.get("mode").and_then(Value::as_str)? {
+                "steer" => QueueMode::Steer,
+                "followUp" => QueueMode::FollowUp,
+                // Passive entry writes are the engine's own business.
+                _ => return None,
+            };
+            let id = item.get("id").and_then(Value::as_u64)?;
+            let (text, chips) = chips_for(item.get("content").unwrap_or(&Value::Null));
+            let text = match chips.len() {
+                0 => text,
+                1 => format!("{text} [1 attachment]"),
+                n => format!("{text} [{n} attachments]"),
+            };
+            Some(QueuedPrompt {
+                id: QueueId(id),
+                text,
+                mode,
+            })
+        })
+        .collect()
 }
 
 fn entry_base(entry: &Value) -> u64 {
@@ -216,12 +292,13 @@ impl Builder {
         let id = base + index.min(SLOTS_PER_ENTRY - 1);
         match message.get("role").and_then(Value::as_str) {
             Some("user") => {
+                let (text, attachments) = chips_for(message.get("content").unwrap_or(&Value::Null));
                 self.push(
                     id,
                     at,
                     ItemKind::User {
-                        text: text_of(message.get("content").unwrap_or(&Value::Null)),
-                        attachments: Vec::new(),
+                        text,
+                        attachments,
                         delivery: Delivery::Sent,
                         steer: false,
                     },
@@ -339,6 +416,7 @@ pub fn map_view(view: &Value) -> Mapped {
     Mapped {
         items: b.items,
         busy,
+        queue: queued(view),
         unsupported: b.unsupported,
     }
 }
@@ -392,7 +470,46 @@ mod tests {
         let entry = json!({ "id": 1, "kind": "k", "model": [{ "role": "user", "timestamp": 0,
             "content": [{ "type": "text", "text": "see " }, { "type": "image", "data": "AAAA", "mimeType": "image/png" }] }] });
         let m = map_view(&view(vec![entry]));
-        assert!(matches!(&m.items[0].kind, ItemKind::User { text, .. } if text == "see [image]"));
+        let ItemKind::User {
+            text, attachments, ..
+        } = &m.items[0].kind
+        else {
+            panic!("a user item");
+        };
+        assert_eq!(text, "see ");
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "Image");
+    }
+
+    #[test]
+    fn an_inbox_becomes_the_queue_and_ignores_passive_writes() {
+        let mut v = view(vec![]);
+        v["docs"] = json!({ "pi.inbox": { "items": [
+            { "id": 11, "mode": "steer", "content": "use tabs" },
+            { "id": 12, "mode": "write", "entry": { "kind": "x" } },
+            { "id": 13, "mode": "followUp", "content": [
+                { "type": "text", "text": "then ship it" },
+                { "type": "image", "data": "AA", "mimeType": "image/png" } ] },
+            { "mode": "followUp", "content": "no id: skipped" },
+            { "id": 14, "mode": "mystery", "content": "skipped" },
+        ]}});
+        let m = map_view(&v);
+        assert_eq!(
+            m.queue,
+            vec![
+                QueuedPrompt {
+                    id: QueueId(11),
+                    text: "use tabs".into(),
+                    mode: QueueMode::Steer
+                },
+                QueuedPrompt {
+                    id: QueueId(13),
+                    text: "then ship it [1 attachment]".into(),
+                    mode: QueueMode::FollowUp
+                },
+            ]
+        );
+        assert!(map_view(&view(vec![])).queue.is_empty());
     }
 
     #[test]

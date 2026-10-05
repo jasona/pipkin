@@ -455,7 +455,7 @@ fn catalog_honors_remembered_selection_and_keeps_local_state() {
     };
     let mut s = empty_state(prefs);
     s.apply_catalog(catalog());
-    s.restore_draft(ConversationId(2), "kept".into());
+    s.restore_draft(ConversationId(2), "kept".into(), vec![]);
     s.apply_catalog(catalog());
     assert_eq!(s.conversations.len(), 2);
     s.select_initial();

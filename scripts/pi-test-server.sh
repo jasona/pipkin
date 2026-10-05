@@ -16,7 +16,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PI_REPO="${PI_REPO:-$(cd "$HERE/../../pi" && pwd)}"
+PI_REPO="${PI_REPO:-$(cd "$HERE/../../pi-fork/pi" && pwd)}"
 ROOT="${1:-$(mktemp -d "${TMPDIR:-/tmp}/pipkin-pi-XXXXXX")}"
 # A fixed canonical UUIDv4, so tests know which logical server to expect.
 SERVER_ID="${PI_SERVER_ID:-5f0c7b1e-2d4a-4f6b-9a3e-1c8d7e6f5a40}"

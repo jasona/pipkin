@@ -438,6 +438,10 @@ impl Worker {
                     ended: false,
                 });
             }
+            // Real-mode requests: the demo's core never issues them.
+            BackendRequest::Queue { .. }
+            | BackendRequest::CancelQueued { .. }
+            | BackendRequest::RefreshModels { .. } => {}
             BackendRequest::Steer {
                 conversation,
                 generation,

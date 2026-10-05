@@ -84,6 +84,15 @@ const MIGRATIONS: &[&str] = &[
         added_at INTEGER NOT NULL,
         PRIMARY KEY (namespace, path)
      );",
+    "CREATE TABLE draft_attachments (
+        namespace TEXT NOT NULL,
+        conversation_id INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        name TEXT NOT NULL,
+        size INTEGER,
+        PRIMARY KEY (namespace, conversation_id, position)
+     );",
 ];
 
 /// States that still need reconciliation after a restart.
@@ -105,6 +114,8 @@ pub struct DemoConversation {
 pub struct StoredDraft {
     pub conversation: ConversationId,
     pub text: String,
+    /// What was attached when the draft was saved. Files are re-checked when it is restored.
+    pub attachments: Vec<Attachment>,
     pub rev: u64,
 }
 
@@ -132,6 +143,7 @@ enum Msg {
     Draft {
         conversation: ConversationId,
         text: String,
+        attachments: Vec<Attachment>,
         rev: u64,
         ack: Ack,
     },
@@ -150,12 +162,47 @@ enum Msg {
     },
 }
 
+/// Receives a message when a write nobody is waiting on (preferences, journal updates, ...)
+/// fails, so the failure reaches the user instead of only the log.
+pub type ErrorSink = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Reports each kind of background failure once until that kind succeeds again.
+struct Reporter {
+    sink: Mutex<Option<ErrorSink>>,
+    active: Mutex<std::collections::HashSet<&'static str>>,
+}
+
+impl Reporter {
+    fn failed(&self, kind: &'static str, message: String) {
+        log::warn!("{message}");
+        if self.active.lock().unwrap().insert(kind)
+            && let Some(sink) = self.sink.lock().unwrap().as_ref()
+        {
+            sink(message);
+        }
+    }
+
+    fn succeeded(&self, kind: &'static str) {
+        self.active.lock().unwrap().remove(kind);
+    }
+
+    fn settle(&self, kind: &'static str, result: Result<(), String>, what: &str) {
+        match result {
+            Ok(()) => self.succeeded(kind),
+            Err(e) => self.failed(kind, format!("Could not save {what}: {e}")),
+        }
+    }
+}
+
 pub struct Storage {
     path: PathBuf,
     namespace: String,
     sender: Mutex<Option<SyncSender<Msg>>>,
     writer: Mutex<Option<JoinHandle<()>>>,
     fail_writes: Arc<AtomicBool>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    fail_background: Arc<AtomicBool>,
+    reporter: Arc<Reporter>,
 }
 
 fn sql_err(e: rusqlite::Error) -> String {
@@ -178,7 +225,7 @@ fn configure(conn: &Connection) -> Result<(), String> {
         .map_err(sql_err)
 }
 
-fn migrate(conn: &mut Connection, path: &Path) -> Result<(), String> {
+fn refuse_newer(conn: &Connection) -> Result<(), String> {
     let version: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(sql_err)?;
@@ -187,6 +234,14 @@ fn migrate(conn: &mut Connection, path: &Path) -> Result<(), String> {
             "database schema version {version} is newer than this build supports ({SCHEMA_VERSION})"
         ));
     }
+    Ok(())
+}
+
+fn migrate(conn: &mut Connection, path: &Path) -> Result<(), String> {
+    refuse_newer(conn)?;
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(sql_err)?;
     if version > 0 && version < SCHEMA_VERSION {
         backup(conn, path, version)?;
     }
@@ -220,19 +275,31 @@ impl Storage {
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         }
         let mut conn = Connection::open(path).map_err(sql_err)?;
+        // A newer build's database is looked at before anything is changed, so refusing it
+        // leaves the file exactly as it was (even the journal mode stays as that build set it).
+        refuse_newer(&conn)?;
         configure(&conn)?;
         migrate(&mut conn, path)?;
 
         let (tx, rx) = sync_channel::<Msg>(QUEUE_DEPTH);
         let fail_writes = Arc::new(AtomicBool::new(false));
-        let fail = fail_writes.clone();
+        let fail_background = Arc::new(AtomicBool::new(false));
+        let reporter = Arc::new(Reporter {
+            sink: Mutex::new(None),
+            active: Mutex::new(Default::default()),
+        });
+        let (fail, fail_bg, report) = (
+            fail_writes.clone(),
+            fail_background.clone(),
+            reporter.clone(),
+        );
         let ns = namespace.to_string();
         let writer = std::thread::Builder::new()
             .name("pi-storage-writer".into())
             .spawn(move || {
                 // Ends when every sender is dropped, after the queue has been drained.
                 while let Ok(msg) = rx.recv() {
-                    write(&mut conn, &ns, &fail, msg);
+                    write(&mut conn, &ns, &fail, &fail_bg, &report, msg);
                 }
             })
             .map_err(|e| format!("cannot start storage writer: {e}"))?;
@@ -242,7 +309,32 @@ impl Storage {
             sender: Mutex::new(Some(tx)),
             writer: Mutex::new(Some(writer)),
             fail_writes,
+            fail_background,
+            reporter,
         })
+    }
+
+    /// Route failures of background writes to `sink` (once per kind until it succeeds again).
+    pub fn set_error_sink(&self, sink: ErrorSink) {
+        *self.reporter.sink.lock().unwrap() = Some(sink);
+    }
+
+    /// Make preference, journal-update and project writes fail (a test control).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_background_failure(&self, fail: bool) {
+        self.fail_background.store(fail, Ordering::SeqCst);
+    }
+
+    /// Open the database, setting a damaged file aside instead of failing on it: the newest
+    /// intact migration backup is restored if there is one, otherwise a fresh database is
+    /// started. A database from a newer build is never touched (that is an error), and neither
+    /// is anything that merely cannot be written.
+    pub fn open_recovering(path: &Path, namespace: &str) -> Result<(Storage, Startup), String> {
+        match Storage::open(path, namespace) {
+            Ok(storage) => Ok((storage, Startup::Clean)),
+            Err(error) if is_damage(&error) => recover(path, namespace, &error),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn load_all(&self) -> Result<Loaded, String> {
@@ -276,7 +368,7 @@ impl Storage {
                 apply_pref(&mut prefs, &key, &v);
             }
         }
-        let drafts = conn
+        let mut drafts = conn
             .prepare(
                 "SELECT conversation_id, text, rev FROM drafts WHERE namespace = ?1
                  ORDER BY conversation_id",
@@ -286,12 +378,38 @@ impl Storage {
                 Ok(StoredDraft {
                     conversation: ConversationId(r.get::<_, i64>(0)? as u64),
                     text: r.get(1)?,
+                    attachments: vec![],
                     rev: r.get::<_, i64>(2)? as u64,
                 })
             })
             .map_err(sql_err)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sql_err)?;
+        let attached = conn
+            .prepare(
+                "SELECT conversation_id, path, name, size FROM draft_attachments
+                 WHERE namespace = ?1 ORDER BY conversation_id, position",
+            )
+            .map_err(sql_err)?
+            .query_map([&self.namespace], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    Attachment {
+                        path: r.get(1)?,
+                        name: r.get(2)?,
+                        size: r.get::<_, Option<i64>>(3)?.map(|s| s as u64),
+                        error: None,
+                    },
+                ))
+            })
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+        for (conversation, attachment) in attached {
+            if let Some(d) = drafts.iter_mut().find(|d| d.conversation.0 == conversation) {
+                d.attachments.push(attachment);
+            }
+        }
         let conversations = if self.namespace != DEMO_NAMESPACE {
             vec![]
         } else {
@@ -368,12 +486,14 @@ impl Storage {
         &self,
         conversation: ConversationId,
         text: String,
+        attachments: Vec<Attachment>,
         rev: u64,
         ack: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
         let msg = Msg::Draft {
             conversation,
             text,
+            attachments,
             rev,
             ack: Box::new(ack),
         };
@@ -455,39 +575,52 @@ impl Drop for Storage {
     }
 }
 
-fn write(conn: &mut Connection, ns: &str, fail: &AtomicBool, msg: Msg) {
+fn write(
+    conn: &mut Connection,
+    ns: &str,
+    fail: &AtomicBool,
+    fail_background: &AtomicBool,
+    reporter: &Reporter,
+    msg: Msg,
+) {
+    let injected = || {
+        fail_background
+            .load(Ordering::SeqCst)
+            .then(|| Err(INJECTED_FAILURE.to_string()))
+    };
     match msg {
         Msg::Draft {
             conversation,
             text,
+            attachments,
             rev,
             ack,
         } => {
             let result = if fail.load(Ordering::SeqCst) {
                 Err(INJECTED_FAILURE.to_string())
             } else {
-                write_draft(conn, ns, conversation, &text, rev)
+                write_draft(conn, ns, conversation, &text, &attachments, rev)
             };
             ack(result);
         }
         Msg::Prefs(prefs) => {
-            if let Err(e) = write_prefs(conn, ns, &prefs) {
-                log::warn!("saving preferences failed: {e}");
-            }
+            let result = injected().unwrap_or_else(|| write_prefs(conn, ns, &prefs));
+            reporter.settle("preferences", result, "your preferences");
         }
         Msg::Conversation(c) => {
-            if let Err(e) = write_conversation(conn, &c) {
-                log::warn!("saving conversation failed: {e}");
-            }
+            let result = injected().unwrap_or_else(|| write_conversation(conn, &c));
+            reporter.settle("conversation", result, "the conversation list");
         }
         Msg::Project(path) => {
-            let result = conn.execute(
-                "INSERT OR IGNORE INTO projects (namespace, path, added_at) VALUES (?1, ?2, ?3)",
-                params![ns, path, now_secs()],
-            );
-            if let Err(e) = result {
-                log::warn!("saving project failed: {e}");
-            }
+            let result = injected().unwrap_or_else(|| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO projects (namespace, path, added_at) VALUES (?1, ?2, ?3)",
+                    params![ns, path, now_secs()],
+                )
+                .map(|_| ())
+                .map_err(sql_err)
+            });
+            reporter.settle("projects", result, "the project folder");
         }
         Msg::Intent {
             conversation,
@@ -503,9 +636,13 @@ fn write(conn: &mut Connection, ns: &str, fail: &AtomicBool, msg: Msg) {
             ack(result);
         }
         Msg::JournalState { request, state } => {
-            if let Err(e) = write_journal_state(conn, ns, &request, state) {
-                log::warn!("saving journal state failed: {e}");
-            }
+            let result =
+                injected().unwrap_or_else(|| write_journal_state(conn, ns, &request, state));
+            reporter.settle(
+                "journal",
+                result,
+                "what became of a message (if you quit now, Pipkin asks the engine about it next time)",
+            );
         }
     }
 }
@@ -515,6 +652,7 @@ fn write_draft(
     ns: &str,
     id: ConversationId,
     text: &str,
+    attachments: &[Attachment],
     rev: u64,
 ) -> Result<(), String> {
     let tx = conn.transaction().map_err(sql_err)?;
@@ -526,6 +664,27 @@ fn write_draft(
         params![ns, id.0 as i64, text, rev as i64, now_secs()],
     )
     .map_err(sql_err)?;
+    // The text and its attachments commit together, so a draft never comes back half-saved.
+    tx.execute(
+        "DELETE FROM draft_attachments WHERE namespace = ?1 AND conversation_id = ?2",
+        params![ns, id.0 as i64],
+    )
+    .map_err(sql_err)?;
+    for (position, a) in attachments.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO draft_attachments (namespace, conversation_id, position, path, name, size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                ns,
+                id.0 as i64,
+                position as i64,
+                a.path,
+                a.name,
+                a.size.map(|s| s as i64)
+            ],
+        )
+        .map_err(sql_err)?;
+    }
     tx.commit().map_err(sql_err)
 }
 
@@ -576,6 +735,93 @@ fn write_intent(
     )
     .map_err(sql_err)?;
     tx.commit().map_err(sql_err)
+}
+
+/// How the database was opened.
+#[derive(Debug, PartialEq)]
+pub enum Startup {
+    Clean,
+    /// The file was damaged and set aside; the message says what was done about it.
+    Recovered(String),
+}
+
+fn is_damage(error: &str) -> bool {
+    let error = error.to_lowercase();
+    ["file is not a database", "malformed", "corrupt"]
+        .iter()
+        .any(|needle| error.contains(needle))
+}
+
+/// `path` with `suffix` appended to its file name.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// The migration backups of `path`, newest schema version first, that pass an integrity check.
+fn intact_backups(path: &Path) -> Vec<(u32, PathBuf)> {
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+        return vec![];
+    };
+    let prefix = format!("{}.bak-v", file.to_string_lossy());
+    let mut found: Vec<(u32, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let version = name.strip_prefix(&prefix)?.parse::<u32>().ok()?;
+            let ok = Connection::open_with_flags(
+                entry.path(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .ok()
+            .and_then(|c| {
+                c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+                    .ok()
+            })
+            .is_some_and(|verdict| verdict == "ok");
+            ok.then(|| (version, entry.path()))
+        })
+        .collect();
+    found.sort_by_key(|(version, _)| std::cmp::Reverse(*version));
+    found
+}
+
+fn recover(path: &Path, namespace: &str, error: &str) -> Result<(Storage, Startup), String> {
+    let aside = beside(path, &format!(".damaged-{}", now_secs()));
+    std::fs::rename(path, &aside).map_err(|e| {
+        format!("the database is damaged ({error}) and could not be set aside: {e}")
+    })?;
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::rename(beside(path, suffix), beside(&aside, suffix));
+    }
+    for (version, backup) in intact_backups(path) {
+        if std::fs::copy(&backup, path).is_ok()
+            && let Ok(storage) = Storage::open(path, namespace)
+        {
+            return Ok((
+                storage,
+                Startup::Recovered(format!(
+                    "Your saved data was damaged. It was restored from the backup made before \
+                     the schema {version} upgrade, so recent drafts may be missing. The damaged \
+                     file was kept as {}.",
+                    aside.display()
+                )),
+            ));
+        }
+        let _ = std::fs::remove_file(path);
+    }
+    let storage = Storage::open(path, namespace)?;
+    Ok((
+        storage,
+        Startup::Recovered(format!(
+            "Your saved data was damaged and could not be restored, so Pipkin started fresh. \
+             Drafts and unfinished sends from before are gone. The damaged file was kept as {}.",
+            aside.display()
+        )),
+    ))
 }
 
 /// Terminal states are final: a late or duplicate update can never reopen a settled request.
@@ -698,9 +944,15 @@ mod tests {
 
     fn save_and_wait(s: &Storage, conv: u64, text: &str, rev: u64) -> Result<(), String> {
         let (tx, rx) = mpsc::channel();
-        s.save_draft(ConversationId(conv), text.to_string(), rev, move |r| {
-            tx.send(r).unwrap();
-        });
+        s.save_draft(
+            ConversationId(conv),
+            text.to_string(),
+            vec![],
+            rev,
+            move |r| {
+                tx.send(r).unwrap();
+            },
+        );
         rx.recv_timeout(Duration::from_secs(10)).unwrap()
     }
 
@@ -745,6 +997,7 @@ mod tests {
             vec![StoredDraft {
                 conversation: ConversationId(3),
                 text: "second".into(),
+                attachments: vec![],
                 rev: 8
             }]
         );
@@ -783,7 +1036,7 @@ mod tests {
         let s = Storage::open(&path, DEMO_NAMESPACE).unwrap();
         let (tx, rx) = mpsc::channel();
         let reader_path = path.clone();
-        s.save_draft(ConversationId(5), "durable".into(), 3, move |r| {
+        s.save_draft(ConversationId(5), "durable".into(), vec![], 3, move |r| {
             // Inside the ack, an independent connection must already see the committed row.
             let conn = Connection::open(&reader_path).unwrap();
             let seen: Option<String> = conn
@@ -805,10 +1058,10 @@ mod tests {
         let (_dir, path) = tmp_db();
         let s = Storage::open(&path, DEMO_NAMESPACE).unwrap();
         for rev in 1..=50u64 {
-            s.save_draft(ConversationId(1), format!("rev {rev}"), rev, |_| {});
+            s.save_draft(ConversationId(1), format!("rev {rev}"), vec![], rev, |_| {});
         }
         s.shutdown();
-        s.save_draft(ConversationId(1), "late".into(), 99, |r| {
+        s.save_draft(ConversationId(1), "late".into(), vec![], 99, |r| {
             assert!(r.is_err())
         });
         let drafts = Storage::open(&path, DEMO_NAMESPACE)
@@ -1129,9 +1382,15 @@ mod tests {
         for rev in 1..=100_000u64 {
             let conv = rev % 3 + 1;
             let (tx, rx) = mpsc::channel();
-            s.save_draft(ConversationId(conv), kill_text(conv, rev), rev, move |r| {
-                tx.send(r).unwrap();
-            });
+            s.save_draft(
+                ConversationId(conv),
+                kill_text(conv, rev),
+                vec![],
+                rev,
+                move |r| {
+                    tx.send(r).unwrap();
+                },
+            );
             rx.recv().unwrap().unwrap();
             println!("ACK {conv} {rev}");
         }
@@ -1195,5 +1454,231 @@ mod tests {
                 "conversation {conv} corrupted"
             );
         }
+    }
+
+    fn save_with(s: &Storage, conv: u64, text: &str, attachments: Vec<Attachment>, rev: u64) {
+        let (tx, rx) = mpsc::channel();
+        s.save_draft(
+            ConversationId(conv),
+            text.to_string(),
+            attachments,
+            rev,
+            move |r| {
+                tx.send(r).unwrap();
+            },
+        );
+        rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    }
+
+    fn attachment(name: &str, size: Option<u64>) -> Attachment {
+        Attachment {
+            path: format!("/work/{name}"),
+            name: name.into(),
+            size,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn drafts_keep_their_attachments_in_order_and_replace_them_together() {
+        let (_dir, path) = tmp_db();
+        {
+            let s = Storage::open(&path, "pi:test").unwrap();
+            save_with(
+                &s,
+                1,
+                "look",
+                vec![attachment("b.txt", Some(2)), attachment("a.png", None)],
+                1,
+            );
+            save_with(&s, 2, "other", vec![attachment("z.txt", Some(9))], 1);
+            // A later save replaces the whole set, not adds to it.
+            save_with(&s, 1, "look again", vec![attachment("c.txt", Some(3))], 2);
+            s.shutdown();
+        }
+        let loaded = Storage::open(&path, "pi:test").unwrap().load_all().unwrap();
+        let one = loaded
+            .drafts
+            .iter()
+            .find(|d| d.conversation.0 == 1)
+            .unwrap();
+        assert_eq!(one.text, "look again");
+        assert_eq!(one.attachments, [attachment("c.txt", Some(3))]);
+        let two = loaded
+            .drafts
+            .iter()
+            .find(|d| d.conversation.0 == 2)
+            .unwrap();
+        assert_eq!(two.attachments, [attachment("z.txt", Some(9))]);
+        // Order and a missing size survive too.
+        {
+            let s = Storage::open(&path, "pi:test").unwrap();
+            save_with(
+                &s,
+                3,
+                "",
+                vec![attachment("b.txt", Some(2)), attachment("a.png", None)],
+                1,
+            );
+        }
+        let loaded = Storage::open(&path, "pi:test").unwrap().load_all().unwrap();
+        let three = loaded
+            .drafts
+            .iter()
+            .find(|d| d.conversation.0 == 3)
+            .unwrap();
+        assert_eq!(
+            three
+                .attachments
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            ["b.txt", "a.png"]
+        );
+        assert_eq!(three.attachments[1].size, None);
+    }
+
+    #[test]
+    fn attachments_are_kept_per_backend_namespace() {
+        let (_dir, path) = tmp_db();
+        let demo = Storage::open(&path, DEMO_NAMESPACE).unwrap();
+        save_with(&demo, 1, "d", vec![attachment("demo.txt", Some(1))], 1);
+        demo.shutdown();
+        let real = Storage::open(&path, "pi:real").unwrap();
+        save_with(&real, 1, "r", vec![], 1);
+        real.shutdown();
+        let loaded = Storage::open(&path, DEMO_NAMESPACE)
+            .unwrap()
+            .load_all()
+            .unwrap();
+        assert_eq!(loaded.drafts[0].attachments.len(), 1);
+        let loaded = Storage::open(&path, "pi:real").unwrap().load_all().unwrap();
+        assert!(loaded.drafts[0].attachments.is_empty());
+    }
+
+    #[test]
+    fn a_damaged_database_is_set_aside_and_a_fresh_one_started() {
+        let (dir, path) = tmp_db();
+        std::fs::write(&path, b"this is not a database at all, just text bytes").unwrap();
+        let (storage, startup) = Storage::open_recovering(&path, "pi:test").unwrap();
+        let Startup::Recovered(message) = startup else {
+            panic!("expected a recovery");
+        };
+        assert!(message.contains("could not be restored"), "{message}");
+        assert!(message.contains(".damaged-"), "{message}");
+        let kept: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".damaged-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "the damaged file is kept, not deleted");
+        assert_eq!(
+            std::fs::read(kept[0].path()).unwrap(),
+            b"this is not a database at all, just text bytes"
+        );
+        // The fresh database works.
+        save_with(&storage, 1, "after", vec![], 1);
+        storage.shutdown();
+        let loaded = Storage::open(&path, "pi:test").unwrap().load_all().unwrap();
+        assert_eq!(loaded.drafts[0].text, "after");
+    }
+
+    #[test]
+    fn a_damaged_database_is_restored_from_the_newest_intact_backup() {
+        let (_dir, path) = tmp_db();
+        {
+            let s = Storage::open(&path, "pi:test").unwrap();
+            save_with(
+                &s,
+                1,
+                "kept in backup",
+                vec![attachment("a.txt", Some(1))],
+                1,
+            );
+            s.shutdown();
+        }
+        let mut backup = path.as_os_str().to_owned();
+        backup.push(format!(".bak-v{SCHEMA_VERSION}"));
+        // `copy` of a WAL database needs it checkpointed; opening and closing did that.
+        std::fs::copy(&path, PathBuf::from(&backup)).unwrap();
+        // An older, equally damaged backup must not be chosen over a good one.
+        let mut worse = path.as_os_str().to_owned();
+        worse.push(".bak-v1");
+        std::fs::write(PathBuf::from(&worse), b"garbage").unwrap();
+        std::fs::write(&path, b"damaged damaged damaged damaged").unwrap();
+        let _ = std::fs::remove_file(PathBuf::from(format!("{}-wal", path.display())));
+        let _ = std::fs::remove_file(PathBuf::from(format!("{}-shm", path.display())));
+
+        let (storage, startup) = Storage::open_recovering(&path, "pi:test").unwrap();
+        let Startup::Recovered(message) = startup else {
+            panic!("expected a recovery");
+        };
+        assert!(message.contains("restored from the backup"), "{message}");
+        let loaded = storage.load_all().unwrap();
+        assert_eq!(loaded.drafts[0].text, "kept in backup");
+        assert_eq!(loaded.drafts[0].attachments.len(), 1);
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused_and_left_untouched() {
+        let (_dir, path) = tmp_db();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE future (x); PRAGMA user_version = 99;")
+                .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let error = match Storage::open_recovering(&path, "pi:test") {
+            Err(error) => error,
+            Ok(_) => panic!("a newer database must not be opened"),
+        };
+        assert!(error.contains("newer"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("damaged")),
+            "a newer file is not damaged: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_background_write_is_reported_once_until_it_works_again() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        s.set_error_sink(Arc::new(move |m| sink.lock().unwrap().push(m)));
+
+        s.set_background_failure(true);
+        s.save_prefs(&Prefs::default());
+        s.save_prefs(&Prefs::default());
+        s.journal_state(RequestId("r".into()), JournalState::Completed);
+        s.save_project("/p".into());
+        // A draft write is acknowledged on its own channel; flush the queue through it.
+        save_with(&s, 1, "x", vec![], 1);
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 3, "one per kind, not one per write: {seen:?}");
+            assert!(seen.iter().any(|m| m.contains("your preferences")));
+            assert!(seen.iter().any(|m| m.contains("asks the engine about it")));
+            assert!(seen.iter().any(|m| m.contains("project folder")));
+            assert!(seen.iter().all(|m| m.contains(INJECTED_FAILURE)));
+        }
+
+        s.set_background_failure(false);
+        s.save_prefs(&Prefs::default());
+        save_with(&s, 1, "y", vec![], 2);
+        s.set_background_failure(true);
+        s.save_prefs(&Prefs::default());
+        save_with(&s, 1, "z", vec![], 3);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            4,
+            "a new failure after a success is reported again"
+        );
     }
 }

@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -30,6 +30,41 @@ pub enum Reply {
     /// Accept the request and never answer, until the stub stops.
     #[allow(dead_code)]
     Hang,
+    /// Hold the request until the gate opens (or the stub stops), then answer with the reply.
+    /// The engine sees a model that is slow to respond, so a run stays in flight on demand.
+    Gated(Gate, Box<Reply>),
+}
+
+/// A latch a test opens to let a held model response through.
+#[derive(Clone, Debug, Default)]
+pub struct Gate(Arc<(Mutex<bool>, Condvar)>);
+
+impl Gate {
+    pub fn new() -> Gate {
+        Gate::default()
+    }
+
+    pub fn open(&self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+
+    /// Wait until open; false if `stop` was set first.
+    fn wait(&self, stop: &AtomicBool) -> bool {
+        let mut open = self.0.0.lock().unwrap();
+        while !*open {
+            if stop.load(Ordering::SeqCst) {
+                return false;
+            }
+            open = self
+                .0
+                .1
+                .wait_timeout(open, Duration::from_millis(100))
+                .unwrap()
+                .0;
+        }
+        true
+    }
 }
 
 type Script = dyn Fn(&Value, usize) -> Reply + Send + Sync;
@@ -79,6 +114,7 @@ fn events(reply: &Reply) -> Vec<String> {
             out.push(chunk(json!({}), Some("tool_calls"), Some(usage())));
         }
         Reply::Hang => {}
+        Reply::Gated(_, inner) => return events(inner),
     }
     out.push("data: [DONE]\n\n".into());
     out
@@ -142,7 +178,13 @@ fn serve(
         .lock()
         .unwrap()
         .push(json!({ "path": path, "body": request.clone() }));
-    let reply = script(&request, n);
+    let mut reply = script(&request, n);
+    while let Reply::Gated(gate, inner) = reply {
+        if !gate.wait(&stop) {
+            return;
+        }
+        reply = *inner;
+    }
     let _ = write!(
         stream,
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n"
@@ -284,7 +326,7 @@ pub fn prepare(script: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static) 
         agent_dir.join("models.json"),
         json!({ "providers": { "stub": {
             "baseUrl": provider.base_url(), "api": "openai-completions", "apiKey": "stub",
-            "models": [{ "id": "scripted", "name": "Scripted stub" }],
+            "models": [{ "id": "scripted", "name": "Scripted stub", "input": ["text", "image"] }],
         }}})
         .to_string(),
     )

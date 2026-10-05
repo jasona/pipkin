@@ -84,7 +84,7 @@ fn mock_with_views(sessions: &[(&str, i64)], views: Vec<(&str, Value)>) -> (Mock
     );
     pi.add_service(
         "pi.models",
-        &["select"],
+        &["select", "refresh"],
         Some(json!({
             "catalog": { "revision": 1, "availableModels": [
                 { "provider": "anthropic", "modelId": "sonnet", "name": "Sonnet", "reasoning": true } ] },
@@ -215,10 +215,15 @@ impl Env {
         self.catalogs().last().unwrap().conversations[index].0
     }
 
+    /// The next event that is not an engine-state report (those accompany every refresh and are
+    /// checked by their own tests).
     fn next_event(&self) -> BackendEvent {
         let deadline = Instant::now() + WAIT;
         loop {
             if let Ok(e) = self.events.try_recv() {
+                if matches!(e.kind, EventKind::EngineState { .. }) {
+                    continue;
+                }
                 return e;
             }
             assert!(
@@ -231,8 +236,10 @@ impl Env {
 
     fn no_event_within(&self, ms: u64) {
         std::thread::sleep(Duration::from_millis(ms));
-        if let Ok(e) = self.events.try_recv() {
-            panic!("unexpected event: {e:?}");
+        while let Ok(e) = self.events.try_recv() {
+            if !matches!(e.kind, EventKind::EngineState { .. }) {
+                panic!("unexpected event: {e:?}");
+            }
         }
     }
 
@@ -286,7 +293,9 @@ fn connects_then_publishes_the_catalog_and_ready() {
             LifecycleEvent::Catalog(_) => "catalog",
             LifecycleEvent::Connection(Connection::Ready) => "ready",
             LifecycleEvent::Connection(_) => "state",
-            LifecycleEvent::ModelSelected(_) | LifecycleEvent::Notice(_) => "other",
+            LifecycleEvent::ModelSelected(_)
+            | LifecycleEvent::Notice(_)
+            | LifecycleEvent::StorageIssue(_) => "other",
         })
         .collect();
     let catalog_at = order.iter().position(|e| *e == "catalog").unwrap();
@@ -762,6 +771,29 @@ struct Agent {
     next_op: u64,
     /// How the next prompt is answered.
     prompt_mode: PromptMode,
+    /// Every steer and follow-up received: (member, argument).
+    queued: Vec<(String, Value)>,
+    /// How the next steer or follow-up is answered (then back to `Accept`).
+    queue_answer: QueueAnswer,
+    cancelled: Vec<String>,
+    /// What `cancelQueued` answers; `cancelled` when empty.
+    cancel_outcome: &'static str,
+    refreshes: usize,
+}
+
+#[derive(Default, Clone)]
+enum QueueAnswer {
+    #[default]
+    Accept,
+    Reject(&'static str),
+    /// The request reaches the engine, which admits it, but the reply never arrives.
+    DropAfterAdmit,
+    /// The request never reaches the engine.
+    DropBefore,
+}
+
+fn queued_status(entry: &str) -> Value {
+    json!({ "found": true, "operationId": entry, "status": "queued", "reason": null, "detail": null })
 }
 
 #[derive(Default, Clone)]
@@ -841,6 +873,66 @@ fn agent_mock(
                 .cloned()
                 .unwrap_or(json!({ "found": false })),
         ))
+    });
+    for member in ["steer", "followUp"] {
+        let a = agent.clone();
+        pi.set_handler("pi.agent-controller", member, move |_, conn, call| {
+            let mut agent = a.lock().unwrap();
+            let answer = std::mem::take(&mut agent.queue_answer);
+            if matches!(answer, QueueAnswer::DropBefore) {
+                conn.close();
+                return Ok(None);
+            }
+            let request = call.args[0].clone();
+            agent.queued.push((member.to_owned(), request.clone()));
+            if let QueueAnswer::Reject(why) = answer {
+                return Ok(Some(json!({
+                    "accepted": false, "entryId": null,
+                    "error": { "code": "operation_failed", "message": why },
+                })));
+            }
+            // A repeated key returns the original submission, as the real engine does.
+            let key = request["requestId"].as_str().unwrap_or("").to_owned();
+            let entry = match agent.statuses.get(&key) {
+                Some(existing) => existing["operationId"].as_str().unwrap_or("0").to_owned(),
+                None => {
+                    agent.next_op += 1;
+                    let entry = agent.next_op.to_string();
+                    agent.statuses.insert(key, queued_status(&entry));
+                    entry
+                }
+            };
+            if matches!(answer, QueueAnswer::DropAfterAdmit) {
+                conn.close();
+                return Ok(None);
+            }
+            Ok(Some(
+                json!({ "accepted": true, "entryId": entry, "error": null }),
+            ))
+        });
+    }
+    let a = agent.clone();
+    pi.set_handler("pi.agent-controller", "cancelQueued", move |_, _, call| {
+        let mut agent = a.lock().unwrap();
+        let entry = call.args[0].as_str().unwrap_or("").to_owned();
+        agent.cancelled.push(entry.clone());
+        let outcome = match agent.cancel_outcome {
+            "" => "cancelled",
+            other => other,
+        };
+        if outcome == "cancelled" {
+            for status in agent.statuses.values_mut() {
+                if status["operationId"] == entry.as_str() {
+                    *status = settled(&entry, "unanswered", Some("aborted"), None);
+                }
+            }
+        }
+        Ok(Some(json!({ "outcome": outcome })))
+    });
+    let a = agent.clone();
+    pi.set_handler("pi.models", "refresh", move |_, _, _| {
+        a.lock().unwrap().refreshes += 1;
+        Ok(None)
     });
     let a = agent.clone();
     pi.set_handler("pi.agent-controller", "abort", move |_, _, _| {
@@ -1004,7 +1096,7 @@ fn a_prompt_for_a_session_that_is_not_open_is_refused_and_nothing_is_sent() {
 }
 
 #[test]
-fn attachments_are_refused_rather_than_silently_dropped() {
+fn an_attachment_that_cannot_be_sent_is_refused_and_nothing_is_sent() {
     let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
     let env = start(pi, true);
     let conv = env.open_first();
@@ -1015,7 +1107,7 @@ fn attachments_are_refused_rather_than_silently_dropped() {
         request: RequestId("req-att".into()),
         text: "with file".into(),
         attachments: vec![pipkin_core::Attachment {
-            path: "/tmp/a.txt".into(),
+            path: "/tmp/pipkin-no-such-file/a.txt".into(),
             name: "a.txt".into(),
             size: Some(1),
             error: None,
@@ -1025,7 +1117,79 @@ fn attachments_are_refused_rather_than_silently_dropped() {
     let EventKind::Rejected { reason } = env.next_for(8).kind else {
         panic!()
     };
-    assert!(reason.contains("Attachments"), "{reason}");
+    assert!(
+        reason.contains("a.txt") && reason.contains("no longer there"),
+        "{reason}"
+    );
+    assert!(agent.lock().unwrap().prompts.is_empty());
+}
+
+fn attached(dir: &std::path::Path, name: &str, bytes: &[u8]) -> pipkin_core::Attachment {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    pipkin_core::describe_attachment(&path)
+}
+
+#[test]
+fn attachments_reach_the_engine_as_text_and_images_and_read_back_as_chips() {
+    let dir = tempfile::tempdir().unwrap();
+    let notes = attached(dir.path(), "notes.txt", b"alpha\nbeta\n");
+    let png = attached(
+        dir.path(),
+        "shot.png",
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4],
+    );
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    env.backend.request(BackendRequest::Submit {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(9),
+        request: RequestId("req-files".into()),
+        text: "review these".into(),
+        attachments: vec![notes.clone(), png],
+        model: None,
+    });
+    assert_eq!(env.next_for(9).kind, EventKind::Accepted);
+    let prompt = agent.lock().unwrap().prompts[0].clone();
+    let message = prompt["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("review these\n\n<attached-file "),
+        "{message}"
+    );
+    assert!(message.contains("alpha\nbeta\n"));
+    assert_eq!(prompt["requestId"], "req-files");
+    let images = prompt["images"].as_array().unwrap();
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0]["mimeType"], "image/png");
+    // What the engine stores reads back as the typed text plus a chip, not a wall of file text.
+    let (text, chips) = super::attach::split_message(message);
+    assert_eq!(text, "review these");
+    assert_eq!(chips[0].name, "notes.txt");
+}
+
+#[test]
+fn a_file_that_changed_since_it_was_attached_is_refused_before_anything_is_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let notes = attached(dir.path(), "notes.txt", b"one");
+    std::fs::write(&notes.path, b"one and two").unwrap();
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    env.backend.request(BackendRequest::Submit {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(10),
+        request: RequestId("req-changed".into()),
+        text: "go".into(),
+        attachments: vec![notes],
+        model: None,
+    });
+    let EventKind::Rejected { reason } = env.next_for(10).kind else {
+        panic!()
+    };
+    assert!(reason.contains("changed after you attached it"), "{reason}");
     assert!(agent.lock().unwrap().prompts.is_empty());
 }
 
@@ -1363,4 +1527,285 @@ two
         text: String::new(),
         level: pipkin_core::NoticeLevel::Info,
     };
+}
+
+// -------------------------------------------------------------------- steer, queue, stop
+
+fn queue(env: &Env, conv: ConversationId, request: &str, mode: pipkin_core::QueueMode, text: &str) {
+    env.backend.request(BackendRequest::Queue {
+        conversation: conv,
+        generation: 1,
+        request: RequestId(request.into()),
+        mode,
+        text: text.into(),
+        attachments: vec![],
+    });
+}
+
+/// The next queue-related event for `request`, skipping everything else.
+fn queue_event(env: &Env, request: &str) -> EventKind {
+    loop {
+        let event = env.next_event();
+        match &event.kind {
+            EventKind::QueueAdmitted { request: r, .. }
+            | EventKind::QueueRefused { request: r, .. }
+            | EventKind::QueueAckLost { request: r }
+                if r.0 == request =>
+            {
+                return event.kind;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn steers_and_follow_ups_go_through_the_controller_under_their_journaled_keys() {
+    use pipkin_core::QueueMode::{FollowUp, Steer};
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    submit(&env, conv, 1, 50, "req-run", "long job");
+    assert_eq!(env.next_for(50).kind, EventKind::Accepted);
+
+    queue(&env, conv, "req-steer", Steer, "use tabs");
+    let EventKind::QueueAdmitted { request, entry } = queue_event(&env, "req-steer") else {
+        panic!()
+    };
+    assert_eq!(
+        (request.0.as_str(), entry),
+        ("req-steer", pipkin_core::QueueId(2))
+    );
+    queue(&env, conv, "req-next", FollowUp, "then ship");
+    assert!(matches!(
+        queue_event(&env, "req-next"),
+        EventKind::QueueAdmitted { .. }
+    ));
+
+    let agent = agent.lock().unwrap();
+    let members: Vec<_> = agent.queued.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(members, ["steer", "followUp"]);
+    assert_eq!(agent.queued[0].1["message"], "use tabs");
+    assert_eq!(agent.queued[0].1["requestId"], "req-steer");
+    assert_eq!(agent.queued[1].1["requestId"], "req-next");
+    assert_eq!(agent.prompts.len(), 1, "queueing is not a second prompt");
+}
+
+#[test]
+fn sending_a_queue_key_again_does_not_admit_it_twice() {
+    use pipkin_core::QueueMode::FollowUp;
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    queue(&env, conv, "req-q", FollowUp, "once");
+    let first = queue_event(&env, "req-q");
+    queue(&env, conv, "req-q", FollowUp, "once");
+    let second = queue_event(&env, "req-q");
+    assert_eq!(first, second, "the same entry comes back");
+    assert_eq!(
+        agent.lock().unwrap().statuses.len(),
+        1,
+        "the engine holds one submission for the key"
+    );
+}
+
+#[test]
+fn a_refused_queue_request_is_definite() {
+    use pipkin_core::QueueMode::Steer;
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    agent.lock().unwrap().queue_answer = QueueAnswer::Reject("nothing is running");
+    queue(&env, conv, "req-no", Steer, "x");
+    let EventKind::QueueRefused { reason, .. } = queue_event(&env, "req-no") else {
+        panic!()
+    };
+    assert!(reason.contains("nothing is running"), "{reason}");
+}
+
+#[test]
+fn a_queue_request_for_a_session_that_is_not_open_is_refused_and_nothing_is_sent() {
+    use pipkin_core::QueueMode::Steer;
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.conversation(0); // listed, never opened
+    queue(&env, conv, "req-closed", Steer, "x");
+    let EventKind::QueueRefused { reason, .. } = queue_event(&env, "req-closed") else {
+        panic!()
+    };
+    assert!(reason.contains("not open"), "{reason}");
+    assert!(agent.lock().unwrap().queued.is_empty());
+}
+
+#[test]
+fn a_lost_acknowledgment_that_did_arrive_resolves_by_lookup_without_resending() {
+    use pipkin_core::QueueMode::FollowUp;
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    agent.lock().unwrap().queue_answer = QueueAnswer::DropAfterAdmit;
+    queue(&env, conv, "req-lost", FollowUp, "maybe");
+    assert!(matches!(
+        queue_event(&env, "req-lost"),
+        EventKind::QueueAckLost { .. }
+    ));
+    // The adapter reconnects and asks the engine about the key; it finds the entry.
+    let EventKind::QueueAdmitted { entry, .. } = queue_event(&env, "req-lost") else {
+        panic!()
+    };
+    assert_eq!(entry, pipkin_core::QueueId(1));
+    assert_eq!(
+        agent.lock().unwrap().queued.len(),
+        1,
+        "the request was not sent a second time"
+    );
+}
+
+#[test]
+fn a_lost_request_the_engine_never_saw_is_sent_again_under_the_same_key() {
+    use pipkin_core::QueueMode::FollowUp;
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    agent.lock().unwrap().queue_answer = QueueAnswer::DropBefore;
+    queue(&env, conv, "req-gone", FollowUp, "still wanted");
+    assert!(matches!(
+        queue_event(&env, "req-gone"),
+        EventKind::QueueAckLost { .. }
+    ));
+    assert!(matches!(
+        queue_event(&env, "req-gone"),
+        EventKind::QueueAdmitted { .. }
+    ));
+    let agent = agent.lock().unwrap();
+    assert_eq!(agent.queued.len(), 1, "it arrived exactly once");
+    assert_eq!(agent.queued[0].1["requestId"], "req-gone");
+    assert_eq!(agent.queued[0].1["message"], "still wanted");
+}
+
+#[test]
+fn removing_a_queued_input_reports_what_the_engine_did() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    for (outcome, expected) in [
+        ("cancelled", pipkin_core::CancelOutcome::Cancelled),
+        (
+            "already_consumed",
+            pipkin_core::CancelOutcome::AlreadyConsumed,
+        ),
+        ("not_found", pipkin_core::CancelOutcome::NotFound),
+    ] {
+        agent.lock().unwrap().cancel_outcome = outcome;
+        env.backend.request(BackendRequest::CancelQueued {
+            conversation: conv,
+            generation: 1,
+            entry: pipkin_core::QueueId(12),
+        });
+        loop {
+            let event = env.next_event();
+            if let EventKind::QueueCancelled { entry, outcome } = event.kind {
+                assert_eq!((entry, outcome), (pipkin_core::QueueId(12), expected));
+                break;
+            }
+        }
+    }
+    assert_eq!(agent.lock().unwrap().cancelled, ["12", "12", "12"]);
+}
+
+#[test]
+fn the_engines_queue_and_busy_flag_are_reported_with_every_refresh() {
+    let (pi, _agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let state = |env: &Env| loop {
+        let event = env.events.recv_blocking().unwrap();
+        if let EventKind::EngineState { busy, queue } = event.kind {
+            return (busy, queue);
+        }
+    };
+    assert_eq!(state(&env), (false, vec![]));
+    env.pi.publish(
+        "pi.transcript",
+        vec![
+            Op::Set(
+                vec![key("docs"), key("pi.live")],
+                json!({ "run": { "taskId": 9, "inputs": [8] } }),
+            ),
+            Op::Set(
+                vec![key("docs"), key("pi.inbox")],
+                json!({ "items": [
+                    { "id": 21, "mode": "steer", "content": "use tabs" },
+                    { "id": 22, "mode": "followUp", "content": "then ship" },
+                ]}),
+            ),
+        ],
+    );
+    let (busy, queue) = state(&env);
+    assert!(busy);
+    assert_eq!(
+        queue
+            .iter()
+            .map(|q| (q.id.0, q.text.as_str()))
+            .collect::<Vec<_>>(),
+        [(21, "use tabs"), (22, "then ship")]
+    );
+    // The run ends and the engine drains the queue.
+    env.pi.publish(
+        "pi.transcript",
+        vec![
+            Op::Set(vec![key("docs"), key("pi.live")], json!({})),
+            Op::Set(vec![key("docs"), key("pi.inbox")], json!({ "items": [] })),
+        ],
+    );
+    let (busy, queue) = state(&env);
+    assert!(!busy && queue.is_empty());
+}
+
+#[test]
+fn refreshing_models_asks_the_engine_and_says_when_a_provider_could_not_be_read() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    env.backend.request(BackendRequest::RefreshModels {
+        conversation: conv,
+        generation: 1,
+    });
+    wait_until("refresh sent", || agent.lock().unwrap().refreshes == 1);
+    env.pi.publish(
+        "pi.models",
+        vec![Op::Set(
+            vec![key("refresh")],
+            json!({ "status": "warning", "errors": { "anthropic": "401 invalid x-api-key" } }),
+        )],
+    );
+    env.wait_notice("anthropic: 401 invalid x-api-key");
+    env.wait_notice("sign-in or API key");
+}
+
+#[test]
+fn queue_requests_while_offline_are_refused_not_lost() {
+    // Nothing listens: the adapter is offline, and answers instead of queueing silently.
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = async_channel::unbounded();
+    let mut config = PiConfig::new(dir.path().to_path_buf());
+    config.server_id = Some(SERVER_ID.into());
+    config.retry_delay = Duration::from_millis(50);
+    let backend = PiBackend::new(tx, config);
+    backend.start(Box::new(|_| {}));
+    backend.request(BackendRequest::Queue {
+        conversation: ConversationId(1),
+        generation: 1,
+        request: RequestId("req-off".into()),
+        mode: pipkin_core::QueueMode::Steer,
+        text: "x".into(),
+        attachments: vec![],
+    });
+    let event = rx.recv_blocking().unwrap();
+    assert!(matches!(
+        event.kind,
+        EventKind::QueueRefused { ref reason, .. } if reason.contains("Not connected")
+    ));
+    backend.shutdown();
 }

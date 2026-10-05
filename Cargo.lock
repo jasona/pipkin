@@ -4130,6 +4130,7 @@ name = "pipkin-app"
 version = "0.0.1"
 dependencies = [
  "async-channel",
+ "base64",
  "env_logger",
  "gpui",
  "gpui_platform",

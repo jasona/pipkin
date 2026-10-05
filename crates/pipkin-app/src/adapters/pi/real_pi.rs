@@ -268,6 +268,10 @@ fn real_server_switching_between_sessions() {
         let deadline = Instant::now() + WAIT;
         let event = loop {
             if let Ok(e) = events.try_recv() {
+                // Each open is followed by the engine's own state report; the open is the answer.
+                if matches!(e.kind, EventKind::EngineState { .. }) {
+                    continue;
+                }
                 break e;
             }
             assert!(Instant::now() < deadline, "no open result in round {round}");
