@@ -110,8 +110,8 @@ impl Workspace {
             .flex_none()
             .items_center()
             .gap(px(8.0))
-            .h(px(52.0))
-            .px(px(16.0))
+            .h(px(68.0 * t.scale.max(1.0)))
+            .px(px(24.0))
             .border_b_1()
             .border_color(c.border)
             .child(

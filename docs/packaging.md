@@ -63,3 +63,36 @@ something blocks Pipkin, and is safe to paste into an issue. The engine's own ou
 `PIPKIN_PI_REPO=<engine dir> PIPKIN_SOAK_ROUNDS=1500 cargo test -p pipkin-app --release many_prompts -- --ignored --nocapture`
 sends prompts through one conversation of a real engine and fails if memory or open files keep growing. A
 1500-prompt run on the bundled engine: app 22 -> 52 MiB, engine 633 -> 700 MiB, open files 15 -> 19.
+
+## Generic Linux install, upgrade and rollback
+
+`scripts/package.sh` also leaves `install.sh` at the root of the release tarball. It installs into `~/.local`
+(or `--prefix DIR`) under `lib/pipkin/versions/<version>/` with a `current` link, so:
+
+```
+./install.sh                # install or upgrade; keeps the newest 2 versions (--keep N)
+./install.sh --list         # versions, with the current one marked
+./install.sh --rollback     # switch back to the previous version in one step
+./install.sh --uninstall    # remove links and versions; your drafts and history are not touched
+```
+
+Each version carries its own engine (the binary finds it relative to itself), so an upgrade never leaves an
+app and an engine that disagree, and the old version is a working fallback. `scripts/test-install.sh` checks
+install, upgrade, list, rollback and uninstall in a scratch prefix, including that data survives.
+
+## Releases: checksums and signatures
+
+```
+scripts/release.sh                       # dist/release/: the tarball and SHA256SUMS
+PIPKIN_SIGN_KEY=<gpg key id> scripts/release.sh   # also SHA256SUMS.asc (detached signature)
+scripts/verify-release.sh DIR [--require-signature]   # what a downloader runs
+```
+
+Checked here with a throwaway gpg key (signature verifies; a modified tarball fails the checksum). No real
+release key exists, nothing is published, and there is no in-app update check: an update is "download, verify,
+`./install.sh`", with `--rollback` as the bootable prior version.
+
+## Display servers
+
+The binary is built with both `wayland` and `x11`; it uses Wayland when `WAYLAND_DISPLAY` is set, else X11.
+The Arch package depends on `libxkbcommon-x11` and `libxcb` for that. See `platforms.md` for what was checked.

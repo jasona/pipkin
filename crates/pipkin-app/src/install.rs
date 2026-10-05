@@ -59,6 +59,20 @@ pub fn engine_search_dirs(exe: Option<&Path>, env: Option<PathBuf>) -> Vec<PathB
 /// Why a directory is not a usable engine, or its manifest when it is.
 pub fn check_engine(dir: &Path) -> Result<Manifest, String> {
     let manifest_path = dir.join(MANIFEST_FILE);
+    // A Pi checkout (what `--pi-repo` takes) has no manifest: it is the development entry point,
+    // accepted as it is when it can be launched, and reported as a checkout.
+    if !manifest_path.exists()
+        && dir.join("pi-test.sh").is_file()
+        && dir.join("node_modules").is_dir()
+    {
+        return Ok(Manifest {
+            name: "pi (development checkout)".into(),
+            version: "unversioned".into(),
+            protocol: PROTOCOL,
+            min_client: None,
+            built_at: None,
+        });
+    }
     let text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
     let manifest: Manifest = serde_json::from_str(&text)
@@ -410,6 +424,11 @@ mod tests {
                 .contains("node_modules is missing")
         );
         assert!(check_engine(&tmp.path().join("none")).is_err());
+        // A checkout without a manifest is accepted as a development engine.
+        let checkout = tmp.path().join("checkout");
+        std::fs::create_dir_all(checkout.join("node_modules")).unwrap();
+        std::fs::write(checkout.join("pi-test.sh"), "#!/bin/sh\n").unwrap();
+        assert!(check_engine(&checkout).unwrap().name.contains("checkout"));
         std::fs::write(tmp.path().join("bad").with_extension("json"), "x").unwrap();
         let broken = tmp.path().join("d");
         std::fs::create_dir_all(&broken).unwrap();

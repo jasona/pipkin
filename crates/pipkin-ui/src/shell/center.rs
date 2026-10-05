@@ -91,6 +91,43 @@ impl Workspace {
             ))
         });
         let mut strips: Vec<gpui::AnyElement> = Vec::new();
+        // A conversation is open but the engine is not answering: say so where it can be seen,
+        // not only in the disabled buttons. (With none open, the centre already says it.)
+        if has_conv && !demo {
+            let conn = self.state(cx).connection.clone();
+            let (glyph, color, title, hint) = match &conn {
+                Connection::Failed(_) | Connection::Incompatible(_) => (
+                    "circle-alert",
+                    c.danger,
+                    "The Pi engine is not available",
+                    " Sending is off. Run `pipkin --diagnose` in a terminal for details.",
+                ),
+                Connection::Offline(_) => (
+                    "triangle-alert",
+                    c.warning,
+                    "Not connected to the Pi engine",
+                    " Retrying. Your drafts are kept.",
+                ),
+                Connection::Reconnecting => (
+                    "clock",
+                    c.warning,
+                    "Connection lost",
+                    " Reconnecting. Your drafts are kept.",
+                ),
+                _ => ("", c.text, "", ""),
+            };
+            if !title.is_empty() {
+                let why = conn.banner().unwrap_or_default();
+                strips.push(strip(
+                    cx,
+                    glyph,
+                    color,
+                    title,
+                    &format!("{why}.{hint}"),
+                    vec![],
+                ));
+            }
+        }
         if let Some((at, reason)) = saved_copy {
             strips.push(strip(
                 cx,
@@ -247,9 +284,10 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.0))
-            .h(px(48.0))
-            .px(px(12.0))
+            .gap(px(12.0))
+            // Same height and side padding as the changes pane's header, so their rules line up.
+            .h(px(68.0 * t.scale.max(1.0)))
+            .px(px(24.0))
             .border_b_1()
             .border_color(c.border)
             .children(nav_toggle)
@@ -269,6 +307,8 @@ impl Workspace {
                                     .unwrap_or_else(|| "No conversation selected".into()),
                             )
                             .truncate()
+                            .text_size(px(16.0 * t.scale))
+                            .line_height(px(23.0 * t.scale))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(
                                 title
@@ -279,7 +319,9 @@ impl Workspace {
                     .child(
                         div()
                             .truncate()
+                            .mt(px(3.0))
                             .text_size(t.small_size())
+                            .line_height(px(17.0 * t.scale))
                             .text_color(c.text_faint)
                             .child(project),
                     ),
@@ -341,10 +383,16 @@ impl Workspace {
                 .into_any_element()
         };
 
+        let drop_tint = c.accent_bg;
         div()
             .id("conversation")
             .role(Role::Main)
             .aria_label("Conversation")
+            // Files dropped from a file manager are attached to the message being written.
+            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(drop_tint))
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                this.attach_paths(paths.paths().to_vec(), cx)
+            }))
             .flex()
             .flex_col()
             .flex_1()

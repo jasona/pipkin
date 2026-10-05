@@ -8,7 +8,7 @@ pkgdesc='Native Wayland desktop client for the Pi coding agent, with a bundled e
 arch=('x86_64')
 url='https://github.com/jasona/pipkin'
 license=('custom')
-depends=('nodejs>=22.19' 'wayland' 'libxkbcommon' 'vulkan-icd-loader' 'fontconfig' 'git')
+depends=('nodejs>=22.19' 'wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'vulkan-icd-loader' 'fontconfig' 'git')
 makedepends=('rust' 'cargo' 'npm' 'zstd' 'clang' 'cmake')
 optdepends=('foot: terminal for the "open terminal" action'
             'orca: screen reader'

@@ -1013,3 +1013,34 @@ fn a_saved_copy_that_arrives_after_the_engines_refusal_replaces_the_notice_and_k
     s.apply_cache(ConversationId(1), vec![user(1024, "saved words")], false, 9);
     assert_eq!(s.current().unwrap().cached_at, None);
 }
+
+/// The window's size is remembered, within sense, and never written twice for one value.
+#[test]
+fn the_window_size_is_stored_clamped_and_only_when_it_changes() {
+    let mut s = real(0);
+    assert_eq!(s.prefs.window_size, None);
+    let saves = |out: &Outcome| {
+        out.effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SavePrefs(_)))
+            .count()
+    };
+    let first = s.dispatch(Command::SetWindowSize(1280.4, 800.0));
+    assert_eq!(s.prefs.window_size, Some((1280.0, 800.0)));
+    assert_eq!(saves(&first), 1);
+    let again = s.dispatch(Command::SetWindowSize(1280.0, 800.0));
+    assert_eq!(saves(&again), 0, "the same size is not written again");
+    s.dispatch(Command::SetWindowSize(10.0, 99_999.0));
+    assert_eq!(
+        s.prefs.window_size,
+        Some((480.0, 8192.0)),
+        "kept within sane bounds"
+    );
+    let bad = s.dispatch(Command::SetWindowSize(f32::NAN, 600.0));
+    assert_eq!(saves(&bad), 0);
+    assert_eq!(
+        s.prefs.window_size,
+        Some((480.0, 8192.0)),
+        "nonsense is ignored"
+    );
+}

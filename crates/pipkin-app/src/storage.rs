@@ -1205,6 +1205,7 @@ fn write_prefs(conn: &mut Connection, ns: &str, p: &Prefs) -> Result<(), String>
         ("nav_width", json!(p.nav_width)),
         ("inspector_width", json!(p.inspector_width)),
         ("inspector_open", json!(p.inspector_open)),
+        ("window_size", json!(p.window_size.map(|(w, h)| [w, h]))),
         ("selected_project", json!(p.selected_project.map(|i| i.0))),
         (
             "selected_conversation",
@@ -1249,6 +1250,12 @@ fn apply_pref(p: &mut Prefs, key: &str, v: &Value) {
         "nav_width" => p.nav_width = v.as_f64().map_or(p.nav_width, |x| x as f32),
         "inspector_width" => p.inspector_width = v.as_f64().map_or(p.inspector_width, |x| x as f32),
         "inspector_open" => p.inspector_open = v.as_bool().unwrap_or(p.inspector_open),
+        "window_size" => {
+            p.window_size = v.as_array().and_then(|a| match a.as_slice() {
+                [w, h] => Some((w.as_f64()? as f32, h.as_f64()? as f32)),
+                _ => None,
+            })
+        }
         "selected_project" => p.selected_project = v.as_u64().map(ProjectId),
         "selected_conversation" => p.selected_conversation = v.as_u64().map(ConversationId),
         "model" => p.model = v.as_str().map(str::to_string),
@@ -1295,6 +1302,7 @@ mod tests {
             nav_width: 301.5,
             inspector_width: 512.0,
             inspector_open: false,
+            window_size: Some((1280.0, 800.0)),
             selected_project: Some(ProjectId(2)),
             selected_conversation: Some(ConversationId(11)),
             model: Some("pi-opus".into()),

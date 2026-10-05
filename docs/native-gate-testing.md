@@ -21,4 +21,16 @@ These checks need a person at the machine and a real desktop session. They are *
 | 10 | Rollback | `sudo pacman -U` the older package after the upgrade. | If the schema changed, Pipkin says the database is newer and stays untouched; restoring the backup works. | unverified |
 | 11 | Long soak | `PIPKIN_SOAK_ROUNDS=20000` (see docs/packaging.md), and the real app open for a day. | Memory and open files stay flat. | partial (1500 prompts run) |
 
+## Platform and release gates (M6)
+
+| # | Gate | Steps | Pass when | Result |
+|---|------|-------|-----------|--------|
+| 12 | Drag and drop | Drag two files and a folder from a file manager onto the conversation. | The two files appear as attachment chips; a message says folders were skipped; the area tints while dragging. Needs a real drag, so it was only built, not tried. | unverified |
+| 13 | Engine unavailable | Start with `--pi-repo /nonexistent`, then open a saved conversation. | A red strip says the engine is not available and to run `pipkin --diagnose`; sending is off. | unverified (built only) |
+| 14 | X11 session | Log into an X11 session (or use Xwayland), run Pipkin; try the IME and Orca. | Renders, types, resizes; IME and screen reader work. Rendering was seen under Xwayland only. | partial |
+| 15 | Other compositors | Run on GNOME and KDE Wayland: file picker, clipboard, decorations, IME. | Everything in the walkthrough works. | unverified |
+| 16 | Generic installer on another distribution | `./install.sh` from the tarball on Fedora/Debian/Ubuntu with Node >= 22.19; upgrade, rollback, uninstall. | Same results as `scripts/test-install.sh`, and a launcher entry works. | unverified (checked on Arch in a scratch prefix) |
+| 17 | Signed release | Sign with a real key, download elsewhere, run `verify-release.sh --require-signature`. | Verifies; a tampered file fails. | partial (throwaway key only) |
+| 18 | Beta | See `beta.md`. | Targets met. | not started |
+
 Record results here with the date, compositor, scale and input-method engine used.

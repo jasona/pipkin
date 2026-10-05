@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Make a release: the tarball, SHA256SUMS, and (with PIPKIN_SIGN_KEY set to a gpg key id) a detached
+# signature over SHA256SUMS. A downloader verifies with scripts/verify-release.sh.
+#
+#   scripts/release.sh [PI_CHECKOUT]       -> dist/release/
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+cd "$here"
+"$here/scripts/package.sh" "$@"
+out=$here/dist/release
+rm -rf "$out"; mkdir -p "$out"
+cp dist/pipkin-*.tar.zst "$out/"
+(cd "$out" && sha256sum pipkin-*.tar.zst > SHA256SUMS)
+if [ -n "${PIPKIN_SIGN_KEY:-}" ]; then
+  gpg --batch --yes --local-user "$PIPKIN_SIGN_KEY" --armor --detach-sign --output "$out/SHA256SUMS.asc" "$out/SHA256SUMS"
+  echo "signed SHA256SUMS with $PIPKIN_SIGN_KEY"
+else
+  echo "not signed (set PIPKIN_SIGN_KEY to a gpg key id to sign)"
+fi
+echo "release in $out:"; ls -1 "$out"

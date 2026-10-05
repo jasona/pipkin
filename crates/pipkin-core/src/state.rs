@@ -918,6 +918,19 @@ impl AppState {
                 self.pref(&mut out, |p| p.inspector_width = w.clamp(280.0, 720.0))
             }
             Command::SetInspectorOpen(v) => self.pref(&mut out, |p| p.inspector_open = v),
+            Command::SetWindowSize(w, h) => {
+                // A nonsense size (NaN, or tiny while a window is being created) is ignored,
+                // and so is the size already stored, which would only write the same prefs.
+                if w.is_finite() && h.is_finite() {
+                    let size = (
+                        w.clamp(480.0, 8192.0).round(),
+                        h.clamp(480.0, 8192.0).round(),
+                    );
+                    if self.prefs.window_size != Some(size) {
+                        self.pref(&mut out, |p| p.window_size = Some(size));
+                    }
+                }
+            }
         }
         out
     }

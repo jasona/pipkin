@@ -37,7 +37,14 @@ pub fn init(cx: &mut App, model: &Entity<Model>) {
 /// Open the main Pipkin window.
 pub fn open_main_window(cx: &mut App, model: Entity<Model>) {
     init(cx, &model);
-    let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
+    // The size it was last left at, else the default.
+    let (w, h) = model
+        .read(cx)
+        .state
+        .prefs
+        .window_size
+        .unwrap_or((1440.0, 960.0));
+    let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
     let m = model.clone();
     cx.open_window(
         WindowOptions {

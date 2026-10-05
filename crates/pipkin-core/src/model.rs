@@ -275,6 +275,8 @@ pub struct Prefs {
     pub nav_width: f32,
     pub inspector_width: f32,
     pub inspector_open: bool,
+    /// The window's size when last resized (not maximized or fullscreen), to open at again.
+    pub window_size: Option<(f32, f32)>,
     pub selected_project: Option<ProjectId>,
     pub selected_conversation: Option<ConversationId>,
     pub model: Option<String>,
@@ -289,6 +291,7 @@ impl Default for Prefs {
             nav_width: 240.0,
             inspector_width: 400.0,
             inspector_open: true,
+            window_size: None,
             selected_project: None,
             selected_conversation: None,
             model: None,

@@ -254,7 +254,7 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 
 ### Implementation status (updated 2026-10-04; read this first when resuming)
 
-**Where we are: M0 is done, M1 is met with caveats, M2 and M3 are complete, and M4 and M5 are complete as build milestones; the native and install gates are with the owner (native-gate-testing.md).** M2 is committed and pushed (`97dc6f7`). M3 is in the working tree, uncommitted. M3 needed no new Pi changes; the Pi changes are the M2 ones, now committed and pushed in the fork (`../pi-fork/pi`, branch `client-session-cwd-and-request-ids`, `646a5841a`). The older `../pi` checkout is no longer used.
+**Where we are: M0 is done, M1 is met with caveats, M2 and M3 are complete, and M4, M5 and M6 are complete as build and groundwork milestones; the native, install, platform and beta gates are with the owner (native-gate-testing.md, platforms.md, beta.md).** M2 is committed and pushed (`97dc6f7`). M3 is in the working tree, uncommitted. M3 needed no new Pi changes; the Pi changes are the M2 ones, now committed and pushed in the fork (`../pi-fork/pi`, branch `client-session-cwd-and-request-ids`, `646a5841a`). The older `../pi` checkout is no longer used.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
@@ -264,7 +264,8 @@ M2 is the first genuinely functioning client, not the end of the product work. M
 | M3 daily-use execution and recovery | **Complete** (caveats below) | 16 more real-engine e2e tests (23 in all, run repeatedly, in parallel): stop, steer, follow-up, remove-queued, resume after restart, run started elsewhere, switching conversations, attachments (text, image) and their survival across a restart, lost acknowledgments (reply dropped, request dropped, app killed before it could ask), connection cut mid-run, engine killed mid-run, storage refusing the journal, provider configured after start |
 | M4 complete local product | **Complete (features); native gates handed to the owner**, tracked in [native-gate-testing.md](native-gate-testing.md) and not passed | 7 new real-engine e2e tests on top of M3's 23 (history past a compaction, complete tool output, offline copies and search, editor/terminal launch, a real extension asking three questions, decline and reconnect), a repeated 10,000-item traversal test, mock-engine paging of 10,000 entries, storage, core and adapter tests |
 | M5 distributable Wayland alpha | **Complete (build, package, verify in a scratch prefix); install on a clean system handed to the owner**, tracked in [native-gate-testing.md](native-gate-testing.md) gates 8 to 11 and not passed | An Arch package (`packaging/PKGBUILD`, built with `makepkg`), a bundled engine found without any checkout, `--version`/`--diagnose [--probe]`, a clean-environment install check, all 31 real-engine tests against the unpacked engine, an upgrade test from every earlier schema, and a 1500-prompt soak; see [packaging.md](packaging.md) |
-| M6 and later | Not started | |
+| M6 broader release | **Complete as a build and groundwork milestone; qualification and the beta are not done** (see its summary and [platforms.md](platforms.md), [beta.md](beta.md), gates 12 to 18 in [native-gate-testing.md](native-gate-testing.md)) | X11 enabled and seen under Xwayland, generic Linux installer with versions and rollback (tested in a scratch prefix), checksummed and signable releases (tested with a throwaway key), drag-and-drop attaching, an engine-unavailable strip, `--diagnose` for development checkouts, a platform audit and beta targets |
+| After M6 | Not started | |
 
 `cargo test --workspace`: 468 pass, 35 ignored (real-server and real-engine tests, which need `PIPKIN_PI_REPO`). Clippy and fmt clean.
 
@@ -323,6 +324,27 @@ Caveats:
 - Diagnostics are a command and a log file; there is no in-app "copy diagnostics" action.
 - Engine upgrade is atomic with the app (one package), but a rollback after a schema change needs the backup restored by hand.
 - Only x86_64 Arch with Wayland and system Node was considered. Power-loss, disk-full and GPU-driver coverage are unmeasured.
+
+#### M6 summary and caveats
+
+M6 asks that each advertised OS pass installation, text/accessibility, graphics, recovery and update tests, and that a measured beta meet its reliability and usability targets. **That is not met, and not claimed.** Only one track is advertised (Omarchy/Arch on Wayland, alpha), and its native gates are still open; no other computer, OS or user has run Pipkin; and there has been no beta. As with M4 and M5, M6 is marked complete as a build and groundwork milestone, and the rest is in the docs and gates for the owner.
+
+Built and checked here:
+
+- **X11.** The `x11` GPUI feature is on next to `wayland` (one binary; `WAYLAND_DISPLAY` decides). Under Xwayland it starts and renders correctly; Wayland still runs natively with both enabled. The package depends on `libxkbcommon-x11` and `libxcb`.
+- **Generic Linux install, upgrade and rollback.** `install.sh` in the release tarball installs into `~/.local` as versioned directories with a `current` link, keeps the previous version, and rolls back in one step. `scripts/test-install.sh` runs install, upgrade, list, rollback and uninstall in a scratch prefix: the engine beside the installed binary answers, the upgraded and rolled-back engines are the ones in use, and user data survives.
+- **Verifiable releases.** `scripts/release.sh` makes the tarball and `SHA256SUMS`, and a detached gpg signature when a key is given; `scripts/verify-release.sh` checks them. Tested with a throwaway key: a valid signature passes, a modified tarball fails.
+- **Product gaps closed.** A strip says when the engine is unavailable (it used to show only disabled buttons); `--diagnose` accepts a development checkout; files can be dropped on the conversation to attach them (folders are skipped with a message).
+- **Platform audit and beta targets.** [platforms.md](platforms.md) lists what each platform has and what blocks macOS and Windows (Unix sockets and peer credentials, `/proc` and signals, XDG assumptions); [beta.md](beta.md) sets reliability and usability targets and how each is measured. There is no telemetry.
+
+Not done, and why:
+
+- macOS and Windows: not buildable here, and no cross build was attempted; the blockers are listed, not removed. The plan's Windows items (named-pipe transport with access checks, process-tree ownership, DPI, signed installer) and macOS items (Keychain, VoiceOver, notarization) all remain.
+- GNOME/KDE, other distributions, a pure X11 session: not tried.
+- Drag-and-drop and the engine strip were built and compile, but a real drag cannot be synthesised by the test guard, and the strip was not looked at on screen: both are gates 12 and 13.
+- No real signing key, no published release, no in-app update check, no package repository.
+- The beta: not started. Every target in [beta.md](beta.md) is unmeasured except the soak and recovery tests.
+- Still open from earlier: the compiled engine (Pi-side), a filter box in the model picker, an in-app "copy diagnostics" action.
 
 #### Brand pass (2026-10-05)
 

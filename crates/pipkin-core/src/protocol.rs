@@ -70,6 +70,8 @@ pub enum Command {
     SetReducedMotion(bool),
     SetNavWidth(f32),
     SetInspectorWidth(f32),
+    /// The window was resized to this many logical pixels.
+    SetWindowSize(f32, f32),
     SetInspectorOpen(bool),
 }
 

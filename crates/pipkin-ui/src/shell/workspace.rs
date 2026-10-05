@@ -67,6 +67,8 @@ pub struct Workspace {
     pub(super) panel_focus: FocusHandle,
     synced: (Option<ConversationId>, u64),
     flush_task: Option<Task<()>>,
+    /// Saves the window size once resizing has settled.
+    size_task: Option<Task<()>>,
     pub(super) toast: Option<String>,
     toast_task: Option<Task<()>>,
     pub(super) diff_scroll: UniformListScrollHandle,
@@ -115,6 +117,9 @@ impl Workspace {
         subs.push(cx.subscribe_in(&composer, window, Self::on_composer_event));
         subs.push(cx.subscribe_in(&nav_search, window, Self::on_search_event));
         subs.push(cx.subscribe_in(&overlay_input, window, Self::on_overlay_input_event));
+        subs.push(
+            cx.observe_window_bounds(window, |this, window, cx| this.on_window_bounds(window, cx)),
+        );
         subs.push(cx.observe_in(&model, window, |this, _, window, cx| {
             this.on_model(window, cx)
         }));
@@ -135,6 +140,7 @@ impl Workspace {
             panel_focus: cx.focus_handle(),
             synced: (None, u64::MAX),
             flush_task: None,
+            size_task: None,
             toast: None,
             toast_task: None,
             diff_scroll: UniformListScrollHandle::new(),
@@ -278,6 +284,25 @@ impl Workspace {
         } else if a.steer {
             self.dispatch(Command::Steer, cx);
         }
+    }
+
+    /// Remember the window's size, once resizing has paused. The viewport is the real size:
+    /// on Wayland `window_bounds()` calls an ordinary resize "maximized" and keeps the old
+    /// size, so it cannot be trusted here. Fullscreen is the screen's size, not the person's
+    /// choice, so it is skipped.
+    fn on_window_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            return;
+        }
+        let viewport = window.viewport_size();
+        let (w, h) = (f32::from(viewport.width), f32::from(viewport.height));
+        let model = self.model.clone();
+        self.size_task = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(600))
+                .await;
+            model.update(cx, |m, cx| m.dispatch(Command::SetWindowSize(w, h), cx));
+        }));
     }
 
     fn schedule_flush(&mut self, cx: &mut Context<Self>) {
@@ -789,9 +814,33 @@ impl Workspace {
                     return;
                 }
             };
+            this.update(cx, |this, cx| this.attach_paths(paths, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Attach files by path: from the picker, or dropped onto the window. Folders cannot be
+    /// attached; they are skipped with a word about it. The files are read off the UI thread.
+    pub(super) fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        let (files, folders): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| !p.is_dir());
+        if !folders.is_empty() {
+            self.show_toast(
+                if files.is_empty() {
+                    "Folders cannot be attached; drop files instead".to_string()
+                } else {
+                    format!("Attached {} file(s); folders were skipped", files.len())
+                },
+                cx,
+            );
+        }
+        if files.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
             let described = cx
                 .background_spawn(async move {
-                    paths
+                    files
                         .iter()
                         .map(|p| describe_attachment(p))
                         .collect::<Vec<_>>()
