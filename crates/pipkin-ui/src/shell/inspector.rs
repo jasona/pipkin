@@ -152,8 +152,14 @@ impl Workspace {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(6.0))
+                .gap(px(8.0))
                 .px(px(24.0))
+                .child(
+                    gpui::img(crate::assets::MASCOT_WAITING)
+                        .w(px(150.0 * t.scale.max(1.0)))
+                        .h(px(188.0 * t.scale.max(1.0)))
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
                 .child(div().text_color(c.text_muted).child("No changes yet"))
                 .child(
                     div()

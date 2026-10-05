@@ -59,10 +59,17 @@ pub struct Assets;
 
 /// Brand artwork (the mascot), kept apart from the icon set.
 pub const MASCOT: &str = "brand/mascot.png";
-const BRAND: &[(&str, &[u8])] = &[(
-    MASCOT,
-    include_bytes!("../../../assets/brand/mascot.png") as &[u8],
-)];
+pub const MASCOT_WAITING: &str = "brand/mascot-waiting.png";
+const BRAND: &[(&str, &[u8])] = &[
+    (
+        MASCOT,
+        include_bytes!("../../../assets/brand/mascot.png") as &[u8],
+    ),
+    (
+        MASCOT_WAITING,
+        include_bytes!("../../../assets/brand/mascot-waiting.png") as &[u8],
+    ),
+];
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
