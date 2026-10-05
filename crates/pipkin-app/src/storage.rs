@@ -93,7 +93,32 @@ const MIGRATIONS: &[&str] = &[
         size INTEGER,
         PRIMARY KEY (namespace, conversation_id, position)
      );",
+    "CREATE TABLE transcript_cache (
+        namespace TEXT NOT NULL,
+        conversation_id INTEGER NOT NULL,
+        synced_at INTEGER NOT NULL,
+        has_older INTEGER NOT NULL,
+        message_count INTEGER NOT NULL,
+        items TEXT NOT NULL,
+        title TEXT NOT NULL,
+        project_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (namespace, conversation_id)
+     );
+     CREATE VIRTUAL TABLE transcript_search USING fts5(
+        text,
+        namespace UNINDEXED,
+        conversation_id UNINDEXED,
+        item_id UNINDEXED,
+        at UNINDEXED,
+        tokenize = 'unicode61 remove_diacritics 2'
+     );",
 ];
+
+/// Conversations whose saved copy is kept, per backend profile; the least recently synced go first.
+const MAX_CACHED_CONVERSATIONS: i64 = 50;
+/// Most hits one search returns.
+pub const SEARCH_LIMIT: usize = 40;
 
 /// States that still need reconciliation after a restart.
 const OPEN_STATES: &str = "'intent', 'unknown', 'accepted'";
@@ -160,6 +185,43 @@ enum Msg {
         request: RequestId,
         state: JournalState,
     },
+    Cache(Box<CacheWrite>),
+}
+
+/// A conversation's saved copy, ready to write.
+pub struct CacheWrite {
+    pub conversation: ConversationId,
+    pub meta: CacheMeta,
+    pub items_json: String,
+    pub kept: usize,
+    pub has_older: bool,
+    pub synced_at: i64,
+    /// `(item id, time, text)` of each searchable message in the copy.
+    pub searchable: Vec<(u64, i64, String)>,
+}
+
+/// What identifies a saved conversation when the engine is not there to say.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CacheMeta {
+    pub title: String,
+    pub project_path: String,
+    pub updated_at: i64,
+}
+
+/// A conversation known from its saved copy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CachedConversation {
+    pub id: ConversationId,
+    pub meta: CacheMeta,
+    pub synced_at: i64,
+}
+
+/// A saved copy read back.
+#[derive(Debug, PartialEq)]
+pub struct CachedTranscript {
+    pub items: Vec<TranscriptItem>,
+    pub has_older: bool,
+    pub synced_at: i64,
 }
 
 /// Receives a message when a write nobody is waiting on (preferences, journal updates, ...)
@@ -545,6 +607,146 @@ impl Storage {
         }
     }
 
+    /// Keep a copy of a conversation's transcript, and make its messages searchable.
+    pub fn save_cache(
+        &self,
+        conversation: ConversationId,
+        meta: CacheMeta,
+        items: &[TranscriptItem],
+        has_older: bool,
+        synced_at: i64,
+    ) {
+        let (items_json, kept) = crate::cache::encode_items(items);
+        let searchable = items[items.len() - kept.min(items.len())..]
+            .iter()
+            .filter_map(|i| Some((i.id.0, i.at, crate::cache::search_text(i)?)))
+            .collect();
+        let write = CacheWrite {
+            conversation,
+            meta,
+            items_json,
+            kept,
+            has_older,
+            synced_at,
+            searchable,
+        };
+        if self.send(Msg::Cache(Box::new(write))).is_err() {
+            log::warn!("transcript copy dropped: storage busy or closed");
+        }
+    }
+
+    /// The conversations that have a saved copy, most recently synced first.
+    pub fn cached_conversations(&self) -> Result<Vec<CachedConversation>, String> {
+        let conn = self.read_connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT conversation_id, title, project_path, updated_at, synced_at
+                 FROM transcript_cache WHERE namespace = ?1
+                 ORDER BY synced_at DESC, rowid DESC",
+            )
+            .map_err(sql_err)?;
+        stmt.query_map([&self.namespace], |r| {
+            Ok(CachedConversation {
+                id: ConversationId(r.get::<_, i64>(0)? as u64),
+                meta: CacheMeta {
+                    title: r.get(1)?,
+                    project_path: r.get(2)?,
+                    updated_at: r.get(3)?,
+                },
+                synced_at: r.get(4)?,
+            })
+        })
+        .map_err(sql_err)?
+        .collect::<Result<_, _>>()
+        .map_err(sql_err)
+    }
+
+    /// The saved copy of a conversation, if there is one.
+    pub fn load_cache(
+        &self,
+        conversation: ConversationId,
+    ) -> Result<Option<CachedTranscript>, String> {
+        let conn = self.read_connection()?;
+        let row = conn.query_row(
+            "SELECT items, has_older, synced_at FROM transcript_cache
+             WHERE namespace = ?1 AND conversation_id = ?2",
+            params![self.namespace, conversation.0 as i64],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
+        );
+        match row {
+            Ok((json, has_older, synced_at)) => Ok(Some(CachedTranscript {
+                items: crate::cache::decode_items(&json),
+                has_older: has_older != 0,
+                synced_at,
+            })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(sql_err(e)),
+        }
+    }
+
+    /// Search the saved copies' messages for `query`: every word, the last as a prefix.
+    pub fn search(&self, query: &str, limit: usize) -> Result<SearchResults, String> {
+        let conn = self.read_connection()?;
+        let (conversations_searched, messages_searched): (i64, i64) = conn
+            .query_row(
+                "SELECT count(*), coalesce(sum(message_count), 0) FROM transcript_cache
+                 WHERE namespace = ?1",
+                [&self.namespace],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(sql_err)?;
+        let mut results = SearchResults {
+            query: query.to_owned(),
+            hits: vec![],
+            conversations_searched: conversations_searched as usize,
+            messages_searched: messages_searched as usize,
+            truncated: false,
+        };
+        let Some(expression) = fts_expression(query) else {
+            return Ok(results);
+        };
+        let mut stmt = conn
+            .prepare(
+                "SELECT conversation_id, item_id, at,
+                        snippet(transcript_search, 0, char(2), char(3), '\u{2026}', 14)
+                 FROM transcript_search
+                 WHERE transcript_search MATCH ?1 AND namespace = ?2
+                 ORDER BY rank LIMIT ?3",
+            )
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map(params![expression, self.namespace, limit as i64 + 1], |r| {
+                Ok(SearchHit {
+                    conversation: ConversationId(r.get::<_, i64>(0)? as u64),
+                    item: ItemId(r.get::<_, i64>(1)? as u64),
+                    at: r.get(2)?,
+                    snippet: r.get(3)?,
+                })
+            })
+            .map_err(sql_err)?;
+        for hit in rows {
+            results.hits.push(hit.map_err(sql_err)?);
+        }
+        if results.hits.len() > limit {
+            results.hits.truncate(limit);
+            results.truncated = true;
+        }
+        Ok(results)
+    }
+
+    fn read_connection(&self) -> Result<Connection, String> {
+        let conn = Connection::open(&self.path).map_err(sql_err)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(sql_err)?;
+        Ok(conn)
+    }
+
     pub fn save_conversation(&self, conversation: DemoConversation) {
         if self.send(Msg::Conversation(conversation)).is_err() {
             log::warn!("conversation write dropped: storage busy or closed");
@@ -634,6 +836,14 @@ fn write(
                 write_intent(conn, ns, conversation, &request, &payload)
             };
             ack(result);
+        }
+        Msg::Cache(write) => {
+            let result = injected().unwrap_or_else(|| write_cache(conn, ns, &write));
+            reporter.settle(
+                "cache",
+                result,
+                "a copy of the conversation for offline reading",
+            );
         }
         Msg::JournalState { request, state } => {
             let result =
@@ -840,6 +1050,98 @@ fn write_journal_state(
     )
     .map(|_| ())
     .map_err(sql_err)
+}
+
+/// An FTS5 expression for what a person typed: each word quoted, the last one a prefix, so
+/// punctuation never reaches FTS5's own syntax.
+fn fts_expression(query: &str) -> Option<String> {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| w.replace('"', ""))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let last = words.len().checked_sub(1)?;
+    Some(
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                if i == last {
+                    format!("\"{w}\"*")
+                } else {
+                    format!("\"{w}\"")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn write_cache(conn: &mut Connection, ns: &str, w: &CacheWrite) -> Result<(), String> {
+    let tx = conn.transaction().map_err(sql_err)?;
+    let id = w.conversation.0 as i64;
+    tx.execute(
+        "INSERT INTO transcript_cache
+            (namespace, conversation_id, synced_at, has_older, message_count, items,
+             title, project_path, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(namespace, conversation_id) DO UPDATE SET
+            synced_at = excluded.synced_at, has_older = excluded.has_older,
+            message_count = excluded.message_count, items = excluded.items,
+            title = excluded.title, project_path = excluded.project_path,
+            updated_at = excluded.updated_at",
+        params![
+            ns,
+            id,
+            w.synced_at,
+            w.has_older as i64,
+            w.kept as i64,
+            w.items_json,
+            w.meta.title,
+            w.meta.project_path,
+            w.meta.updated_at
+        ],
+    )
+    .map_err(sql_err)?;
+    tx.execute(
+        "DELETE FROM transcript_search WHERE namespace = ?1 AND conversation_id = ?2",
+        params![ns, id],
+    )
+    .map_err(sql_err)?;
+    for (item, at, text) in &w.searchable {
+        tx.execute(
+            "INSERT INTO transcript_search (text, namespace, conversation_id, item_id, at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![text, ns, id, *item as i64, at],
+        )
+        .map_err(sql_err)?;
+    }
+    // Keep the most recently synced conversations only.
+    let stale: Vec<i64> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT conversation_id FROM transcript_cache WHERE namespace = ?1
+                 ORDER BY synced_at DESC, rowid DESC LIMIT -1 OFFSET ?2",
+            )
+            .map_err(sql_err)?;
+        stmt.query_map(params![ns, MAX_CACHED_CONVERSATIONS], |r| r.get(0))
+            .map_err(sql_err)?
+            .collect::<Result<_, _>>()
+            .map_err(sql_err)?
+    };
+    for old in stale {
+        tx.execute(
+            "DELETE FROM transcript_cache WHERE namespace = ?1 AND conversation_id = ?2",
+            params![ns, old],
+        )
+        .map_err(sql_err)?;
+        tx.execute(
+            "DELETE FROM transcript_search WHERE namespace = ?1 AND conversation_id = ?2",
+            params![ns, old],
+        )
+        .map_err(sql_err)?;
+    }
+    tx.commit().map_err(sql_err)
 }
 
 fn write_conversation(conn: &mut Connection, c: &DemoConversation) -> Result<(), String> {
@@ -1680,5 +1982,342 @@ mod tests {
             4,
             "a new failure after a success is reported again"
         );
+    }
+
+    fn text_item(id: u64, role_user: bool, text: &str) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId(id),
+            at: id as i64,
+            kind: if role_user {
+                ItemKind::User {
+                    text: text.into(),
+                    attachments: vec![],
+                    delivery: Delivery::Sent,
+                    steer: false,
+                }
+            } else {
+                ItemKind::Assistant {
+                    text: text.into(),
+                    streaming: false,
+                }
+            },
+        }
+    }
+
+    fn meta(title: &str) -> CacheMeta {
+        CacheMeta {
+            title: title.into(),
+            project_path: "/work/p".into(),
+            updated_at: 5,
+        }
+    }
+
+    /// Wait until every queued write has been committed (a draft ack follows them in order).
+    fn flush(s: &Storage) {
+        save_and_wait(s, 9_999, "flush", 1).unwrap();
+    }
+
+    #[test]
+    fn a_saved_copy_reads_back_and_a_newer_one_replaces_it_entirely() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        assert_eq!(s.load_cache(ConversationId(1)).unwrap(), None);
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[
+                text_item(1024, true, "first question"),
+                text_item(2048, false, "first answer"),
+            ],
+            true,
+            100,
+        );
+        flush(&s);
+        let copy = s.load_cache(ConversationId(1)).unwrap().unwrap();
+        assert_eq!(
+            (copy.items.len(), copy.has_older, copy.synced_at),
+            (2, true, 100)
+        );
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(3072, true, "only this now")],
+            false,
+            200,
+        );
+        flush(&s);
+        let copy = s.load_cache(ConversationId(1)).unwrap().unwrap();
+        assert_eq!(
+            (copy.items.len(), copy.has_older, copy.synced_at),
+            (1, false, 200)
+        );
+        // The replaced messages are no longer found.
+        assert!(s.search("first", 10).unwrap().hits.is_empty());
+        assert_eq!(s.search("only", 10).unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn search_finds_words_anywhere_with_the_match_marked_and_says_what_it_covered() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[
+                text_item(1024, true, "How do I rotate the signing keys?"),
+                text_item(
+                    2048,
+                    false,
+                    "Rotate them with the keytool, then restart the service.",
+                ),
+            ],
+            false,
+            1,
+        );
+        s.save_cache(
+            ConversationId(2),
+            meta("t"),
+            &[text_item(1024, true, "unrelated chatter about lunch")],
+            false,
+            2,
+        );
+        flush(&s);
+        let r = s.search("rotate keys", 10).unwrap();
+        assert_eq!(r.hits.len(), 1, "every word must match: {:?}", r.hits);
+        assert_eq!(
+            (r.hits[0].conversation, r.hits[0].item),
+            (ConversationId(1), ItemId(1024))
+        );
+        assert!(
+            r.hits[0].snippet.contains("\u{2}rotate\u{3}"),
+            "{}",
+            r.hits[0].snippet
+        );
+        assert_eq!((r.conversations_searched, r.messages_searched), (2, 3));
+        // The last word matches as a prefix, so results appear while typing.
+        assert_eq!(s.search("keyt", 10).unwrap().hits.len(), 1);
+        // Accents and case are ignored.
+        assert_eq!(
+            s.search("LUNCH", 10).unwrap().hits[0].conversation,
+            ConversationId(2)
+        );
+        assert!(s.search("zebra", 10).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn what_was_typed_never_reaches_the_search_syntax() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(1024, true, "a \"quoted\" word and x*y NEAR(z)")],
+            false,
+            1,
+        );
+        flush(&s);
+        for q in [
+            "\"", "\"quoted", "AND", "OR NOT", "x*y", "NEAR(", "col:umn", "(", "-", "\\", "''",
+        ] {
+            assert!(s.search(q, 10).is_ok(), "{q:?} must not be an error");
+        }
+        assert_eq!(s.search("quoted", 10).unwrap().hits.len(), 1);
+        assert!(s.search("   ", 10).unwrap().hits.is_empty());
+        assert!(s.search("", 10).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn results_are_limited_and_say_so() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        let items: Vec<_> = (1..=30)
+            .map(|n| text_item(n * 1024, true, "common phrase here"))
+            .collect();
+        s.save_cache(ConversationId(1), meta("t"), &items, false, 1);
+        flush(&s);
+        let r = s.search("common", 10).unwrap();
+        assert_eq!((r.hits.len(), r.truncated), (10, true));
+        let r = s.search("common", 50).unwrap();
+        assert_eq!((r.hits.len(), r.truncated), (30, false));
+    }
+
+    #[test]
+    fn copies_and_searches_belong_to_their_backend_profile() {
+        let (_dir, path) = tmp_db();
+        let a = Storage::open(&path, "pi:a").unwrap();
+        let b = Storage::open(&path, "pi:b").unwrap();
+        a.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(1024, true, "only in a")],
+            false,
+            1,
+        );
+        flush(&a);
+        assert!(b.load_cache(ConversationId(1)).unwrap().is_none());
+        assert!(b.search("only", 10).unwrap().hits.is_empty());
+        assert_eq!(b.search("only", 10).unwrap().conversations_searched, 0);
+        assert_eq!(a.search("only", 10).unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn only_the_most_recently_synced_conversations_are_kept() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        for n in 1..=(MAX_CACHED_CONVERSATIONS as u64 + 5) {
+            s.save_cache(
+                ConversationId(n),
+                meta("t"),
+                &[text_item(1024, true, &format!("conversation number {n}"))],
+                false,
+                n as i64,
+            );
+        }
+        flush(&s);
+        assert!(
+            s.load_cache(ConversationId(1)).unwrap().is_none(),
+            "the oldest was dropped"
+        );
+        assert!(s.load_cache(ConversationId(5)).unwrap().is_none());
+        assert!(s.load_cache(ConversationId(6)).unwrap().is_some());
+        assert!(
+            s.load_cache(ConversationId(MAX_CACHED_CONVERSATIONS as u64 + 5))
+                .unwrap()
+                .is_some()
+        );
+        let r = s.search("conversation", 100).unwrap();
+        assert_eq!(r.conversations_searched, MAX_CACHED_CONVERSATIONS as usize);
+        assert!(
+            r.hits.iter().all(|h| h.conversation.0 > 5),
+            "dropped copies are not searchable"
+        );
+    }
+
+    #[test]
+    fn a_failed_copy_write_is_reported_once_and_does_not_lose_the_old_copy() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        s.set_error_sink(Arc::new(move |m| sink.lock().unwrap().push(m)));
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(1024, true, "kept")],
+            false,
+            1,
+        );
+        flush(&s);
+        s.set_background_failure(true);
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(1024, true, "lost")],
+            false,
+            2,
+        );
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(1024, true, "lost again")],
+            false,
+            3,
+        );
+        save_and_wait(&s, 9_999, "flush", 2).unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1, "{:?}", seen.lock().unwrap());
+        assert!(seen.lock().unwrap()[0].contains("offline reading"));
+        assert_eq!(
+            s.load_cache(ConversationId(1)).unwrap().unwrap().synced_at,
+            1
+        );
+    }
+
+    #[test]
+    fn a_database_from_before_the_cache_gains_it_on_upgrade_keeping_its_drafts() {
+        let (_dir, path) = tmp_db();
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..6] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 6").unwrap();
+            conn.execute(
+                "INSERT INTO drafts (namespace, conversation_id, text, rev, updated_at) VALUES ('pi:test', 1, 'kept draft', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Storage::open(&path, "pi:test").unwrap();
+        assert_eq!(s.load_all().unwrap().drafts[0].text, "kept draft");
+        s.save_cache(
+            ConversationId(1),
+            meta("t"),
+            &[text_item(1024, true, "after upgrade")],
+            false,
+            1,
+        );
+        flush(&s);
+        assert_eq!(s.search("upgrade", 5).unwrap().hits.len(), 1);
+        assert!(
+            path.with_extension("sqlite3.bak-v6").exists(),
+            "a backup was made before migrating"
+        );
+    }
+
+    #[test]
+    fn conversations_with_a_saved_copy_are_listed_with_what_identifies_them() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "pi:test").unwrap();
+        let other = Storage::open(&path, "pi:other").unwrap();
+        s.save_cache(
+            ConversationId(1),
+            CacheMeta {
+                title: "first".into(),
+                project_path: "/work/a".into(),
+                updated_at: 11,
+            },
+            &[text_item(1024, true, "hello")],
+            false,
+            100,
+        );
+        s.save_cache(
+            ConversationId(2),
+            CacheMeta {
+                title: "second".into(),
+                project_path: "/work/b".into(),
+                updated_at: 22,
+            },
+            &[text_item(1024, true, "world")],
+            false,
+            200,
+        );
+        other.save_cache(
+            ConversationId(3),
+            meta("not ours"),
+            &[text_item(1024, true, "x")],
+            false,
+            1,
+        );
+        flush(&s);
+        flush(&other);
+        let list = s.cached_conversations().unwrap();
+        assert_eq!(
+            list.iter().map(|c| c.id.0).collect::<Vec<_>>(),
+            [2, 1],
+            "newest sync first"
+        );
+        assert_eq!(
+            list[0],
+            CachedConversation {
+                id: ConversationId(2),
+                meta: CacheMeta {
+                    title: "second".into(),
+                    project_path: "/work/b".into(),
+                    updated_at: 22
+                },
+                synced_at: 200,
+            }
+        );
+        assert_eq!(other.cached_conversations().unwrap().len(), 1);
     }
 }

@@ -1809,3 +1809,502 @@ fn queue_requests_while_offline_are_refused_not_lost() {
     ));
     backend.shutdown();
 }
+
+// ------------------------------------------------------- M4: history, tool output, questions
+
+use pipkin_core::{ItemId, UiAnswer, UiNoticeLevel, UiRequestKind};
+
+/// The next event satisfying `wanted`; anything else before it is skipped.
+fn event_where(env: &Env, wanted: impl Fn(&EventKind) -> bool) -> BackendEvent {
+    loop {
+        let event = env.next_event();
+        if wanted(&event.kind) {
+            return event;
+        }
+    }
+}
+
+fn tool_result_entry(id: u64, call: &str, text: &str) -> Value {
+    json!({ "id": id, "conversationId": 1, "kind": "pi.message", "model": [{
+        "role": "toolResult", "toolCallId": call, "toolName": "bash", "isError": false,
+        "content": [{ "type": "text", "text": text }], "timestamp": 1_700_000_000_000i64 }] })
+}
+
+type HistoryCalls = Arc<Mutex<Vec<(Option<u64>, u64)>>>;
+
+/// A mock engine whose `pi.history` serves `all` (every entry the conversation ever had, in any
+/// order) the way the real service does: newest first, strictly older than `before`.
+fn history_mock(sessions: &[(&str, i64)], view: Value, all: Vec<Value>) -> (MockPi, HistoryCalls) {
+    let pi = mock(sessions, vec![(sessions[0].0, view)]);
+    pi.add_service("pi.history", &["page"], None);
+    let calls: HistoryCalls = Arc::new(Mutex::new(Vec::new()));
+    let log = calls.clone();
+    pi.set_handler("pi.history", "page", move |_, _, call| {
+        let request = &call.args[0];
+        let before = request["before"].as_u64();
+        let limit = request["limit"].as_u64().unwrap_or(50) as usize;
+        log.lock().unwrap().push((before, limit as u64));
+        let mut older: Vec<Value> = all
+            .iter()
+            .filter(|e| before.is_none_or(|b| e["id"].as_u64().unwrap_or(0) < b))
+            .cloned()
+            .collect();
+        older.sort_by_key(|e| std::cmp::Reverse(e["id"].as_u64().unwrap_or(0)));
+        let more = older.len() > limit;
+        older.truncate(limit);
+        Ok(Some(json!({ "entries": older, "more": more })))
+    });
+    (pi, calls)
+}
+
+fn view_of(entries: Vec<Value>) -> Value {
+    json!({ "conversation": { "id": 1 }, "entries": entries, "docs": {} })
+}
+
+#[test]
+fn a_conversation_with_history_before_its_view_offers_to_load_it_and_pages_back_without_gaps() {
+    let all: Vec<Value> = (1..=125)
+        .map(|n| user_entry(n, &format!("message {n}")))
+        .collect();
+    // The live view holds only the newest five entries (the rest is before a compaction).
+    let (pi, calls) = history_mock(&[("s", 1)], view_of(all[120..].to_vec()), all);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let EventKind::Opened {
+        items, has_older, ..
+    } = event_where(&env, |k| matches!(k, EventKind::Opened { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(has_older, "entries 1..=120 are older than the view");
+    assert_eq!(items.len(), 5);
+    assert_eq!(
+        calls.lock().unwrap()[0],
+        (Some(121), 1),
+        "asked cheaply: is there anything before the oldest?"
+    );
+
+    let mut oldest = items[0].id;
+    let mut collected: Vec<u64> = Vec::new();
+    loop {
+        env.backend.request(BackendRequest::LoadOlder {
+            conversation: conv,
+            generation: 1,
+            before: Some(oldest),
+        });
+        let EventKind::OlderPage { items, has_older } =
+            event_where(&env, |k| matches!(k, EventKind::OlderPage { .. })).kind
+        else {
+            unreachable!()
+        };
+        assert!(items.len() <= 50);
+        // Each page is oldest first and ends just before what was already shown.
+        assert!(items.windows(2).all(|w| w[0].id < w[1].id));
+        assert!(items.last().is_none_or(|last| last.id < oldest));
+        collected.splice(0..0, items.iter().map(|i| i.id.0 / 1024));
+        if let Some(first) = items.first() {
+            oldest = first.id;
+        }
+        if !has_older {
+            break;
+        }
+    }
+    assert_eq!(
+        collected,
+        (1..=120).collect::<Vec<_>>(),
+        "every older entry once, in order"
+    );
+}
+
+#[test]
+fn a_conversation_with_nothing_before_its_view_has_no_older_history_and_an_old_engine_has_none_to_offer()
+ {
+    let all: Vec<Value> = (1..=3).map(|n| user_entry(n, "m")).collect();
+    let (pi, _) = history_mock(&[("s", 1)], view_of(all.clone()), all);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let EventKind::Opened { has_older, .. } =
+        event_where(&env, |k| matches!(k, EventKind::Opened { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(!has_older);
+
+    // An engine that does not have the service at all: the same, and no error.
+    let env = start(mock(&[("s", 1)], vec![("s", view(&["a", "b"]))]), true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let EventKind::Opened { has_older, .. } =
+        event_where(&env, |k| matches!(k, EventKind::Opened { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(!has_older);
+    env.backend.request(BackendRequest::LoadOlder {
+        conversation: conv,
+        generation: 1,
+        before: Some(ItemId(1024)),
+    });
+    let EventKind::OlderFailed { message } =
+        event_where(&env, |k| matches!(k, EventKind::OlderFailed { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(!message.is_empty());
+}
+
+#[test]
+fn a_page_that_cannot_be_loaded_says_so_and_a_closed_session_cannot_page() {
+    let all: Vec<Value> = (1..=10).map(|n| user_entry(n, "m")).collect();
+    let (pi, _) = history_mock(&[("s", 1)], view_of(all[8..].to_vec()), all);
+    pi.set_handler("pi.history", "page", |_, _, _| {
+        Err(pi_client::protocol::ProtocolError {
+            code: "internal_error".into(),
+            message: "boom".into(),
+        })
+    });
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    // Not opened yet: refused locally.
+    env.backend.request(BackendRequest::LoadOlder {
+        conversation: conv,
+        generation: 1,
+        before: Some(ItemId(9 * 1024)),
+    });
+    let EventKind::OlderFailed { message } =
+        event_where(&env, |k| matches!(k, EventKind::OlderFailed { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(message.contains("not open"), "{message}");
+    env.open(conv, 1);
+    event_where(&env, |k| matches!(k, EventKind::Opened { .. }));
+    env.backend.request(BackendRequest::LoadOlder {
+        conversation: conv,
+        generation: 1,
+        before: Some(ItemId(9 * 1024)),
+    });
+    let EventKind::OlderFailed { message } =
+        event_where(&env, |k| matches!(k, EventKind::OlderFailed { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(message.contains("boom"), "{message}");
+    // An item that is not from an entry has nothing before it.
+    env.backend.request(BackendRequest::LoadOlder {
+        conversation: conv,
+        generation: 1,
+        before: None,
+    });
+    let EventKind::OlderPage { items, has_older } =
+        event_where(&env, |k| matches!(k, EventKind::OlderPage { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(items.is_empty() && !has_older);
+}
+
+#[test]
+fn the_complete_result_of_a_tool_call_comes_from_the_live_view_or_from_history() {
+    let big = "line of output\n".repeat(2000); // 30 KB, well past the preview
+    let in_view = tool_result_entry(5, "call_view", &big);
+    let before_compaction = tool_result_entry(2, "call_old", &"older output\n".repeat(1500));
+    let all = vec![
+        before_compaction,
+        user_entry(3, "x"),
+        user_entry(4, "y"),
+        in_view.clone(),
+    ];
+    let (pi, calls) = history_mock(&[("s", 1)], view_of(vec![user_entry(4, "y"), in_view]), all);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    event_where(&env, |k| matches!(k, EventKind::Opened { .. }));
+    let fetch = |call: &str| {
+        env.backend.request(BackendRequest::FetchToolOutput {
+            conversation: conv,
+            generation: 1,
+            call_id: call.into(),
+        });
+    };
+    fetch("call_view");
+    let EventKind::ToolOutputFull { call_id, text } = event_where(&env, |k| {
+        matches!(
+            k,
+            EventKind::ToolOutputFull { .. } | EventKind::ToolOutputUnavailable { .. }
+        )
+    })
+    .kind
+    else {
+        panic!("expected the output")
+    };
+    assert_eq!((call_id.as_str(), text.len()), ("call_view", big.len()));
+    let history_calls_before = calls.lock().unwrap().len();
+
+    // One from before the view's start is found by paging history.
+    fetch("call_old");
+    let EventKind::ToolOutputFull { text, .. } = event_where(&env, |k| {
+        matches!(
+            k,
+            EventKind::ToolOutputFull { .. } | EventKind::ToolOutputUnavailable { .. }
+        )
+    })
+    .kind
+    else {
+        panic!("expected the older output")
+    };
+    assert_eq!(text, "older output\n".repeat(1500));
+    assert!(calls.lock().unwrap().len() > history_calls_before);
+
+    // One that is nowhere is reported, not invented.
+    fetch("call_nowhere");
+    let EventKind::ToolOutputUnavailable { call_id, reason } = event_where(&env, |k| {
+        matches!(
+            k,
+            EventKind::ToolOutputFull { .. } | EventKind::ToolOutputUnavailable { .. }
+        )
+    })
+    .kind
+    else {
+        panic!("expected a refusal")
+    };
+    assert_eq!(call_id, "call_nowhere");
+    assert!(reason.contains("does not have"), "{reason}");
+
+    // Asking about a conversation that is not open fails the same way.
+    env.backend.request(BackendRequest::FetchToolOutput {
+        conversation: ConversationId(42),
+        generation: 1,
+        call_id: "x".into(),
+    });
+    event_where(&env, |k| {
+        matches!(k, EventKind::ToolOutputUnavailable { .. })
+    });
+}
+
+fn ui_request(id: &str, kind: &str) -> Value {
+    json!({ "id": id, "kind": kind, "title": format!("Question {id}"), "message": null,
+        "items": [{ "value": "a", "label": "Choice A", "description": null }],
+        "placeholder": null, "defaultValue": null, "createdAt": 1, "deadline": 99 })
+}
+
+type UiCalls = Arc<Mutex<Vec<(String, Value)>>>;
+
+fn ui_mock() -> (MockPi, UiCalls) {
+    let pi = mock(&[("s", 1)], vec![("s", view(&[]))]);
+    pi.add_service(
+        "pi.ui-requests",
+        &["respond", "cancel"],
+        Some(json!({ "requests": [], "status": {}, "notices": [] })),
+    );
+    let calls: UiCalls = Arc::new(Mutex::new(Vec::new()));
+    let log = calls.clone();
+    pi.set_handler("pi.ui-requests", "respond", move |pi, _, call| {
+        let (id, value) = (
+            call.args[0].as_str().unwrap_or("").to_owned(),
+            call.args[1].clone(),
+        );
+        log.lock()
+            .unwrap()
+            .push((format!("respond {id}"), value.clone()));
+        if id == "q1" && value == json!("a") {
+            pi.publish(
+                "pi.ui-requests",
+                vec![Op::Set(vec![key("requests")], json!([]))],
+            );
+            Ok(Some(json!({ "accepted": true, "reason": null })))
+        } else {
+            Ok(Some(
+                json!({ "accepted": false, "reason": "That is not one of the choices." }),
+            ))
+        }
+    });
+    let log = calls.clone();
+    pi.set_handler("pi.ui-requests", "cancel", move |_, _, call| {
+        log.lock().unwrap().push((
+            format!("cancel {}", call.args[0].as_str().unwrap_or("")),
+            Value::Null,
+        ));
+        Ok(Some(json!({ "cancelled": true })))
+    });
+    (pi, calls)
+}
+
+#[test]
+fn questions_from_extensions_are_shown_answered_and_cancelled_through_the_engine() {
+    let (pi, calls) = ui_mock();
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let ui_state = |env: &Env| {
+        let EventKind::UiState {
+            requests,
+            status,
+            notices,
+        } = event_where(env, |k| matches!(k, EventKind::UiState { .. })).kind
+        else {
+            unreachable!()
+        };
+        (requests, status, notices)
+    };
+    assert_eq!(ui_state(&env), (vec![], vec![], vec![]), "reported at open");
+
+    env.pi.publish(
+        "pi.ui-requests",
+        vec![
+            Op::Set(
+                vec![key("requests")],
+                json!([ui_request("q1", "select"), ui_request("q2", "wheel")]),
+            ),
+            Op::Set(
+                vec![key("status")],
+                json!({ "lint": "clean", "build": "compiling" }),
+            ),
+            Op::Set(
+                vec![key("notices")],
+                json!([{ "id": "n1", "level": "warning", "message": "heads up", "at": 1 }]),
+            ),
+        ],
+    );
+    let (requests, status, notices) = ui_state(&env);
+    assert_eq!(
+        requests.len(),
+        1,
+        "the unknown kind is not shown as a question"
+    );
+    assert_eq!(
+        (requests[0].id.as_str(), requests[0].kind),
+        ("q1", UiRequestKind::Select)
+    );
+    assert_eq!(requests[0].items[0].label, "Choice A");
+    assert_eq!(requests[0].deadline, Some(99));
+    assert_eq!(
+        status,
+        [
+            ("build".to_owned(), "compiling".to_owned()),
+            ("lint".to_owned(), "clean".to_owned())
+        ]
+    );
+    // The question this build cannot show is said so, plainly, before it times out.
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.message.contains("cannot show") && n.level == UiNoticeLevel::Warning)
+    );
+    assert!(notices.iter().any(|n| n.message == "heads up"));
+
+    // A wrong answer comes back refused with the engine's reason; the question stays.
+    env.backend.request(BackendRequest::UiRespond {
+        conversation: conv,
+        generation: 1,
+        id: "q1".into(),
+        answer: UiAnswer::Choice("zzz".into()),
+    });
+    let EventKind::UiRespondRefused { id, reason } =
+        event_where(&env, |k| matches!(k, EventKind::UiRespondRefused { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (id.as_str(), reason.as_str()),
+        ("q1", "That is not one of the choices.")
+    );
+    // A good one is taken, and the engine's state then says the question is over.
+    env.backend.request(BackendRequest::UiRespond {
+        conversation: conv,
+        generation: 1,
+        id: "q1".into(),
+        answer: UiAnswer::Choice("a".into()),
+    });
+    let (requests, ..) = ui_state(&env);
+    assert!(requests.is_empty());
+    env.backend.request(BackendRequest::UiCancel {
+        conversation: conv,
+        generation: 1,
+        id: "q9".into(),
+    });
+    wait_until("cancel sent", || {
+        calls.lock().unwrap().iter().any(|(c, _)| c == "cancel q9")
+    });
+    let log = calls.lock().unwrap();
+    assert_eq!(
+        log[0],
+        ("respond q1".to_owned(), json!("zzz")),
+        "the answer goes as the plain value"
+    );
+}
+
+#[test]
+fn an_engine_without_extension_questions_just_has_none() {
+    let env = start(mock(&[("s", 1)], vec![("s", view(&["a"]))]), true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    event_where(&env, |k| matches!(k, EventKind::Opened { .. }));
+    env.backend.request(BackendRequest::UiRespond {
+        conversation: conv,
+        generation: 1,
+        id: "q1".into(),
+        answer: UiAnswer::Confirm(true),
+    });
+    let EventKind::UiRespondRefused { reason, .. } =
+        event_where(&env, |k| matches!(k, EventKind::UiRespondRefused { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(!reason.is_empty());
+}
+
+#[test]
+fn a_ten_thousand_message_history_pages_in_completely_with_each_page_bounded() {
+    let all: Vec<Value> = (1..=10_000)
+        .map(|n| user_entry(n, &format!("message {n}")))
+        .collect();
+    let (pi, calls) = history_mock(&[("s", 1)], view_of(all[9_995..].to_vec()), all);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let EventKind::Opened {
+        items, has_older, ..
+    } = event_where(&env, |k| matches!(k, EventKind::Opened { .. })).kind
+    else {
+        unreachable!()
+    };
+    assert!(has_older);
+    let mut oldest = items[0].id;
+    let mut seen = std::collections::HashSet::new();
+    let mut pages = 0;
+    let mut largest = 0;
+    loop {
+        env.backend.request(BackendRequest::LoadOlder {
+            conversation: conv,
+            generation: 1,
+            before: Some(oldest),
+        });
+        let EventKind::OlderPage { items, has_older } =
+            event_where(&env, |k| matches!(k, EventKind::OlderPage { .. })).kind
+        else {
+            unreachable!()
+        };
+        largest = largest.max(items.len());
+        for item in &items {
+            assert!(seen.insert(item.id), "item {:?} arrived twice", item.id);
+        }
+        pages += 1;
+        if let Some(first) = items.first() {
+            oldest = first.id;
+        }
+        if !has_older {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 9_995, "every older message, once");
+    assert_eq!(pages, 9_995_usize.div_ceil(50));
+    assert!(largest <= 50, "a page carried {largest} items");
+    let asked = calls.lock().unwrap();
+    assert!(
+        asked.iter().all(|(_, limit)| *limit <= 50),
+        "no request for more than a page"
+    );
+}

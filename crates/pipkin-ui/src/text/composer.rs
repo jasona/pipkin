@@ -147,6 +147,9 @@ pub struct ComposerEditor {
     goal_x: Option<Pixels>,
     selecting: bool,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Where the caret was when the input method was last told, so it is told again when the
+    /// caret moves (its candidate window follows it).
+    ime_caret: Option<Bounds<Pixels>>,
     blink_visible: bool,
     blink_task: Option<Task<()>>,
 }
@@ -187,6 +190,7 @@ impl ComposerEditor {
             goal_x: None,
             selecting: false,
             last_bounds: None,
+            ime_caret: None,
             blink_visible: true,
             blink_task: None,
         }
@@ -914,6 +918,22 @@ impl Element for ComposerElement {
             cx,
         );
         let focused = focus_handle.is_focused(window);
+        // An input method places its candidate window beside the caret, and only learns where
+        // that is when told: tell it whenever the caret has moved.
+        if focused {
+            let caret = self.editor.update(cx, |e, cx| {
+                let selection = e.selected_text_range(false, window, cx)?;
+                e.bounds_for_range(selection.range, bounds, window, cx)
+            });
+            let moved = self.editor.update(cx, |e, _| {
+                let moved = e.ime_caret != caret;
+                e.ime_caret = caret;
+                moved
+            });
+            if moved {
+                window.invalidate_character_coordinates();
+            }
+        }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for r in &prepaint.selection {
                 window.paint_quad(fill(*r, prepaint.selection_color));
@@ -1068,8 +1088,88 @@ impl EntityInputHandler for ComposerEditor {
     }
 }
 
+/// What a screen reader is told about the text: one run per line, and where the selection is.
+///
+/// A line's run holds its text and, when another line follows, the line break, so reading by
+/// character crosses lines the way a person expects. Lengths are per character in UTF-8 bytes,
+/// as accessibility toolkits want them.
+#[derive(Debug, PartialEq)]
+pub(crate) struct A11yText {
+    pub runs: Vec<A11yRun>,
+    /// `(run, character within the run)` of the selection's anchor and its focus (the caret).
+    pub anchor: (usize, usize),
+    pub focus: (usize, usize),
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct A11yRun {
+    pub text: String,
+    pub character_lengths: Vec<u8>,
+    pub word_starts: Vec<u8>,
+}
+
+/// Where each word begins, in characters from the start of the run (a reader steps by word
+/// to these). Only positions a `u8` can hold are reported.
+fn word_starts(text: &str) -> Vec<u8> {
+    let mut starts = Vec::new();
+    let mut in_word = false;
+    for (i, ch) in text.chars().enumerate() {
+        if ch.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            in_word = true;
+            if let Ok(at) = u8::try_from(i) {
+                starts.push(at);
+            }
+        }
+    }
+    starts
+}
+
+pub(crate) fn a11y_text(text: &str, anchor: usize, head: usize) -> A11yText {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut runs = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let mut run_text = (*line).to_owned();
+        if i + 1 < lines.len() {
+            run_text.push('\n');
+        }
+        let character_lengths = run_text.chars().map(|c| c.len_utf8() as u8).collect();
+        let word_starts = word_starts(&run_text);
+        runs.push(A11yRun {
+            text: run_text,
+            character_lengths,
+            word_starts,
+        });
+    }
+    // The run and character a byte offset falls on.
+    let position = |offset: usize| -> (usize, usize) {
+        let offset = offset.min(text.len());
+        let mut start = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let end = start + line.len();
+            if offset <= end || i + 1 == lines.len() {
+                let within = offset.saturating_sub(start).min(line.len());
+                let mut at = within;
+                while !line.is_char_boundary(at) {
+                    at -= 1;
+                }
+                return (i, line[..at].chars().count());
+            }
+            start = end + 1;
+        }
+        (0, 0)
+    };
+    A11yText {
+        runs,
+        anchor: position(anchor),
+        focus: position(head),
+    }
+}
+
 impl Render for ComposerEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let a11y = a11y_text(self.model.text(), self.model.anchor(), self.model.head());
         let mut root = gpui::div()
             .id("composer-editor")
             .key_context("Composer")
@@ -1077,6 +1177,30 @@ impl Render for ComposerEditor {
             .role(Role::MultilineTextInput)
             .aria_label(self.label.clone())
             .aria_value(SharedString::from(self.model.text().to_string()))
+            // The text as runs, with the caret and selection, so a screen reader can read and
+            // follow what is typed.
+            .a11y_synthetic_children(move |builder| {
+                let mut ids = Vec::with_capacity(a11y.runs.len());
+                for (i, run) in a11y.runs.iter().enumerate() {
+                    let mut node = gpui::accesskit::Node::new(Role::TextRun);
+                    node.set_value(run.text.clone());
+                    node.set_character_lengths(run.character_lengths.clone());
+                    node.set_word_starts(run.word_starts.clone());
+                    let id = builder.synthetic_node_id(i);
+                    builder.push_child(id, node);
+                    ids.push(id);
+                }
+                let at = |(run, character_index): (usize, usize)| gpui::accesskit::TextPosition {
+                    node: ids[run.min(ids.len() - 1)],
+                    character_index,
+                };
+                builder
+                    .parent_node()
+                    .set_text_selection(gpui::accesskit::TextSelection {
+                        anchor: at(a11y.anchor),
+                        focus: at(a11y.focus),
+                    });
+            })
             .cursor(CursorStyle::IBeam)
             .w_full()
             .on_action(cx.listener(Self::on_backspace))
@@ -1549,5 +1673,103 @@ mod tests {
             e.character_index_for_point(mid, w, cx)
         });
         assert_eq!(idx, Some(0));
+    }
+
+    #[gpui::test]
+    fn the_input_method_is_told_where_the_caret_is_whenever_it_moves(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 300.);
+        cx.simulate_input("ab\ncd");
+        cx.run_until_parked();
+        let at_end = h.editor.read_with(cx, |e, _| e.ime_caret);
+        assert!(
+            at_end.is_some(),
+            "the caret's place was handed to the input method"
+        );
+        cx.simulate_keystrokes("ctrl-home");
+        cx.run_until_parked();
+        let at_start = h.editor.read_with(cx, |e, _| e.ime_caret);
+        assert_ne!(at_start, at_end, "it follows the caret to the start");
+        assert!(at_start.unwrap().origin.y < at_end.unwrap().origin.y);
+        // Typing moves it along the line.
+        cx.simulate_input("xyz");
+        cx.run_until_parked();
+        let after_typing = h.editor.read_with(cx, |e, _| e.ime_caret);
+        assert!(after_typing.unwrap().origin.x > at_start.unwrap().origin.x);
+    }
+
+    #[test]
+    fn the_text_a_reader_sees_has_a_run_per_line_and_the_caret_in_it() {
+        let t = a11y_text("hello world\nsecond line", 0, 5);
+        assert_eq!(t.runs.len(), 2);
+        assert_eq!(
+            t.runs[0].text, "hello world\n",
+            "the line break belongs to the line it ends"
+        );
+        assert_eq!(t.runs[1].text, "second line");
+        assert_eq!(t.runs[0].character_lengths.len(), 12);
+        assert_eq!(t.runs[0].word_starts, [0, 6]);
+        assert_eq!(t.runs[1].word_starts, [0, 7]);
+        assert_eq!((t.anchor, t.focus), ((0, 0), (0, 5)));
+        // The caret at the end of the first line is before its break; at the start of the next
+        // line it is on the second run.
+        assert_eq!(a11y_text("ab\ncd", 2, 2).focus, (0, 2));
+        assert_eq!(a11y_text("ab\ncd", 3, 3).focus, (1, 0));
+        assert_eq!(a11y_text("ab\ncd", 5, 5).focus, (1, 2));
+    }
+
+    #[test]
+    fn multibyte_text_is_counted_in_characters_with_their_byte_lengths() {
+        let text = "h\u{e9}llo \u{4f60}\u{597d} \u{1f680}";
+        let t = a11y_text(text, text.len(), text.len());
+        assert_eq!(t.runs.len(), 1);
+        let lengths = &t.runs[0].character_lengths;
+        assert_eq!(
+            lengths.iter().map(|l| *l as usize).sum::<usize>(),
+            text.len()
+        );
+        assert_eq!(lengths.len(), text.chars().count());
+        assert_eq!(
+            t.focus,
+            (0, text.chars().count()),
+            "the end of the text, in characters"
+        );
+        // A caret inside the first multibyte letter's neighbour.
+        assert_eq!(
+            a11y_text(text, 3, 3).focus,
+            (0, 2),
+            "after h and the two-byte e-acute"
+        );
+    }
+
+    #[test]
+    fn empty_text_still_has_one_empty_run_and_the_caret_at_its_start() {
+        let t = a11y_text("", 0, 0);
+        assert_eq!(
+            t,
+            A11yText {
+                runs: vec![A11yRun {
+                    text: String::new(),
+                    character_lengths: vec![],
+                    word_starts: vec![]
+                }],
+                anchor: (0, 0),
+                focus: (0, 0),
+            }
+        );
+        // Offsets past the end or inside a character never panic.
+        let _ = a11y_text("\u{1f680}", 99, 2);
+        assert_eq!(
+            a11y_text("a\n\nb", 3, 3).focus,
+            (2, 0),
+            "a blank line is a run of its own"
+        );
+    }
+
+    #[test]
+    fn the_selection_runs_from_its_anchor_to_the_caret_in_either_direction() {
+        let t = a11y_text("one two three", 4, 7);
+        assert_eq!((t.anchor, t.focus), ((0, 4), (0, 7)));
+        let t = a11y_text("one two three", 7, 4);
+        assert_eq!((t.anchor, t.focus), ((0, 7), (0, 4)));
     }
 }

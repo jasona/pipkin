@@ -348,6 +348,7 @@ pub fn tool(name: &str, input: &str, output: &str, status: ToolStatus) -> ItemKi
     }
     ItemKind::Tool(ToolCall {
         call_ref: None,
+        call_id: None,
         name: name.into(),
         input: input.into(),
         output: output[..cut].to_string(),

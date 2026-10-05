@@ -23,6 +23,8 @@ pub enum Overlay {
     Project,
     Rename(ConversationId),
     Prefs,
+    /// A question an extension asked, for the first one waiting.
+    Question,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -55,6 +57,8 @@ pub struct Workspace {
     pub(super) overlay_input: Entity<ComposerEditor>,
     pub(super) overlay: Overlay,
     pub(super) overlay_sel: usize,
+    /// Questions the person put aside; they are not offered again on their own.
+    pub(super) question_dismissed: Vec<String>,
     pub(super) restore_focus: Option<FocusHandle>,
     pub(super) temp_panel: Option<Panel>,
     pub(super) panel_restore: Option<FocusHandle>,
@@ -120,6 +124,7 @@ impl Workspace {
             overlay_input,
             overlay: Overlay::None,
             overlay_sel: 0,
+            question_dismissed: Vec::new(),
             restore_focus: None,
             temp_panel: None,
             panel_restore: None,
@@ -150,7 +155,12 @@ impl Workspace {
     }
 
     pub(super) fn dispatch(&self, command: Command, cx: &mut App) {
+        // Opening a hit ends the search, so the box that held it is emptied too.
+        let ends_search = matches!(command, Command::OpenSearchHit(_));
         self.model.update(cx, |m, cx| m.dispatch(command, cx));
+        if ends_search {
+            self.nav_search.update(cx, |e, cx| e.set_text("", cx));
+        }
     }
 
     pub(super) fn focus_composer(&self, window: &mut Window, cx: &mut App) {
@@ -328,6 +338,7 @@ impl Workspace {
                     self.dispatch(Command::RenameConversation(id, title), cx);
                     self.close_overlay(window, cx);
                 }
+                Overlay::Question => self.confirm_selection(window, cx),
                 _ => self.confirm_selection(window, cx),
             },
         }
@@ -407,14 +418,65 @@ impl Workspace {
                 window.focus(&self.menu_focus, cx);
             }
             Overlay::Project | Overlay::Prefs => window.focus(&self.menu_focus, cx),
+            Overlay::Question => {
+                let question = self.waiting_question(cx, true);
+                match question {
+                    Some(q) if q.kind == UiRequestKind::Input => {
+                        self.overlay_input.update(cx, |e, cx| {
+                            e.set_text(q.default_value.as_deref().unwrap_or(""), cx);
+                            e.set_placeholder(q.placeholder.as_deref().unwrap_or("Your answer"));
+                            e.select_all(cx);
+                        });
+                        let h = self.overlay_input.read(cx).focus_handle(cx);
+                        window.focus(&h, cx);
+                    }
+                    _ => window.focus(&self.menu_focus, cx),
+                }
+            }
             Overlay::None => {}
         }
         cx.notify();
     }
 
+    /// The first question an extension is waiting on in the open conversation. Questions put
+    /// aside are skipped unless `including_dismissed`.
+    pub(super) fn waiting_question(
+        &self,
+        cx: &App,
+        including_dismissed: bool,
+    ) -> Option<UiRequest> {
+        self.state(cx).current().and_then(|c| {
+            c.ui_requests
+                .iter()
+                .find(|q| including_dismissed || !self.question_dismissed.contains(&q.id))
+                .cloned()
+        })
+    }
+
+    /// Offer a waiting question without being asked, once.
+    fn offer_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay != Overlay::None || self.waiting_question(cx, false).is_none() {
+            return;
+        }
+        let this = cx.entity();
+        window.defer(cx, move |window, cx| {
+            this.update(cx, |t, cx| {
+                if t.overlay == Overlay::None && t.waiting_question(cx, false).is_some() {
+                    t.open_overlay(Overlay::Question, window, cx);
+                }
+            })
+        });
+    }
+
     pub(super) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.overlay == Overlay::None {
             return;
+        }
+        if self.overlay == Overlay::Question
+            && let Some(q) = self.waiting_question(cx, true)
+            && !self.question_dismissed.contains(&q.id)
+        {
+            self.question_dismissed.push(q.id);
         }
         self.overlay = Overlay::None;
         match self.restore_focus.take() {
@@ -559,6 +621,17 @@ impl Workspace {
     }
     fn on_model_menu(&mut self, _: &OpenModelMenu, window: &mut Window, cx: &mut Context<Self>) {
         self.open_overlay(Overlay::Model, window, cx);
+    }
+    fn on_answer_question(
+        &mut self,
+        _: &AnswerQuestion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.waiting_question(cx, true).is_some() {
+            self.question_dismissed.clear();
+            self.open_overlay(Overlay::Question, window, cx);
+        }
     }
     fn on_open_project(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
         self.open_project(cx);
@@ -782,6 +855,7 @@ struct DragMarker(usize);
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.offer_question(window, cx);
         let t = cx.theme().clone();
         let size = window.viewport_size();
         let width = f32::from(size.width);
@@ -840,6 +914,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_model_menu))
             .on_action(cx.listener(Self::on_attach))
             .on_action(cx.listener(Self::on_open_project))
+            .on_action(cx.listener(Self::on_answer_question))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
             .on_action(cx.listener(Self::on_close_overlay))

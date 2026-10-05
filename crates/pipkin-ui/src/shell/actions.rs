@@ -18,6 +18,7 @@ actions!(
         JumpToLatest,
         OpenModelMenu,
         AttachFiles,
+        AnswerQuestion,
         NextConversation,
         PrevConversation,
         CloseOverlay,

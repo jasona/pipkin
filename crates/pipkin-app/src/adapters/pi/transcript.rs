@@ -175,6 +175,7 @@ impl Builder {
             at,
             ItemKind::Tool(ToolCall {
                 call_ref: None,
+                call_id: Some(call_id.to_owned()),
                 name: name.to_owned(),
                 input,
                 output: String::new(),
@@ -343,6 +344,58 @@ impl Builder {
             }
         }
     }
+}
+
+/// The engine's entry an item was made from, or `None` for an item that is not from an entry
+/// (a live partial, or one made locally).
+pub fn entry_of_item(item: ItemId) -> Option<u64> {
+    (item.0 < LIVE_BASE).then_some(item.0 / SLOTS_PER_ENTRY)
+}
+
+/// The oldest content entry in a view (head markers carry no content).
+pub fn oldest_entry_id(view: &Value) -> Option<u64> {
+    view.get("entries")?
+        .as_array()?
+        .iter()
+        .filter(|e| e.is_object() && e.get("head").is_none())
+        .filter_map(|e| e.get("id").and_then(Value::as_u64))
+        .min()
+}
+
+/// Items for a page of history, which the engine serves newest first.
+pub fn map_history_page(entries_newest_first: &[Value]) -> Mapped {
+    let oldest_first: Vec<Value> = entries_newest_first.iter().rev().cloned().collect();
+    map_view(&serde_json::json!({ "entries": oldest_first, "docs": {} }))
+}
+
+/// The complete result text of the tool call `call_id`, from entries in any order or from a
+/// view's live tool slots.
+pub fn tool_result_text(entries: &[Value], call_id: &str) -> Option<String> {
+    entries.iter().find_map(|entry| {
+        entry
+            .get("model")?
+            .as_array()?
+            .iter()
+            .find(|m| {
+                m.get("role").and_then(Value::as_str) == Some("toolResult")
+                    && m.get("toolCallId").and_then(Value::as_str) == Some(call_id)
+            })
+            .map(|m| text_of(m.get("content").unwrap_or(&Value::Null)))
+    })
+}
+
+/// Like [`tool_result_text`], for a whole view: its entries, then its running tools.
+pub fn tool_result_in_view(view: &Value, call_id: &str) -> Option<String> {
+    let entries = view.get("entries").and_then(Value::as_array)?;
+    tool_result_text(entries, call_id).or_else(|| {
+        view.get("docs")?
+            .get("pi.live")?
+            .get("tools")?
+            .as_array()?
+            .iter()
+            .find(|s| s.get("callId").and_then(Value::as_str) == Some(call_id))
+            .and_then(|s| s.get("output").and_then(Value::as_str).map(str::to_owned))
+    })
 }
 
 /// Map a `ConversationView` value.

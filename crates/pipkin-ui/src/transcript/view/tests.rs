@@ -48,6 +48,7 @@ fn item(i: u64) -> TranscriptItem {
         },
         3 => ItemKind::Tool(ToolCall {
             call_ref: None,
+            call_id: None,
             name: "bash".into(),
             input: format!("cargo test --package p{i}"),
             output: "line one\nline two\nline three".repeat(3),
@@ -484,6 +485,7 @@ fn stress_content_renders_without_panicking(cx: &mut TestAppContext) {
             at: 0,
             kind: ItemKind::Tool(ToolCall {
                 call_ref: None,
+                call_id: None,
                 name: "bash".into(),
                 input: long.clone(),
                 output: long,
@@ -521,4 +523,64 @@ fn stress_content_renders_without_panicking(cx: &mut TestAppContext) {
         .update(|_, cx| h.view.read(cx).selection_text(cx))
         .unwrap();
     assert!(all.contains("שלום") && all.contains("fn open()"));
+}
+
+/// Resident memory of this process, in kilobytes.
+fn rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("VmRSS:"))
+                .and_then(|v| v.split_whitespace().next()?.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// Walk the whole of a 10,000-message conversation from top to bottom, again and again, with
+/// the model streaming into it while it is being read: what is built per frame, what is cached
+/// and the memory of the process all stay bounded, so a long session does not grow.
+#[gpui::test]
+fn repeated_traversal_of_ten_thousand_items_with_live_updates_stays_bounded(
+    cx: &mut TestAppContext,
+) {
+    let (h, cx) = setup(cx, 10_000);
+    frame(&h, cx);
+    let list = list_of(&h, 1, cx);
+    let mut max_mounted = 0;
+    let mut max_cached = 0;
+    let mut rss: Vec<u64> = Vec::new();
+    for pass in 0..6 {
+        for (step, ix) in (0..10_000usize).step_by(89).enumerate() {
+            list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+            frame(&h, cx);
+            // Live output arrives while the person reads somewhere else.
+            if step % 20 == 0 {
+                append(&h, "streaming ", cx);
+                frame(&h, cx);
+            }
+            let s = stats(&h, cx);
+            assert!(
+                s.mounted_rows > 0,
+                "pass {pass}, item {ix}: nothing rendered"
+            );
+            max_mounted = max_mounted.max(s.mounted_rows);
+            max_cached = max_cached.max(s.cached_blocks);
+        }
+        rss.push(rss_kb());
+    }
+    eprintln!(
+        "traversal: max mounted rows {max_mounted}, max cached blocks {max_cached}, RSS per pass (KB) {rss:?}"
+    );
+    assert!(max_mounted < 150, "mounted {max_mounted} rows at once");
+    assert!(max_cached <= 2000, "cached {max_cached} blocks");
+    // The first passes fill the caches; after that nothing may keep growing.
+    let growth = rss[5].saturating_sub(rss[1]);
+    assert!(
+        growth < 40 * 1024,
+        "memory grew {growth} KB over four more traversals: {rss:?}"
+    );
 }

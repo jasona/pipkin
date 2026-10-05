@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gpui::{App, AppContext as _, Entity};
+use gpui::{App, AppContext as _, ClipboardItem, Entity};
 use pipkin_core::*;
 use pipkin_ui::{DemoControls, Model};
 
@@ -16,9 +16,10 @@ use crate::adapters::pi::engine::EngineConfig;
 use crate::adapters::pi::{PiBackend, PiConfig};
 use crate::adapters::script;
 use crate::adapters::{DemoBackend, DemoOptions};
+use crate::launch::{self, LaunchConfig};
 use crate::platform;
 use crate::storage::{
-    DEMO_NAMESPACE, DemoConversation, Loaded, OpenRequest, Startup, Storage, StoredDraft,
+    CacheMeta, DEMO_NAMESPACE, DemoConversation, Loaded, OpenRequest, Startup, Storage, StoredDraft,
 };
 
 const CLOCK_REFRESH: Duration = Duration::from_secs(15);
@@ -42,6 +43,12 @@ pub struct Options {
     pub pi_agent_dir: Option<PathBuf>,
     /// Real mode: project folders to add at startup (repeatable); the last one is selected.
     pub projects: Vec<PathBuf>,
+    /// Real mode: plugin packages the launched engine loads (repeatable).
+    pub pi_extensions: Vec<PathBuf>,
+    /// The editor command for "open in editor" (otherwise `$VISUAL`, `$EDITOR`, the desktop's).
+    pub editor: Option<String>,
+    /// The terminal command for "open terminal" (otherwise `$TERMINAL`, the desktop's).
+    pub terminal: Option<String>,
 }
 
 impl Default for Options {
@@ -56,6 +63,9 @@ impl Default for Options {
             pi_repo: None,
             pi_agent_dir: None,
             projects: vec![],
+            pi_extensions: vec![],
+            editor: None,
+            terminal: None,
         }
     }
 }
@@ -98,6 +108,15 @@ impl Options {
                 "--pi-dir" => options.pi_dir = Some(PathBuf::from(value("--pi-dir")?)),
                 "--pi-repo" => options.pi_repo = Some(PathBuf::from(value("--pi-repo")?)),
                 "--project" => options.projects.push(PathBuf::from(value("--project")?)),
+                "--pi-extension" => {
+                    let path = PathBuf::from(value("--pi-extension")?);
+                    options.pi_extensions.push(
+                        std::fs::canonicalize(&path)
+                            .map_err(|e| format!("--pi-extension {}: {e}", path.display()))?,
+                    );
+                }
+                "--editor" => options.editor = Some(value("--editor")?),
+                "--terminal" => options.terminal = Some(value("--terminal")?),
                 "--pi-agent-dir" => {
                     options.pi_agent_dir = Some(PathBuf::from(value("--pi-agent-dir")?))
                 }
@@ -221,6 +240,7 @@ fn managed_engine(options: &Options, pi_repo: &Path) -> Result<EngineConfig, Str
         cwd,
         model: None,
         env: vec![],
+        extensions: options.pi_extensions.clone(),
     })
 }
 
@@ -308,6 +328,131 @@ impl Restore {
             false
         });
         out
+    }
+}
+
+/// Keeps each conversation's saved copy current without writing on every streamed token: a copy
+/// is written once the conversation has been quiet for a moment, and once more on quit.
+struct CacheSaver {
+    storage: Arc<Storage>,
+    dirty: std::cell::RefCell<std::collections::HashSet<ConversationId>>,
+    scheduled: std::cell::Cell<bool>,
+}
+
+/// How long a conversation is quiet before its copy is written.
+const CACHE_QUIET: Duration = Duration::from_millis(1500);
+
+impl CacheSaver {
+    fn new(storage: Arc<Storage>) -> Self {
+        CacheSaver {
+            storage,
+            dirty: Default::default(),
+            scheduled: Default::default(),
+        }
+    }
+
+    fn request(self: &Rc<Self>, conversation: ConversationId, cx: &mut gpui::Context<Model>) {
+        self.dirty.borrow_mut().insert(conversation);
+        if self.scheduled.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        cx.spawn(async move |model, cx| {
+            cx.background_executor().timer(CACHE_QUIET).await;
+            this.scheduled.set(false);
+            this.write_dirty(&model, cx);
+        })
+        .detach();
+    }
+
+    fn write_dirty(&self, model: &gpui::WeakEntity<Model>, cx: &mut impl gpui::AppContext) {
+        let ids: Vec<ConversationId> = self.dirty.borrow_mut().drain().collect();
+        for id in ids {
+            let copy = model
+                .read_with(cx, |m, _| {
+                    let c = m.state.conversation(id)?;
+                    let project_path = m
+                        .state
+                        .projects
+                        .iter()
+                        .find(|p| p.id == c.project)?
+                        .path
+                        .clone();
+                    c.opened.then(|| {
+                        let from = c.items.len().saturating_sub(crate::cache::MAX_ITEMS);
+                        (
+                            c.items[from..].to_vec(),
+                            c.has_older,
+                            m.state.now(),
+                            CacheMeta {
+                                title: c.title.clone(),
+                                project_path,
+                                updated_at: c.updated_at,
+                            },
+                        )
+                    })
+                })
+                .ok()
+                .flatten();
+            if let Some((items, has_older, now, meta)) = copy {
+                self.storage.save_cache(id, meta, &items, has_older, now);
+            }
+        }
+    }
+
+    fn flush_now(&self, model: &gpui::WeakEntity<Model>, cx: &mut App) {
+        self.write_dirty(model, cx);
+    }
+}
+
+/// Searches saved history as the search box changes, dropping a search that a newer one replaced.
+struct SearchRunner {
+    storage: Arc<Storage>,
+    latest: std::cell::Cell<u64>,
+}
+
+/// How long typing pauses before the saved history is searched.
+const SEARCH_QUIET: Duration = Duration::from_millis(150);
+
+impl SearchRunner {
+    fn new(storage: Arc<Storage>) -> Self {
+        SearchRunner {
+            storage,
+            latest: Default::default(),
+        }
+    }
+
+    fn request(self: &Rc<Self>, query: String, cx: &mut gpui::Context<Model>) {
+        let seq = self.latest.get() + 1;
+        self.latest.set(seq);
+        let this = self.clone();
+        cx.spawn(async move |model, cx| {
+            cx.background_executor().timer(SEARCH_QUIET).await;
+            if this.latest.get() != seq {
+                return;
+            }
+            let storage = this.storage.clone();
+            let q = query.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move { storage.search(&q, crate::storage::SEARCH_LIMIT) })
+                .await;
+            let results = match found {
+                Ok(results) => results,
+                Err(e) => {
+                    log::warn!("search failed: {e}");
+                    return;
+                }
+            };
+            if this.latest.get() == seq {
+                model
+                    .update(cx, |m, cx| {
+                        m.mutate(|s| s.apply_search_results(results), cx)
+                    })
+                    .ok();
+            }
+        })
+        .detach();
     }
 }
 
@@ -405,6 +550,22 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
             }
         }
     }
+    // Conversations with a saved copy can be read before the engine answers, and without it.
+    if options.mode == Mode::Real {
+        match storage.cached_conversations() {
+            Ok(list) => {
+                for saved in list {
+                    state.restore_cached_conversation(
+                        saved.id,
+                        &saved.meta.project_path,
+                        saved.meta.title,
+                        saved.meta.updated_at,
+                    );
+                }
+            }
+            Err(e) => log::warn!("cannot read the saved conversations: {e}"),
+        }
+    }
     // Stored demo conversations must not leak into real mode. Drafts and unresolved requests
     // are namespaced per backend, so they are restored in either mode, as their conversations
     // appear. A real backend reports its own connection state through `start`.
@@ -415,9 +576,13 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     let (intent_tx, intent_rx) =
         async_channel::unbounded::<(ConversationId, RequestId, Result<(), String>)>();
 
+    let cache_saver = Rc::new(CacheSaver::new(storage.clone()));
+    let search_runner = Rc::new(SearchRunner::new(storage.clone()));
+    let launch_config = LaunchConfig::from_env(options.editor.clone(), options.terminal.clone());
     {
         let backend = backend.clone();
         let storage = storage.clone();
+        let (cache_saver, search_runner) = (cache_saver.clone(), search_runner.clone());
         model.update(cx, |m, _| {
             m.set_effect_handler(Box::new(move |effect, cx| match effect {
                 Effect::Backend(request) => backend.request(request),
@@ -455,6 +620,84 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                 Effect::JournalState { request, state, .. } => {
                     storage.journal_state(request, state)
                 }
+                Effect::SaveCache { conversation } => cache_saver.request(conversation, cx),
+                Effect::LoadCache { conversation } => {
+                    let storage = storage.clone();
+                    cx.spawn(async move |this, cx| {
+                        let loaded = cx
+                            .background_executor()
+                            .spawn(async move { storage.load_cache(conversation) })
+                            .await;
+                        match loaded {
+                            Ok(Some(copy)) => {
+                                this.update(cx, |m, cx| {
+                                    m.mutate(
+                                        |s| {
+                                            s.apply_cache(
+                                                conversation,
+                                                copy.items,
+                                                copy.has_older,
+                                                copy.synced_at,
+                                            )
+                                        },
+                                        cx,
+                                    )
+                                })
+                                .ok();
+                            }
+                            Ok(None) => {}
+                            Err(e) => log::warn!("cannot read the saved copy: {e}"),
+                        }
+                    })
+                    .detach();
+                }
+                Effect::SearchHistory { query } => search_runner.request(query, cx),
+                Effect::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+                Effect::SaveText {
+                    suggested_name,
+                    text,
+                } => {
+                    let start = std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .filter(|p| p.is_dir())
+                        .unwrap_or_else(|| PathBuf::from("/"));
+                    let chosen = cx.prompt_for_new_path(&start, Some(&suggested_name));
+                    cx.spawn(async move |this, cx| {
+                        let Ok(Ok(Some(path))) = chosen.await else {
+                            return;
+                        };
+                        let written = cx
+                            .background_executor()
+                            .spawn(async move { std::fs::write(&path, text).map(|_| path) })
+                            .await;
+                        if let Err(e) = written {
+                            this.update(cx, |m, cx| {
+                                m.mutate(
+                                    |s| s.set_notice(format!("Could not save the file: {e}")),
+                                    cx,
+                                )
+                            })
+                            .ok();
+                        }
+                    })
+                    .detach();
+                }
+                Effect::Launch(what) => {
+                    let config = launch_config.clone();
+                    cx.spawn(async move |this, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move { launch::run(&what, &config) })
+                            .await;
+                        if let Err(e) = result {
+                            this.update(cx, |m, cx| {
+                                m.mutate(|s| s.set_notice(format!("Could not open it: {e}")), cx)
+                            })
+                            .ok();
+                        }
+                    })
+                    .detach();
+                }
                 Effect::SavePrefs(prefs) => storage.save_prefs(&prefs),
                 Effect::SaveProject { path } => storage.save_project(path),
                 Effect::SaveConversation { conversation } => {
@@ -481,6 +724,23 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                     .detach();
                 }
             }));
+        });
+    }
+
+    // Conversations known from their saved copies are readable at once: restore their drafts
+    // and open the remembered one, which shows its saved copy while the engine connects (or
+    // when it never does).
+    if options.mode == Mode::Real {
+        let restore = &mut restore;
+        model.update(cx, |m, cx| {
+            m.mutate(
+                |state| {
+                    let mut out = restore.apply(state);
+                    out.merge(state.select_initial());
+                    out
+                },
+                cx,
+            )
         });
     }
 
@@ -642,7 +902,9 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
         let weak = model.downgrade();
         let storage = storage.clone();
         let backend = backend.clone();
+        let cache_saver = cache_saver.clone();
         cx.on_app_quit(move |cx| {
+            cache_saver.flush_now(&weak, cx);
             let _ = weak.update(cx, |m, cx| {
                 let dirty: Vec<ConversationId> = m
                     .state

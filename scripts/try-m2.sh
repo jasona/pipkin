@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Try Pipkin's real-engine workflow offline: a managed Pi engine, a scripted provider, a scratch
-# git project. Usage: scripts/try-m2.sh [path-to-pi-checkout]   (default ../pi-fork/pi)
+# git project. Usage: scripts/try-m2.sh [path-to-pi-checkout [pipkin options...]]   (default ../pi-fork/pi)
+# For example: scripts/try-m2.sh ../pi-fork/pi --pi-extension ../pi-fork/pi/packages/coding-agent/examples/plugins/pi-example-questions
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 pi=$(cd "${1:-$here/../pi-fork/pi}" && pwd)
+shift || true
 root=${PIPKIN_TRY_ROOT:-/tmp/pipkin-try}   # keep short: Unix socket paths are limited to ~108 bytes
 port=${PIPKIN_TRY_PORT:-18765}
 mkdir -p "$root/agent" "$root/server" "$root/data" "$root/project"
@@ -22,4 +24,4 @@ trap 'kill $stub 2>/dev/null' EXIT
 export PI_OFFLINE=1
 cd "$here"
 cargo run -p pipkin-app --release -- --pi-repo "$pi" --pi-dir "$root/server" \
-  --pi-agent-dir "$root/agent" --project "$root/project" --data-dir "$root/data"
+  --pi-agent-dir "$root/agent" --project "$root/project" --data-dir "$root/data" "$@"

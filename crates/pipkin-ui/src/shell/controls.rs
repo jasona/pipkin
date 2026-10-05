@@ -255,3 +255,52 @@ pub fn separator(cx: &App) -> Div {
 pub fn into_any(e: impl IntoElement) -> AnyElement {
     e.into_any_element()
 }
+
+/// A search snippet: the text with the part the search matched (between STX and ETX in the
+/// snippet) in bold and the accent colour.
+pub fn marked_text(
+    snippet: &str,
+    base: Hsla,
+    mark: Hsla,
+    family: SharedString,
+) -> gpui::StyledText {
+    let mut text = String::new();
+    let mut runs: Vec<gpui::TextRun> = Vec::new();
+    let mut marked = false;
+    for piece in snippet.split_inclusive(['\u{2}', '\u{3}']) {
+        let (body, flip) = match piece.chars().last() {
+            Some('\u{2}') => (&piece[..piece.len() - 1], Some(true)),
+            Some('\u{3}') => (&piece[..piece.len() - 1], Some(false)),
+            _ => (piece, None),
+        };
+        if !body.is_empty() {
+            let mut font = gpui::font(family.clone());
+            if marked {
+                font.weight = gpui::FontWeight::SEMIBOLD;
+            }
+            runs.push(gpui::TextRun {
+                len: body.len(),
+                font,
+                color: if marked { mark } else { base },
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            });
+            text.push_str(body);
+        }
+        if let Some(on) = flip {
+            marked = on;
+        }
+    }
+    if runs.is_empty() {
+        runs.push(gpui::TextRun {
+            len: 0,
+            font: gpui::font(family),
+            color: base,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    gpui::StyledText::new(SharedString::from(text)).with_runs(runs)
+}

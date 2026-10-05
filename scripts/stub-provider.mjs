@@ -1,5 +1,6 @@
 // A scripted OpenAI-compatible provider for trying Pipkin against a real Pi engine, offline.
 // Every prompt makes the model write notes.txt with the write tool, then say it did. A prompt
+// containing the word "count" runs `seq 1 3000` with the bash tool instead (a long result). A prompt
 // containing the word "slow" is held for 30 seconds first (or until the client gives up), so a
 // run stays in flight long enough to steer, queue and stop it by hand.
 // Usage: node scripts/stub-provider.mjs [port]   (default 18765)
@@ -36,8 +37,12 @@ http.createServer((req, res) => {
       res.write(chunk({}, "stop", usage));
     } else {
       turn += 1;
-      res.write(chunk({ content: "Writing the notes. " }));
-      res.write(chunk({ tool_calls: [{ index: 0, id: `call_${turn}`, type: "function", function: {
+      const count = /\bcount\b/i.test(text);
+      res.write(chunk({ content: count ? "Counting. " : "Writing the notes. " }));
+      res.write(chunk({ tool_calls: [{ index: 0, id: `call_${turn}`, type: "function", function: count ? {
+        name: "bash",
+        arguments: JSON.stringify({ command: "seq 1 3000" }),
+      } : {
         name: "write",
         arguments: JSON.stringify({ path: "notes.txt", content: `stub run ${turn}\nhello from the stub\n` }),
       } }] }));

@@ -42,6 +42,8 @@ pub enum ToolStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
     pub call_ref: Option<(OperationId, u32)>,
+    /// The engine's id for the call, which names its complete result.
+    pub call_id: Option<String>,
     pub name: String,
     pub input: String,
     pub output: String,
@@ -357,4 +359,95 @@ pub struct PendingIntent {
     pub text: String,
     pub attachments: Vec<Attachment>,
     pub model: Option<String>,
+}
+
+/// What kind of answer a question from an extension takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiRequestKind {
+    Select,
+    Confirm,
+    Input,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiRequestItem {
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// A question an extension asked the person, waiting for an answer. The engine owns it; its `id`
+/// is what an answer or a cancel names.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiRequest {
+    pub id: String,
+    pub kind: UiRequestKind,
+    pub title: String,
+    pub message: Option<String>,
+    pub items: Vec<UiRequestItem>,
+    pub placeholder: Option<String>,
+    pub default_value: Option<String>,
+    /// Epoch milliseconds after which the engine cancels the question.
+    pub deadline: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiNoticeLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiNotice {
+    pub id: String,
+    pub level: UiNoticeLevel,
+    pub message: String,
+}
+
+/// An answer to a question.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiAnswer {
+    Choice(String),
+    Confirm(bool),
+    Text(String),
+}
+
+/// A message found by searching saved history.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchHit {
+    pub conversation: ConversationId,
+    pub item: ItemId,
+    /// A short run of text around the match, with the match itself between `\u{2}` and `\u{3}`.
+    pub snippet: String,
+    pub at: i64,
+}
+
+/// The outcome of a search of saved history, with how much it covered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchResults {
+    pub query: String,
+    pub hits: Vec<SearchHit>,
+    /// Conversations whose saved copy was searched.
+    pub conversations_searched: usize,
+    /// Messages in those copies.
+    pub messages_searched: usize,
+    /// The search stopped at its result limit.
+    pub truncated: bool,
+}
+
+/// What to do with the complete output of a tool call once it arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputUse {
+    Copy,
+    Save,
+}
+
+/// Something the application starts outside itself.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Launch {
+    /// Open a file in the person's editor. `root` is the project it must lie inside.
+    Editor { path: String, root: String },
+    /// Open a terminal in a directory.
+    Terminal { cwd: String },
 }

@@ -27,8 +27,36 @@ impl Workspace {
     ) -> impl IntoElement {
         let t = cx.theme().clone();
         let c = &t.colors;
-        let (project_name, rows, selected, search_empty, now, any_in_project, query) = {
+        let (project_name, rows, selected, search_empty, now, any_in_project, query, found) = {
             let s = self.state(cx);
+            // Saved messages that match, with where they are and how much was searched.
+            let found = (s.mode == Mode::Real
+                && s.history_search.query == s.search.trim()
+                && !s.history_search.query.is_empty())
+            .then(|| {
+                let r = &s.history_search;
+                let hits: Vec<(usize, String, String)> = r
+                    .hits
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| {
+                        (
+                            i,
+                            s.conversation(h.conversation)
+                                .map_or_else(|| "Conversation".into(), |c| c.title.clone()),
+                            h.snippet.clone(),
+                        )
+                    })
+                    .collect();
+                let coverage = format!(
+                    "Searched the saved copies of {} conversation{} ({} messages) on this computer. Earlier history that has not been loaded here is not included.{}",
+                    r.conversations_searched,
+                    if r.conversations_searched == 1 { "" } else { "s" },
+                    r.messages_searched,
+                    if r.truncated { " Showing the first results only." } else { "" },
+                );
+                (hits, coverage)
+            });
             let rows: Vec<_> = s
                 .visible_conversations()
                 .iter()
@@ -48,6 +76,7 @@ impl Workspace {
                 s.now(),
                 any,
                 s.search.clone(),
+                found,
             )
         };
         let this = cx.entity();
@@ -128,6 +157,73 @@ impl Workspace {
                 .into_any_element()
         };
 
+        let found_el = found.map(|(hits, coverage)| {
+            let none = hits.is_empty();
+            let family = t.ui_font();
+            div()
+                .id("search-results")
+                .role(Role::List)
+                .aria_label("Messages that match")
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(px(2.0))
+                .px(px(8.0))
+                .pb(px(6.0))
+                .max_h(px(300.0))
+                .overflow_y_scroll()
+                .child(
+                    div()
+                        .px(px(4.0))
+                        .text_size(t.small_size())
+                        .text_color(c.text_faint)
+                        .child(if none {
+                            "No messages match"
+                        } else {
+                            "Messages"
+                        }),
+                )
+                .children(hits.into_iter().map(|(i, title, snippet)| {
+                    let this = this.clone();
+                    menu_row(("hit", i), false, cx)
+                        .role(Role::ListItem)
+                        .aria_label(format!(
+                            "{title}: {}",
+                            snippet.replace(['\u{2}', '\u{3}'], "")
+                        ))
+                        .flex_col()
+                        .items_start()
+                        .gap(px(2.0))
+                        .on_click(move |_, window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.close_panel(window, cx);
+                                this.dispatch(Command::OpenSearchHit(i), cx);
+                            });
+                        })
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_size(t.small_size())
+                                .text_color(c.text_faint)
+                                .child(title),
+                        )
+                        .child(div().w_full().text_size(t.small_size()).child(marked_text(
+                            &snippet,
+                            c.text_muted,
+                            c.accent,
+                            family.clone(),
+                        )))
+                }))
+                .child(
+                    div()
+                        .px(px(4.0))
+                        .pt(px(4.0))
+                        .text_size(t.small_size())
+                        .text_color(c.text_faint)
+                        .child(coverage),
+                )
+        });
         let proj = {
             let this = cx.entity();
             Btn::new("project-switcher")
@@ -251,6 +347,7 @@ impl Workspace {
                             .child(div().flex_1().min_w_0().child(self.nav_search.clone())),
                     ),
             )
+            .children(found_el)
             .child(list)
             .child(
                 div()

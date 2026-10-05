@@ -40,8 +40,8 @@ use pi_client::protocol::RpcTarget;
 use pi_client::unix::{self, ServerRoute};
 use pipkin_core::{
     Attachment, Backend, BackendEvent, BackendRequest, CancelOutcome, Connection, ConversationId,
-    EventKind, LifecycleEvent, LifecycleSink, ModelInfo, OperationId, QueueId, QueueMode,
-    RequestId,
+    EventKind, ItemId, LifecycleEvent, LifecycleSink, ModelInfo, OperationId, QueueId, QueueMode,
+    RequestId, UiAnswer,
 };
 use serde_json::{Value, json};
 
@@ -67,6 +67,10 @@ const ATTACH_RETRY_DELAYS: [Duration; 4] = [
 /// A subscription that keeps failing is not worth patching; resync through a reconnect.
 const MAX_RESUBSCRIBES: u32 = 3;
 /// How long shutdown waits for the worker, and, when it owns the engine, for the engine to stop.
+/// Entries asked for per page of older history.
+const HISTORY_PAGE: u32 = 50;
+/// Pages of history searched, at most, for a tool result that is no longer in the live view.
+const TOOL_OUTPUT_PAGES: usize = 20;
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 const SHUTDOWN_WAIT_OWNED_ENGINE: Duration = Duration::from_secs(10);
 
@@ -372,9 +376,8 @@ impl Worker {
             } => self.emit(
                 conversation,
                 generation,
-                EventKind::OlderPage {
-                    items: vec![],
-                    has_older: false,
+                EventKind::OlderFailed {
+                    message: OFFLINE.into(),
                 },
             ),
             // Nothing was sent: the text goes back to the draft.
@@ -398,7 +401,21 @@ impl Worker {
             BackendRequest::Cancel { .. }
             | BackendRequest::CheckStatus { .. }
             | BackendRequest::CancelQueued { .. }
-            | BackendRequest::RefreshModels { .. } => self.notice(OFFLINE.into()),
+            | BackendRequest::RefreshModels { .. }
+            | BackendRequest::UiRespond { .. }
+            | BackendRequest::UiCancel { .. } => self.notice(OFFLINE.into()),
+            BackendRequest::FetchToolOutput {
+                conversation,
+                generation,
+                call_id,
+            } => self.emit(
+                conversation,
+                generation,
+                EventKind::ToolOutputUnavailable {
+                    call_id,
+                    reason: OFFLINE.into(),
+                },
+            ),
             other => log::warn!("not supported while offline: {other:?}"),
         }
     }
@@ -566,6 +583,7 @@ struct Dirty {
     directory: bool,
     transcript: bool,
     models: bool,
+    ui: bool,
 }
 
 struct Current {
@@ -574,11 +592,15 @@ struct Current {
     target: RpcTarget,
     transcript: Subscription,
     models: Option<Subscription>,
+    /// Questions extensions ask, if the engine has the service.
+    ui: Option<Subscription>,
     /// The session's working directory, for workspace changes.
     cwd: Option<String>,
     /// What the last transcript showed, to notice when tools finish or a run ends.
     tools_done: usize,
     busy: bool,
+    /// The oldest entry the live view held last time, to notice a compaction or reset moving it.
+    oldest_entry: Option<u64>,
 }
 
 struct Live {
@@ -818,15 +840,22 @@ impl Live {
             BackendRequest::LoadOlder {
                 conversation,
                 generation,
-                ..
-            } => worker.emit(
+                before,
+            } => self.load_older(worker, conversation, generation, before),
+            BackendRequest::FetchToolOutput {
                 conversation,
                 generation,
-                EventKind::OlderPage {
-                    items: vec![],
-                    has_older: false,
-                },
-            ),
+                call_id,
+            } => self.fetch_tool_output(worker, conversation, generation, call_id),
+            BackendRequest::UiRespond {
+                conversation,
+                generation,
+                id,
+                answer,
+            } => self.ui_respond(worker, conversation, generation, id, answer),
+            BackendRequest::UiCancel {
+                conversation, id, ..
+            } => self.ui_cancel(worker, conversation, id),
             // The demo's steer; real steers arrive as `Queue`.
             BackendRequest::Steer { .. } => {
                 worker.notice("This engine steers through the queue.".into())
@@ -1215,6 +1244,198 @@ impl Live {
         })
     }
 
+    /// One short call to the open session's `History` service.
+    fn history_page(
+        &self,
+        target: &RpcTarget,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<(Vec<Value>, bool), String> {
+        let args = vec![json!({ "before": before, "limit": limit })];
+        match self.call(target, "pi.history", "page", args) {
+            Ok(Some(page)) => {
+                let entries = page
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let more = page.get("more").and_then(Value::as_bool).unwrap_or(false);
+                Ok((entries, more))
+            }
+            Ok(None) => Err("the engine gave no history".into()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Whether the conversation has entries older than the oldest the view holds. An engine
+    /// without a history service has none to offer.
+    fn has_older(&self, target: &RpcTarget, view: &Value) -> bool {
+        let Some(oldest) = transcript::oldest_entry_id(view) else {
+            return false;
+        };
+        self.history_page(target, Some(oldest), 1)
+            .is_ok_and(|(entries, _)| !entries.is_empty())
+    }
+
+    /// The page of history just older than `before` (the oldest item shown).
+    fn load_older(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        before: Option<ItemId>,
+    ) {
+        let fail = |worker: &Worker, message: String| {
+            worker.emit(conversation, generation, EventKind::OlderFailed { message })
+        };
+        let Some(target) = self.target_for(conversation) else {
+            return fail(worker, "The session is not open on the Pi server.".into());
+        };
+        let Some(entry) = before.and_then(transcript::entry_of_item) else {
+            return worker.emit(
+                conversation,
+                generation,
+                EventKind::OlderPage {
+                    items: vec![],
+                    has_older: false,
+                },
+            );
+        };
+        match self.history_page(&target, Some(entry), HISTORY_PAGE) {
+            Ok((entries, more)) => {
+                let mapped = transcript::map_history_page(&entries);
+                worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::OlderPage {
+                        items: mapped.items,
+                        has_older: more,
+                    },
+                );
+            }
+            Err(message) => fail(
+                worker,
+                format!("Could not load earlier messages: {message}"),
+            ),
+        }
+    }
+
+    /// The complete result of a tool call: from what the session holds now, or, for a call from
+    /// before a compaction, from its history (a bounded number of pages back).
+    fn fetch_tool_output(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        call_id: String,
+    ) {
+        let unavailable = |worker: &Worker, reason: String| {
+            worker.emit(
+                conversation,
+                generation,
+                EventKind::ToolOutputUnavailable {
+                    call_id: call_id.clone(),
+                    reason,
+                },
+            )
+        };
+        let Some(current) = self
+            .current
+            .as_ref()
+            .filter(|c| c.conversation == conversation)
+        else {
+            return unavailable(worker, "The session is not open on the Pi server.".into());
+        };
+        let target = current.target.clone();
+        let view = current
+            .transcript
+            .read(|r| r.state("state").cloned())
+            .flatten();
+        if let Some(text) = view
+            .as_ref()
+            .and_then(|v| transcript::tool_result_in_view(v, &call_id))
+        {
+            return worker.emit(
+                conversation,
+                generation,
+                EventKind::ToolOutputFull { call_id, text },
+            );
+        }
+        let mut before = view.as_ref().and_then(transcript::oldest_entry_id);
+        for _ in 0..TOOL_OUTPUT_PAGES {
+            let Some(oldest) = before else { break };
+            match self.history_page(&target, Some(oldest), 200) {
+                Ok((entries, more)) => {
+                    if let Some(text) = transcript::tool_result_text(&entries, &call_id) {
+                        return worker.emit(
+                            conversation,
+                            generation,
+                            EventKind::ToolOutputFull { call_id, text },
+                        );
+                    }
+                    before = entries.last().and_then(|e| e.get("id")?.as_u64());
+                    if !more {
+                        break;
+                    }
+                }
+                Err(error) => return unavailable(worker, error),
+            }
+        }
+        unavailable(
+            worker,
+            "the engine does not have this result any more".into(),
+        )
+    }
+
+    fn ui_respond(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        id: String,
+        answer: UiAnswer,
+    ) {
+        let refuse = |worker: &Worker, reason: String| {
+            worker.emit(
+                conversation,
+                generation,
+                EventKind::UiRespondRefused {
+                    id: id.clone(),
+                    reason,
+                },
+            )
+        };
+        let Some(target) = self.target_for(conversation) else {
+            return refuse(worker, "The session is not open on the Pi server.".into());
+        };
+        let value = match answer {
+            UiAnswer::Choice(v) | UiAnswer::Text(v) => json!(v),
+            UiAnswer::Confirm(b) => json!(b),
+        };
+        match self.call(&target, "pi.ui-requests", "respond", vec![json!(id), value]) {
+            Ok(Some(reply)) if reply.get("accepted").and_then(Value::as_bool) == Some(true) => {}
+            Ok(Some(reply)) => refuse(
+                worker,
+                reply
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("The engine did not take the answer.")
+                    .to_owned(),
+            ),
+            Ok(None) => refuse(worker, "The engine gave no answer; try again.".into()),
+            Err(error) => refuse(worker, format!("Could not send the answer: {error}")),
+        }
+    }
+
+    fn ui_cancel(&mut self, worker: &mut Worker, conversation: ConversationId, id: String) {
+        let Some(target) = self.target_for(conversation) else {
+            return worker.notice("Open the conversation first, then decline the question.".into());
+        };
+        if let Err(error) = self.call(&target, "pi.ui-requests", "cancel", vec![json!(id)]) {
+            worker.notice(format!("Could not decline the question: {error}"));
+        }
+    }
+
     fn set_model(&mut self, worker: &mut Worker, conversation: ConversationId, model: &str) {
         let Some(target) = self.target_for(conversation) else {
             return worker.notice("Open the conversation first, then choose a model.".into());
@@ -1375,16 +1596,23 @@ impl Live {
             .client
             .subscribe(&target, "pi.models", Mode::Singleton, CALL_TIMEOUT)
             .ok();
+        // Optional: an engine without extension questions simply has none to show.
+        let ui = self
+            .client
+            .subscribe(&target, "pi.ui-requests", Mode::Singleton, CALL_TIMEOUT)
+            .ok();
         let Some(view) = transcript.read(|r| r.state("state").cloned()).flatten() else {
             return fail(worker, "The session has no transcript.".into());
         };
+        let has_older = self.has_older(&target, &view);
+        let oldest_entry = transcript::oldest_entry_id(&view);
         let mapped = transcript::map_view(&view);
         let (tools_done, busy) = (tools_done(&mapped), mapped.busy);
         let queue = mapped.queue.clone();
         let kind = if initial {
             EventKind::Opened {
                 items: mapped.items,
-                has_older: false,
+                has_older,
                 changes: vec![],
             }
         } else {
@@ -1410,15 +1638,31 @@ impl Live {
             ));
         }
         self.resubscribes = 0;
+        if let Some(ui) = &ui
+            && let Some(state) = ui.read(|r| r.state("state").cloned()).flatten()
+        {
+            let (requests, status, notices) = session::parse_ui_state(&state);
+            worker.emit(
+                conversation,
+                generation,
+                EventKind::UiState {
+                    requests,
+                    status,
+                    notices,
+                },
+            );
+        }
         self.current = Some(Current {
             conversation,
             generation,
             target,
             transcript,
             models,
+            ui,
             cwd: session.cwd,
             tools_done,
             busy,
+            oldest_entry,
         });
         self.schedule_changes(worker);
         // Prompts accepted earlier may have finished while this conversation was not attached.
@@ -1445,6 +1689,8 @@ impl Live {
                         .is_some_and(|m| m.id() == subscription)
                     {
                         dirty.models = true;
+                    } else if current.ui.as_ref().is_some_and(|u| u.id() == subscription) {
+                        dirty.ui = true;
                     }
                 }
             }
@@ -1522,6 +1768,22 @@ impl Live {
         if dirty.directory || dirty.models {
             (worker.sink)(LifecycleEvent::Catalog(self.catalog()));
         }
+        if dirty.ui
+            && let Some(current) = &self.current
+            && let Some(ui) = &current.ui
+            && let Some(state) = ui.read(|r| r.state("state").cloned()).flatten()
+        {
+            let (requests, status, notices) = session::parse_ui_state(&state);
+            worker.emit(
+                current.conversation,
+                current.generation,
+                EventKind::UiState {
+                    requests,
+                    status,
+                    notices,
+                },
+            );
+        }
         if dirty.transcript {
             let view = self.current.as_ref().and_then(|c| {
                 c.transcript
@@ -1530,6 +1792,22 @@ impl Live {
                     .map(|v| (c.conversation, c.generation, v))
             });
             if let Some((conversation, generation, view)) = view {
+                // A compaction or reset moves where the live view starts; what lies before it
+                // is then history to offer.
+                let oldest = transcript::oldest_entry_id(&view);
+                let moved = self
+                    .current
+                    .as_ref()
+                    .is_some_and(|c| c.oldest_entry != oldest);
+                if moved
+                    && let Some(target) = self.current.as_mut().map(|c| {
+                        c.oldest_entry = oldest;
+                        c.target.clone()
+                    })
+                {
+                    let has_older = self.has_older(&target, &view);
+                    worker.emit(conversation, generation, EventKind::HasOlder(has_older));
+                }
                 let mapped = transcript::map_view(&view);
                 let (done, busy) = (tools_done(&mapped), mapped.busy);
                 let queue = mapped.queue.clone();

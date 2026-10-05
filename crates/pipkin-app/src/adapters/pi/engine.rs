@@ -44,6 +44,8 @@ pub struct EngineConfig {
     pub log_path: PathBuf,
     /// Extra environment, for example `PI_OFFLINE=1`.
     pub env: Vec<(String, String)>,
+    /// Plugin packages the engine loads (`-e`), as absolute paths.
+    pub extensions: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -127,6 +129,9 @@ impl Engine {
                 "--model".into(),
                 model.clone(),
             ]);
+        }
+        for extension in &config.extensions {
+            args.extend(["-e".into(), extension.display().to_string()]);
         }
         let mut command = Command::new(&launcher);
         command

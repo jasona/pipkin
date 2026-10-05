@@ -441,7 +441,10 @@ impl Worker {
             // Real-mode requests: the demo's core never issues them.
             BackendRequest::Queue { .. }
             | BackendRequest::CancelQueued { .. }
-            | BackendRequest::RefreshModels { .. } => {}
+            | BackendRequest::RefreshModels { .. }
+            | BackendRequest::FetchToolOutput { .. }
+            | BackendRequest::UiRespond { .. }
+            | BackendRequest::UiCancel { .. } => {}
             BackendRequest::Steer {
                 conversation,
                 generation,

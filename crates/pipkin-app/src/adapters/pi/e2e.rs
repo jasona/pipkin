@@ -107,6 +107,10 @@ struct Harness {
     acks: mpsc::Receiver<(ConversationId, RequestId, Result<(), String>)>,
     ack_tx: mpsc::Sender<(ConversationId, RequestId, Result<(), String>)>,
     notices: Vec<String>,
+    /// What the application would have put on the clipboard, saved to a file, or launched.
+    copied: Vec<String>,
+    saved: Vec<(String, String)>,
+    launches: Vec<pipkin_core::Launch>,
 }
 
 fn unique(prefix: &str) -> String {
@@ -116,7 +120,11 @@ fn unique(prefix: &str) -> String {
 
 impl Harness {
     fn start(config: PiConfig, db: &Path) -> Harness {
-        let storage = Arc::new(Storage::open(db, NAMESPACE).expect("storage"));
+        Harness::start_in(config, db, NAMESPACE)
+    }
+
+    fn start_in(config: PiConfig, db: &Path, namespace: &str) -> Harness {
+        let storage = Arc::new(Storage::open(db, namespace).expect("storage"));
         let loaded = storage.load_all().expect("load");
         let mut state = AppState::new(
             Bootstrap {
@@ -134,6 +142,15 @@ impl Harness {
         for path in &loaded.projects {
             state.restore_project(path);
         }
+        // Conversations with a saved copy are known before (and without) the engine's list.
+        for saved in storage.cached_conversations().expect("saved conversations") {
+            state.restore_cached_conversation(
+                saved.id,
+                &saved.meta.project_path,
+                saved.meta.title,
+                saved.meta.updated_at,
+            );
+        }
         let restore = Restore::new(loaded, false);
         let (tx, events) = async_channel::unbounded();
         let backend = PiBackend::new(tx, config);
@@ -144,7 +161,7 @@ impl Harness {
         };
         backend.start(sink);
         let (ack_tx, acks) = mpsc::channel();
-        Harness {
+        let mut harness = Harness {
             state,
             backend,
             storage,
@@ -154,7 +171,15 @@ impl Harness {
             acks,
             ack_tx,
             notices: vec![],
-        }
+            copied: vec![],
+            saved: vec![],
+            launches: vec![],
+        };
+        // As the controller does: conversations known from saved copies are shown at once.
+        let mut out = harness.restore.apply(&mut harness.state);
+        out.merge(harness.state.select_initial());
+        harness.exec(out);
+        harness
     }
 
     fn exec(&mut self, outcome: Outcome) {
@@ -180,6 +205,48 @@ impl Harness {
                 Effect::SavePrefs(prefs) => self.storage.save_prefs(&prefs),
                 Effect::SaveProject { path } => self.storage.save_project(path),
                 Effect::SaveConversation { .. } => {}
+                Effect::SaveCache { conversation } => {
+                    if let Some(c) = self.state.conversation(conversation)
+                        && let Some(project) =
+                            self.state.projects.iter().find(|p| p.id == c.project)
+                    {
+                        let meta = crate::storage::CacheMeta {
+                            title: c.title.clone(),
+                            project_path: project.path.clone(),
+                            updated_at: c.updated_at,
+                        };
+                        self.storage.save_cache(
+                            conversation,
+                            meta,
+                            &c.items,
+                            c.has_older,
+                            self.state.now(),
+                        );
+                    }
+                }
+                Effect::LoadCache { conversation } => {
+                    if let Ok(Some(copy)) = self.storage.load_cache(conversation) {
+                        let out = self.state.apply_cache(
+                            conversation,
+                            copy.items,
+                            copy.has_older,
+                            copy.synced_at,
+                        );
+                        self.exec(out);
+                    }
+                }
+                Effect::SearchHistory { query } => {
+                    if let Ok(results) = self.storage.search(&query, 40) {
+                        let out = self.state.apply_search_results(results);
+                        self.exec(out);
+                    }
+                }
+                Effect::CopyText(text) => self.copied.push(text),
+                Effect::SaveText {
+                    suggested_name,
+                    text,
+                } => self.saved.push((suggested_name, text)),
+                Effect::Launch(what) => self.launches.push(what),
                 Effect::JournalIntent {
                     conversation,
                     request,
@@ -1803,4 +1870,691 @@ fn a_provider_configured_after_start_appears_after_a_refresh_and_can_then_be_use
     });
     h.stop();
     drop(p.provider);
+}
+
+// ------------------------------------------------------------------------------ M4
+
+/// A second client attached to a session, to do what Pipkin does not offer (compacting) or to
+/// look at the engine's services directly.
+struct RawSession {
+    client: pi_client::client::Client,
+    target: pi_client::protocol::RpcTarget,
+    _events: async_channel::Receiver<pi_client::client::ClientEvent>,
+}
+
+impl RawSession {
+    /// Attach the only session an engine holds, as a second client.
+    fn attach(fx: &Fixture) -> RawSession {
+        use pi_client::chord::ServiceCall;
+        use pi_client::client::ClientOptions;
+        let sessions = fx.root.join("agent/experimental/sessions");
+        let session_id = std::fs::read_dir(&sessions)
+            .unwrap_or_else(|e| panic!("{}: {e}", sessions.display()))
+            .flatten()
+            .find(|e| e.path().join("meta.json").exists())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .expect("a session on disk");
+        let (client, events) = pi_client::unix::connect(
+            &fx.server_dir.join(format!("{}.sock", fx.server_id)),
+            ClientOptions::new(&fx.server_id),
+        )
+        .expect("handshake");
+        let server = pi_client::protocol::RpcTarget::Server {
+            server_id: fx.server_id.clone(),
+        };
+        client
+            .request(
+                &server,
+                &ServiceCall::new("pi.session-management", "attach", vec![json!(session_id)]),
+            )
+            .and_then(|p| p.wait_timeout(Duration::from_secs(30)))
+            .expect("attach");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let target = loop {
+            if let Some(a) = client.attachment()
+                && a.session_id == session_id
+            {
+                break a.rpc();
+            }
+            assert!(Instant::now() < deadline, "no attachment route");
+            thread::sleep(Duration::from_millis(10));
+        };
+        RawSession {
+            client,
+            target,
+            _events: events,
+        }
+    }
+
+    fn call(&self, service: &str, member: &str, args: Vec<Value>) -> Option<Value> {
+        use pi_client::chord::ServiceCall;
+        self.client
+            .request(&self.target, &ServiceCall::new(service, member, args))
+            .and_then(|p| p.wait_timeout(Duration::from_secs(30)))
+            .unwrap_or_else(|e| panic!("{service}.{member}: {e}"))
+    }
+}
+
+/// History before a compaction: the live view starts after it, and the earlier messages are
+/// paged in from the engine, each exactly once and in order.
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn history_before_a_compaction_is_paged_in_once_and_in_order() {
+    let fx = Fixture::start(|_, n| Reply::Text(format!("answer {n}")));
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    // Long enough that the engine has something before the recent context to summarize.
+    let filler = "lorem ipsum dolor sit amet ".repeat(4000);
+    for n in 1..=4 {
+        h.send(&format!("question {n}\n{filler}"));
+        h.until("answered", |s| {
+            is_idle(s) && assistant_texts(s).len() >= n as usize
+        });
+    }
+    assert!(
+        !h.state.current().unwrap().has_older,
+        "nothing is hidden before a compaction"
+    );
+
+    // Another client asks the engine to compact; the live view then starts after the summary.
+    let raw = RawSession::attach(&fx);
+    let reply = raw
+        .call(
+            "pi.agent-controller",
+            "compact",
+            vec![json!({ "customInstructions": null })],
+        )
+        .expect("compact answered");
+    assert_eq!(reply["accepted"], true, "{reply}");
+    h.until("the live view is only what follows the compaction", |s| {
+        s.current().is_some_and(|c| {
+            c.has_older
+                && !c.items.iter().any(|i| {
+                    matches!(&i.kind, ItemKind::User { text, .. } if text.starts_with("question 1\n"))
+                })
+        })
+    });
+
+    // Page back to the beginning.
+    let mut pages = 0;
+    while h.state.current().unwrap().has_older {
+        h.dispatch(Command::LoadOlder);
+        h.until("a page arrives", |s| {
+            s.current().is_some_and(|c| !c.loading_older)
+        });
+        pages += 1;
+        assert!(pages < 20, "history never ended");
+    }
+    let c = h.state.current().unwrap();
+    assert!(c.older_error.is_none());
+    let asked: Vec<String> = h
+        .user_messages()
+        .iter()
+        .filter(|t| t.starts_with("question"))
+        .map(|t| t.lines().next().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        asked,
+        ["question 1", "question 2", "question 3", "question 4"],
+        "each once, in the order they were asked"
+    );
+    let ids: Vec<u64> = c.items.iter().map(|i| i.id.0).collect();
+    assert!(
+        ids.windows(2).all(|w| w[0] < w[1]),
+        "ids strictly increase: {ids:?}"
+    );
+    h.backend.shutdown();
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn the_complete_output_of_a_long_tool_result_is_copied_and_saved_not_the_preview() {
+    let fx = Fixture::start(|request, n| match n {
+        0 => Reply::Tool {
+            lead: None,
+            name: "bash".into(),
+            args: json!({ "command": "seq 1 3000" }),
+        },
+        _ => {
+            assert!(is_tool_result_turn(request));
+            Reply::Text("counted".into())
+        }
+    });
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    h.send("count to three thousand");
+    h.until("counted", |s| {
+        is_idle(s) && assistant_texts(s).contains(&"counted".to_owned())
+    });
+    let (item, preview, full_len) = {
+        let c = h.state.current().unwrap();
+        let (item, tool) = c
+            .items
+            .iter()
+            .find_map(|i| match &i.kind {
+                ItemKind::Tool(t) => Some((i.id, t.clone())),
+                _ => None,
+            })
+            .expect("a tool call");
+        assert!(
+            tool.truncated,
+            "the preview is cut: {} of {}",
+            tool.output.len(),
+            tool.full_len
+        );
+        (item, tool.output.clone(), tool.full_len)
+    };
+
+    h.dispatch(Command::CopyToolOutput(item));
+    let deadline = Instant::now() + WAIT;
+    while h.copied.is_empty() {
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "nothing was copied; notices: {:?}",
+            h.notices
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let copied = h.copied[0].clone();
+    assert!(
+        copied.len() > preview.len(),
+        "{} vs preview {}",
+        copied.len(),
+        preview.len()
+    );
+    assert_eq!(copied.len(), full_len, "exactly what the engine holds");
+    // The preview is the start of the output; the complete text goes on to the last line.
+    assert!(copied.contains("3000"), "the whole count, to the end");
+    assert!(
+        copied.starts_with(&preview),
+        "and it begins with the preview"
+    );
+
+    h.dispatch(Command::SaveToolOutput(item));
+    let deadline = Instant::now() + WAIT;
+    while h.saved.is_empty() {
+        h.pump();
+        assert!(Instant::now() < deadline, "nothing was saved");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(h.saved[0].0, "bash-output.txt");
+    assert_eq!(h.saved[0].1, copied);
+    h.backend.shutdown();
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn a_changed_file_opens_in_the_editor_and_a_terminal_in_the_project_from_a_real_run() {
+    let fx = Fixture::start(two_edits);
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    h.send("edit things");
+    h.until("done with its changes", |s| {
+        is_idle(s) && s.current().unwrap().changes.len() == 2
+    });
+    let real = std::fs::canonicalize(&fx.project)
+        .unwrap()
+        .display()
+        .to_string();
+    h.dispatch(Command::OpenInEditor(0));
+    h.dispatch(Command::OpenTerminal);
+    assert_eq!(
+        h.launches,
+        [
+            pipkin_core::Launch::Editor {
+                path: format!("{real}/notes.txt"),
+                root: real.clone()
+            },
+            pipkin_core::Launch::Terminal { cwd: real.clone() },
+        ]
+    );
+    // What the application would run for it is valid for the real files.
+    let config = crate::launch::LaunchConfig {
+        editor: Some("code --wait".into()),
+        terminal: Some("foot".into()),
+    };
+    let plan = crate::launch::plan(&h.launches[0], &config, "").unwrap();
+    assert_eq!(plan.argv, ["code", "--wait", &format!("{real}/notes.txt")]);
+    let plan = crate::launch::plan(&h.launches[1], &config, "").unwrap();
+    assert_eq!(
+        (plan.argv, plan.cwd),
+        (vec!["foot".to_owned()], PathBuf::from(&real))
+    );
+    h.backend.shutdown();
+}
+
+/// Saved copies: after a run, the conversation can be read, searched and its search results
+/// opened, with the engine gone; and the engine's own state replaces the copy when it is back.
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn a_saved_conversation_is_readable_and_searchable_without_the_engine_and_the_engine_takes_over_again()
+ {
+    let fx =
+        Fixture::start(|_, n| Reply::Text(format!("the answer mentions marmalade number {n}")));
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    h.send("tell me about preserves");
+    h.until("answered", |s| {
+        is_idle(s) && assistant_texts(s).iter().any(|t| t.contains("marmalade"))
+    });
+    let conversation = h.state.current().unwrap().id;
+    let live_items = h.state.current().unwrap().items.len();
+    h.stop();
+
+    // No engine at all: a profile directory that holds no server.
+    let nowhere = fx.root.join("nowhere");
+    std::fs::create_dir_all(&nowhere).unwrap();
+    std::fs::set_permissions(
+        &nowhere,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let mut offline = Harness::start(direct_config(&nowhere, &fx.server_id), &db);
+    offline.until("the saved conversation is shown", |s| {
+        s.selected == Some(conversation)
+            && s.current()
+                .is_some_and(|c| c.cached_at.is_some() && !c.items.is_empty())
+    });
+    let c = offline.state.current().unwrap();
+    assert!(!c.opened && c.cached_only);
+    assert_eq!(
+        c.items.len(),
+        live_items,
+        "the same messages that were on screen"
+    );
+    assert!(!offline.state.connection.is_ready());
+    assert!(
+        !offline.state.availability().submit,
+        "nothing can be sent from a saved copy"
+    );
+    assert_eq!(offline.user_messages(), ["tell me about preserves"]);
+    offline.until("the reason is shown", |s| {
+        s.current().is_some_and(|c| c.stale_reason.is_some())
+    });
+
+    // Drafts stay editable offline.
+    offline.dispatch(Command::EditDraft("a thought while away".into()));
+    assert_eq!(
+        offline.state.current().unwrap().draft.text,
+        "a thought while away"
+    );
+
+    // Saved messages can be searched, and a result opens its message.
+    offline.dispatch(Command::SetSearch("marmalade".into()));
+    offline.until("the search finds the answer", |s| {
+        s.history_search.query == "marmalade" && !s.history_search.hits.is_empty()
+    });
+    let r = &offline.state.history_search;
+    assert_eq!(
+        (r.hits[0].conversation, r.conversations_searched),
+        (conversation, 1)
+    );
+    assert!(r.hits[0].snippet.contains('\u{2}') && r.hits[0].snippet.contains("marmalade"));
+    offline.dispatch(Command::OpenSearchHit(0));
+    assert_eq!(offline.state.scroll_target.map(|t| t.0), Some(conversation));
+    assert!(offline.state.search.is_empty());
+    // Quitting flushes the draft, as the application does.
+    offline.dispatch(Command::FlushDraft(conversation));
+    offline.stop();
+
+    // The engine is back: its own state replaces the saved copy, and sending works again.
+    let mut online = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    online.until("the live conversation replaces the copy", |s| {
+        s.selected == Some(conversation)
+            && s.current()
+                .is_some_and(|c| c.opened && c.cached_at.is_none() && !c.cached_only)
+    });
+    assert_eq!(online.state.current().unwrap().items.len(), live_items);
+    assert_eq!(
+        online.state.current().unwrap().draft.text,
+        "a thought while away"
+    );
+    assert!(online.state.availability().submit);
+    online.backend.shutdown();
+}
+
+/// The engine's extension-question service is real: a client sees its (empty) state and a
+/// stale answer is refused with the engine's own reason.
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn the_engines_extension_question_service_is_there_and_refuses_an_answer_to_nothing() {
+    let fx = Fixture::start(nothing);
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    let raw = RawSession::attach(&fx);
+    let ui = raw
+        .client
+        .subscribe(
+            &raw.target,
+            "pi.ui-requests",
+            pi_client::chord::Mode::Singleton,
+            Duration::from_secs(30),
+        )
+        .expect("the engine serves pi.ui-requests");
+    let state = ui
+        .read(|r| r.state("state").cloned())
+        .flatten()
+        .expect("state");
+    assert_eq!(state["requests"], json!([]));
+    assert_eq!(state["status"], json!({}));
+    let reply = raw
+        .call("pi.ui-requests", "respond", vec![json!("q99"), json!("x")])
+        .expect("a reply");
+    assert_eq!(reply["accepted"], false);
+    assert!(
+        reply["reason"].as_str().unwrap().contains("no longer open"),
+        "{reply}"
+    );
+
+    // Through Pipkin: the same refusal reaches the person's conversation.
+    let conv = h.state.current().unwrap();
+    assert!(conv.ui_requests.is_empty());
+    h.backend.request(pipkin_core::BackendRequest::UiRespond {
+        conversation: conv.id,
+        generation: conv.generation,
+        id: "q99".into(),
+        answer: pipkin_core::UiAnswer::Choice("x".into()),
+    });
+    let deadline = Instant::now() + WAIT;
+    while h.state.current().unwrap().ui_error.is_none() {
+        h.pump();
+        assert!(Instant::now() < deadline, "no refusal arrived");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        h.state
+            .current()
+            .unwrap()
+            .ui_error
+            .as_deref()
+            .unwrap()
+            .contains("no longer open")
+    );
+    h.backend.shutdown();
+}
+
+fn questions_plugin() -> PathBuf {
+    super::testsupport::pi_repo()
+        .join("packages/coding-agent/examples/plugins/pi-example-questions")
+}
+
+fn first_question(s: &AppState) -> Option<pipkin_core::UiRequest> {
+    s.current().and_then(|c| c.ui_requests.first().cloned())
+}
+
+fn answer(h: &mut Harness, id: &str, answer: pipkin_core::UiAnswer) {
+    h.dispatch(Command::AnswerUiRequest {
+        id: id.into(),
+        answer,
+    });
+}
+
+/// An extension in the engine asks three questions; Pipkin shows each, refuses a wrong answer
+/// with the engine's own reason, and the extension continues with the right ones.
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn an_extension_in_the_engine_asks_three_questions_and_the_answers_reach_it() {
+    use pipkin_core::{UiAnswer, UiRequestKind};
+    let plugin = questions_plugin();
+    let fx = Fixture::start_with(nothing, |c| c.extensions = vec![plugin]);
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+
+    h.until("the first question arrives", |s| {
+        first_question(s).is_some()
+    });
+    let q = first_question(&h.state).unwrap();
+    assert_eq!(
+        (q.kind, q.title.as_str()),
+        (UiRequestKind::Select, "Pick a flavor")
+    );
+    assert_eq!(
+        q.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+        ["Mint", "Vanilla", "Pepper"]
+    );
+    assert_eq!(q.items[0].description.as_deref(), Some("cool and sharp"));
+    assert!(q.deadline.is_some(), "the engine says when it gives up");
+
+    // A choice that is not on offer is refused by the engine, and the question stays.
+    answer(&mut h, &q.id, UiAnswer::Choice("lemon".into()));
+    h.until("the refusal arrives", |s| {
+        s.current().unwrap().ui_error.is_some()
+    });
+    assert!(
+        h.state
+            .current()
+            .unwrap()
+            .ui_error
+            .as_deref()
+            .unwrap()
+            .contains("not one of the choices")
+    );
+    assert_eq!(first_question(&h.state).unwrap().id, q.id);
+    assert!(h.state.current().unwrap().ui_answering.is_empty());
+
+    answer(&mut h, &q.id, UiAnswer::Choice("mint".into()));
+    h.until("the second question replaces it", |s| {
+        first_question(s).is_some_and(|q| q.title == "Keep going?")
+    });
+    let q2 = first_question(&h.state).unwrap();
+    assert_eq!(q2.kind, UiRequestKind::Confirm);
+    answer(&mut h, &q2.id, UiAnswer::Confirm(true));
+    h.until("the third question", |s| {
+        first_question(s).is_some_and(|q| q.kind == UiRequestKind::Input)
+    });
+    let q3 = first_question(&h.state).unwrap();
+    assert_eq!(q3.default_value.as_deref(), Some("pipsqueak"));
+    assert_eq!(q3.placeholder.as_deref(), Some("a name"));
+    answer(&mut h, &q3.id, UiAnswer::Text("Ada".into()));
+
+    h.until("the extension has heard every answer", |s| {
+        let c = s.current().unwrap();
+        c.ui_requests.is_empty()
+            && c.ui_notices.iter().any(|n| n.message == "Called Ada.")
+            && c.ui_status
+                .iter()
+                .any(|(k, v)| k == "example-questions" && v == "flavor mint")
+    });
+    let messages: Vec<String> = h
+        .state
+        .current()
+        .unwrap()
+        .ui_notices
+        .iter()
+        .map(|n| n.message.clone())
+        .collect();
+    assert_eq!(
+        messages,
+        ["You picked mint.", "Keep going: true.", "Called Ada."],
+        "in the order the extension reported them"
+    );
+    h.dispatch(Command::DismissUiNotices);
+    assert!(h.state.current().unwrap().ui_notices.is_empty());
+    h.backend.shutdown();
+}
+
+/// A question the person declines ends for the extension too; one left open when the link drops
+/// is not shown as answerable while the engine is unreachable, and is there again after reconnecting.
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn declining_ends_the_question_and_a_lost_connection_does_not_leave_it_answerable() {
+    use pipkin_core::UiAnswer;
+    let plugin = questions_plugin();
+    let gate = Gate::new();
+    let fx = Fixture::start_with(held_first(&gate, Reply::Text("x".into()), vec![]), |c| {
+        c.extensions = vec![plugin]
+    });
+    init_project(&fx.project);
+    let proxy = FaultProxy::start(
+        fx.server_dir.join(format!("{}.sock", fx.server_id)),
+        fx.root.join("proxy"),
+        &fx.server_id,
+    );
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&proxy.dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    h.until("a question", |s| first_question(s).is_some());
+    let q = first_question(&h.state).unwrap();
+
+    proxy.sever_all();
+    h.until("the loss is noticed", |s| !s.connection.is_ready());
+    assert!(
+        h.state.current().unwrap().ui_requests.is_empty(),
+        "nothing is offered to answer while the engine cannot be reached"
+    );
+    assert!(
+        h.state
+            .dispatch(Command::AnswerUiRequest {
+                id: q.id.clone(),
+                answer: UiAnswer::Choice("mint".into())
+            })
+            .effects
+            .is_empty()
+    );
+    h.until("reconnected and the question is back", |s| {
+        s.connection.is_ready() && first_question(s).is_some_and(|b| b.id == q.id)
+    });
+
+    // Declining: the extension is told there was no answer and goes on to its next question.
+    h.dispatch(Command::CancelUiRequest(q.id.clone()));
+    h.until("the next question", |s| {
+        first_question(s).is_some_and(|n| n.title == "Keep going?")
+    });
+    assert!(
+        h.state
+            .current()
+            .unwrap()
+            .ui_notices
+            .iter()
+            .any(|n| n.message == "No flavor was picked.")
+    );
+    gate.open();
+    h.backend.shutdown();
+}
+
+/// Not a test: builds a profile that the real application can be pointed at for looking at it,
+/// with what a few hours of use would leave: saved conversations, a long tool result, answered
+/// extension questions. Run it with `PIPKIN_SEED_ROOT=/tmp/pk-seed` (a short path) and
+/// `PIPKIN_PI_REPO`; it prints how to start the application against the result.
+#[test]
+#[ignore = "builds a profile for looking at the application; needs PIPKIN_SEED_ROOT and PIPKIN_PI_REPO"]
+fn seed_a_profile_to_look_at() {
+    use pipkin_core::{UiAnswer, UiRequestKind};
+    // Only when asked: running the whole suite must not build a profile.
+    let Ok(root) = std::env::var("PIPKIN_SEED_ROOT") else {
+        eprintln!("PIPKIN_SEED_ROOT is not set; nothing to build");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let _ = std::fs::remove_dir_all(&root);
+    let (server, agent, data, project) = (
+        root.join("server"),
+        root.join("agent"),
+        root.join("data"),
+        root.join("project"),
+    );
+    for d in [&server, &agent, &data, &project] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::set_permissions(&server, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    init_project(&project);
+    let provider = super::testsupport::StubProvider::start(|request, _| {
+        let last = request["messages"]
+            .as_array()
+            .and_then(|m| m.last())
+            .cloned()
+            .unwrap_or(Value::Null);
+        if last["role"] == "tool" {
+            return Reply::Text(
+                "Counted all the way to 3000; the full output is in the tool call above.".into(),
+            );
+        }
+        let text = last["content"].to_string();
+        if text.contains("count") {
+            Reply::Tool {
+                lead: Some("Counting. ".into()),
+                name: "bash".into(),
+                args: json!({ "command": "seq 1 3000" }),
+            }
+        } else {
+            Reply::Text("Here is a marmalade recipe: simmer the fruit with sugar until it sets, then jar it while hot.".into())
+        }
+    });
+    std::fs::write(
+        agent.join("models.json"),
+        json!({ "providers": { "stub": {
+            "baseUrl": provider.base_url(), "api": "openai-completions", "apiKey": "stub",
+            "models": [{ "id": "scripted", "name": "Scripted stub", "input": ["text", "image"] }],
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let server_id = std::fs::read_to_string("/proc/sys/kernel/random/uuid")
+        .unwrap()
+        .trim()
+        .to_owned();
+    std::fs::write(server.join("default-server-id"), &server_id).unwrap();
+    let config = super::engine::EngineConfig {
+        pi_repo: super::testsupport::pi_repo(),
+        server_dir: server.clone(),
+        server_id: server_id.clone(),
+        agent_dir: Some(agent.clone()),
+        cwd: root.clone(),
+        model: Some(("stub".into(), "scripted".into())),
+        log_path: root.join("engine.log"),
+        env: vec![("PI_OFFLINE".into(), "1".into())],
+        extensions: vec![questions_plugin()],
+    };
+    let mut host = EngineHost::new(config);
+    host.ensure_running().expect("the engine starts");
+    let namespace = format!(
+        "pi:{:x}",
+        pipkin_core::stable_id(&server.display().to_string())
+    );
+    let db = data.join("pipkin.sqlite3");
+    let mut h = Harness::start_in(direct_config(&server, &server_id), &db, &namespace);
+    h.open_new_conversation(&project);
+    // The extension's questions, answered.
+    h.until("a question", |s| first_question(s).is_some());
+    for _ in 0..3 {
+        let q = first_question(&h.state).unwrap();
+        let a = match q.kind {
+            UiRequestKind::Select => UiAnswer::Choice("mint".into()),
+            UiRequestKind::Confirm => UiAnswer::Confirm(true),
+            UiRequestKind::Input => UiAnswer::Text("Ada".into()),
+        };
+        answer(&mut h, &q.id, a);
+        h.until("the question is taken", |s| {
+            first_question(s).is_none_or(|n| n.id != q.id)
+        });
+    }
+    h.send("tell me about marmalade");
+    h.until("answered", |s| {
+        is_idle(s) && assistant_texts(s).iter().any(|t| t.contains("marmalade"))
+    });
+    h.send("count the numbers up to three thousand");
+    h.until("counted", |s| {
+        is_idle(s) && assistant_texts(s).iter().any(|t| t.starts_with("Counted"))
+    });
+    // Let the saved copy be written, then leave as the application does.
+    thread::sleep(Duration::from_millis(500));
+    h.stop();
+    host.stop();
+    drop(provider);
+    println!("SEED_ROOT={}", root.display());
+    println!("SEED_SERVER_ID={server_id}");
+    println!("SEED_NAMESPACE={namespace}");
 }

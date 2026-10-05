@@ -68,7 +68,13 @@ impl Harness {
                 } => self.state.draft_saved(conversation, rev, Ok(())),
                 Effect::SavePrefs(_)
                 | Effect::SaveConversation { .. }
-                | Effect::SaveProject { .. } => {}
+                | Effect::SaveProject { .. }
+                | Effect::SaveCache { .. }
+                | Effect::LoadCache { .. }
+                | Effect::SearchHistory { .. }
+                | Effect::CopyText(_)
+                | Effect::SaveText { .. }
+                | Effect::Launch(_) => {}
             }
         }
     }

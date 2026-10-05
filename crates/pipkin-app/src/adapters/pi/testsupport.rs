@@ -342,6 +342,7 @@ pub fn prepare(script: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static) 
         model: Some(("stub".into(), "scripted".into())),
         log_path: root.join("engine.log"),
         env: vec![("PI_OFFLINE".into(), "1".into())],
+        extensions: vec![],
     };
     Prepared {
         root_dir,
@@ -368,7 +369,16 @@ pub struct Fixture {
 impl Fixture {
     /// Start the provider and the engine and wait until the engine is ready.
     pub fn start(script: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static) -> Fixture {
-        let p = prepare(script);
+        Fixture::start_with(script, |_| {})
+    }
+
+    /// Like `start`, after `tweak` has adjusted how the engine is launched.
+    pub fn start_with(
+        script: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static,
+        tweak: impl FnOnce(&mut EngineConfig),
+    ) -> Fixture {
+        let mut p = prepare(script);
+        tweak(&mut p.config);
         let mut host = EngineHost::new(p.config);
         host.ensure_running().expect("the engine starts");
         Fixture {

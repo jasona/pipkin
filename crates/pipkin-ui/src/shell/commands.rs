@@ -2,7 +2,7 @@
 //! `AppState::availability()` so every surface agrees.
 
 use gpui::Action;
-use pipkin_core::{AppState, Command, TextSize, Theme as ThemeChoice};
+use pipkin_core::{AppState, Command, ItemKind, TextSize, Theme as ThemeChoice, ToolStatus};
 
 use super::actions::*;
 use crate::model::DemoControls;
@@ -217,6 +217,103 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             ));
         }
     }
+    // Search results can be opened without a pointer, and the way back is one command.
+    for (i, hit) in state.history_search.hits.iter().take(8).enumerate() {
+        let title = state
+            .conversation(hit.conversation)
+            .map_or("Conversation", |c| c.title.as_str());
+        let snippet: String = hit
+            .snippet
+            .replace(['\u{2}', '\u{3}'], "")
+            .chars()
+            .take(60)
+            .collect();
+        v.push(cmd(
+            &format!("Open search result: {title} \u{2014} {snippet}"),
+            "Search",
+            None,
+            true,
+            Run::Dispatch(Command::OpenSearchHit(i)),
+        ));
+    }
+    if state.search_return.is_some() {
+        v.push(cmd(
+            "Go back to where the search started",
+            "Search",
+            None,
+            true,
+            Run::Dispatch(Command::ReturnFromSearch),
+        ));
+    }
+    // Questions from extensions, and what they post.
+    if let Some(conversation) = state.current() {
+        if let Some(q) = conversation.ui_requests.first() {
+            v.push(cmd(
+                &format!("Answer the extension's question: {}", q.title),
+                "Extensions",
+                None,
+                true,
+                Run::Action(Box::new(AnswerQuestion)),
+            ));
+            v.push(cmd(
+                &format!("Decline the extension's question: {}", q.title),
+                "Extensions",
+                None,
+                true,
+                Run::Dispatch(Command::CancelUiRequest(q.id.clone())),
+            ));
+        }
+        if !conversation.ui_notices.is_empty() {
+            v.push(cmd(
+                "Dismiss notices from extensions",
+                "Extensions",
+                None,
+                true,
+                Run::Dispatch(Command::DismissUiNotices),
+            ));
+        }
+        // The complete output of the latest finished tool call.
+        if let Some(item) = conversation
+            .items
+            .iter()
+            .rev()
+            .find(|i| matches!(&i.kind, ItemKind::Tool(t) if t.status != ToolStatus::Running))
+        {
+            v.push(cmd(
+                "Copy the full output of the latest tool call",
+                "Transcript",
+                None,
+                true,
+                Run::Dispatch(Command::CopyToolOutput(item.id)),
+            ));
+            v.push(cmd(
+                "Save the full output of the latest tool call\u{2026}",
+                "Transcript",
+                None,
+                true,
+                Run::Dispatch(Command::SaveToolOutput(item.id)),
+            ));
+        }
+        if let Some(change) = conversation
+            .selected_change
+            .and_then(|i| conversation.changes.get(i).map(|c| (i, c)))
+        {
+            v.push(cmd(
+                &format!("Open in editor: {}", change.1.path),
+                "Workspace",
+                None,
+                a.open_in_editor,
+                Run::Dispatch(Command::OpenInEditor(change.0)),
+            ));
+        }
+    }
+    v.push(cmd(
+        "Open a terminal in the project folder",
+        "Workspace",
+        None,
+        a.open_terminal,
+        Run::Dispatch(Command::OpenTerminal),
+    ));
     // So can the attachments on the draft.
     if let Some(conversation) = state.current() {
         for (i, attachment) in conversation.draft.attachments.iter().enumerate() {

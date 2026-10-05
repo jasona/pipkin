@@ -522,6 +522,7 @@ mod tests {
             at: 0,
             kind: ItemKind::Tool(ToolCall {
                 call_ref: None,
+                call_id: None,
                 name: "bash".into(),
                 input: input.into(),
                 output: output.into(),

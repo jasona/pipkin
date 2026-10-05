@@ -29,6 +29,14 @@ impl Workspace {
             Overlay::Palette => self.palette_items(cx).len(),
             Overlay::Model => self.state(cx).models.len(),
             Overlay::Project => self.state(cx).projects.len(),
+            Overlay::Question => match self.waiting_question(cx, true) {
+                Some(q) => match q.kind {
+                    UiRequestKind::Select => q.items.len(),
+                    UiRequestKind::Confirm => 2,
+                    UiRequestKind::Input => 0,
+                },
+                None => 0,
+            },
             _ => 0,
         }
     }
@@ -55,6 +63,24 @@ impl Workspace {
             Overlay::Project => {
                 if let Some(p) = self.state(cx).projects.get(sel).map(|p| p.id) {
                     self.dispatch(Command::SelectProject(p), cx);
+                    self.close_overlay(window, cx);
+                }
+            }
+            Overlay::Question => {
+                let Some(q) = self.waiting_question(cx, true) else {
+                    return self.close_overlay(window, cx);
+                };
+                let answer = match q.kind {
+                    UiRequestKind::Select => {
+                        q.items.get(sel).map(|i| UiAnswer::Choice(i.value.clone()))
+                    }
+                    UiRequestKind::Confirm => Some(UiAnswer::Confirm(sel == 0)),
+                    UiRequestKind::Input => {
+                        Some(UiAnswer::Text(self.overlay_input.read(cx).text()))
+                    }
+                };
+                if let Some(answer) = answer {
+                    self.dispatch(Command::AnswerUiRequest { id: q.id, answer }, cx);
                     self.close_overlay(window, cx);
                 }
             }
@@ -89,6 +115,7 @@ impl Workspace {
             Overlay::Project => self.render_menu_overlay(cx).into_any_element(),
             Overlay::Rename(_) => self.render_rename(cx).into_any_element(),
             Overlay::Prefs => self.render_prefs(cx).into_any_element(),
+            Overlay::Question => self.render_question(cx).into_any_element(),
             Overlay::None => div().into_any_element(),
         };
         let h = window.viewport_size().height;
@@ -190,6 +217,174 @@ impl Workspace {
                                 .py(px(16.0))
                                 .text_color(c.text_muted)
                                 .child("No matching commands"),
+                        )
+                    }),
+            )
+    }
+
+    /// A question an extension asked: its choices, a yes/no, or a line of text.
+    fn render_question(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let c = &t.colors;
+        let this = cx.entity();
+        let question = self.waiting_question(cx, true);
+        let Some(q) = question else {
+            return elevated(cx)
+                .id("question")
+                .child("This question is no longer open.");
+        };
+        let (answering, error, now_ms) = {
+            let s = self.state(cx);
+            let conv = s.current();
+            (
+                conv.is_some_and(|c| c.ui_answering.contains(&q.id)),
+                conv.and_then(|c| c.ui_error.clone()),
+                s.now() * 1000,
+            )
+        };
+        let sel = self.overlay_sel;
+        let rows: Vec<(String, Option<String>)> = match q.kind {
+            UiRequestKind::Select => q
+                .items
+                .iter()
+                .map(|i| (i.label.clone(), i.description.clone()))
+                .collect(),
+            UiRequestKind::Confirm => vec![("Yes".into(), None), ("No".into(), None)],
+            UiRequestKind::Input => vec![],
+        };
+        let time_left = q.deadline.map(|d| {
+            let secs = ((d - now_ms) / 1000).max(0);
+            if secs >= 90 {
+                format!("Cancels itself in about {} min", (secs + 59) / 60)
+            } else {
+                format!("Cancels itself in {secs} s")
+            }
+        });
+        let decline = {
+            let this = this.clone();
+            let id = q.id.clone();
+            Btn::new("question-decline")
+                .label("Decline")
+                .kind(BtnKind::Subtle)
+                .compact()
+                .on_click(move |window, cx| {
+                    this.update(cx, |t, cx| {
+                        t.dispatch(Command::CancelUiRequest(id.clone()), cx);
+                        t.close_overlay(window, cx);
+                    })
+                })
+        };
+        elevated(cx)
+            .id("question")
+            .key_context("Overlay")
+            .track_focus(&self.menu_focus)
+            .role(Role::Dialog)
+            .aria_label(format!("Question from an extension: {}", q.title))
+            .w(px(520.0 * t.scale.max(1.0)))
+            .max_w_full()
+            .p(px(14.0))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .occlude()
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(q.title.clone()),
+            )
+            .children(q.message.clone().map(|m| {
+                div()
+                    .text_size(t.small_size())
+                    .text_color(c.text_muted)
+                    .child(m)
+            }))
+            .when(q.kind == UiRequestKind::Input, |d| {
+                d.child(
+                    div()
+                        .px(px(10.0))
+                        .h(px(34.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(6.0))
+                        .bg(c.bg_input)
+                        .border_1()
+                        .border_color(c.border_strong)
+                        .child(div().flex_1().child(self.overlay_input.clone())),
+                )
+            })
+            .when(!rows.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("question-list")
+                        .role(Role::ListBox)
+                        .flex()
+                        .flex_col()
+                        .max_h(px(280.0))
+                        .overflow_y_scroll()
+                        .children(rows.into_iter().enumerate().map(|(i, (label, note))| {
+                            let this = this.clone();
+                            menu_row(("choice", i), i == sel, cx)
+                                .role(Role::ListBoxOption)
+                                .aria_label(label.clone())
+                                .aria_selected(i == sel)
+                                .on_click(move |_, window, cx| {
+                                    this.update(cx, |t, cx| {
+                                        t.overlay_sel = i;
+                                        t.confirm_selection(window, cx);
+                                    })
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().truncate().child(label))
+                                        .children(note.map(|n| {
+                                            div()
+                                                .truncate()
+                                                .text_size(t.small_size())
+                                                .text_color(c.text_faint)
+                                                .child(n)
+                                        })),
+                                )
+                        })),
+                )
+            })
+            .children(error.map(|e| {
+                div()
+                    .text_size(t.small_size())
+                    .text_color(c.danger)
+                    .child(format!("Not accepted: {e}"))
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(t.small_size())
+                            .text_color(c.text_faint)
+                            .child(if answering {
+                                "Sending your answer…".to_owned()
+                            } else {
+                                time_left.unwrap_or_default()
+                            }),
+                    )
+                    .child(decline)
+                    .when(q.kind == UiRequestKind::Input, |d| {
+                        let this = this.clone();
+                        d.child(
+                            Btn::new("question-send")
+                                .label("Answer")
+                                .kind(BtnKind::Primary)
+                                .compact()
+                                .disabled(answering)
+                                .on_click(move |window, cx| {
+                                    this.update(cx, |t, cx| t.confirm_selection(window, cx))
+                                }),
                         )
                     }),
             )

@@ -2,7 +2,9 @@ use gpui::App;
 use gpui_platform::application;
 
 mod adapters;
+mod cache;
 mod controller;
+mod launch;
 mod platform;
 mod storage;
 

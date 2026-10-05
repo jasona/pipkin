@@ -75,6 +75,35 @@ impl Workspace {
         };
         let this = cx.entity();
         let temp = self.temp_panel == Some(Panel::Inspector);
+        let avail = self.state(cx).availability();
+        let launch_buttons = (!demo).then(|| {
+            let (editor_this, terminal_this) = (this.clone(), this.clone());
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(
+                    Btn::new("open-in-editor")
+                        .icon("file-text")
+                        .aria("Open the selected file in your editor")
+                        .disabled(!avail.open_in_editor)
+                        .on_click(move |_, cx| {
+                            if let Some(i) = selected {
+                                editor_this
+                                    .update(cx, |t, cx| t.dispatch(Command::OpenInEditor(i), cx));
+                            }
+                        }),
+                )
+                .child(
+                    Btn::new("open-terminal")
+                        .icon("terminal")
+                        .aria("Open a terminal in the project folder")
+                        .disabled(!avail.open_terminal)
+                        .on_click(move |_, cx| {
+                            terminal_this.update(cx, |t, cx| t.dispatch(Command::OpenTerminal, cx))
+                        }),
+                )
+        });
 
         let header = div()
             .flex()
@@ -104,6 +133,7 @@ impl Workspace {
                         "Workspace changes"
                     }),
             )
+            .children(launch_buttons)
             .when(temp, |d| {
                 let this = this.clone();
                 d.child(

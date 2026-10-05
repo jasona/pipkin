@@ -26,6 +26,31 @@ pub enum Command {
     /// Save the current draft again after a failed save.
     RetrySave,
 
+    /// Copy the complete output of a tool call, fetching it from the engine when the preview
+    /// holds only part of it.
+    CopyToolOutput(ItemId),
+    /// Save the complete output of a tool call to a file the person chooses.
+    SaveToolOutput(ItemId),
+    /// Answer a question an extension asked.
+    AnswerUiRequest {
+        id: String,
+        answer: UiAnswer,
+    },
+    /// Decline to answer a question an extension asked.
+    CancelUiRequest(String),
+    /// Dismiss the notices extensions have posted.
+    DismissUiNotices,
+    /// Show where a search hit is: open its conversation and scroll to the message.
+    OpenSearchHit(usize),
+    /// Go back to the conversation that was open before a search hit was opened.
+    ReturnFromSearch,
+    /// The message the view was asked to scroll to has been shown.
+    ClearScrollTarget,
+    /// Open a changed file (by its index in the changes list) in the editor.
+    OpenInEditor(usize),
+    /// Open a terminal in the project's folder.
+    OpenTerminal,
+
     Submit,
     Steer,
     QueueFollowUp,
@@ -58,6 +83,8 @@ pub struct Availability {
     pub cancel: bool,
     pub refresh_models: bool,
     pub retry_save: bool,
+    pub open_in_editor: bool,
+    pub open_terminal: bool,
     pub check_status: bool,
     pub retry: bool,
     pub load_older: bool,
@@ -110,6 +137,25 @@ pub enum BackendRequest {
     RefreshModels {
         conversation: ConversationId,
         generation: u64,
+    },
+    /// Fetch the complete result of a tool call from the engine.
+    FetchToolOutput {
+        conversation: ConversationId,
+        generation: u64,
+        call_id: String,
+    },
+    /// Answer a question an extension asked.
+    UiRespond {
+        conversation: ConversationId,
+        generation: u64,
+        id: String,
+        answer: UiAnswer,
+    },
+    /// Withdraw a question an extension asked.
+    UiCancel {
+        conversation: ConversationId,
+        generation: u64,
+        id: String,
     },
     Cancel {
         conversation: ConversationId,
@@ -222,6 +268,34 @@ pub enum EventKind {
         entry: QueueId,
         outcome: CancelOutcome,
     },
+    /// Whether the conversation has history before what is shown, after the shown part changed
+    /// (a compaction or reset moved where the live view starts).
+    HasOlder(bool),
+    /// Loading older history failed; asking again retries.
+    OlderFailed {
+        message: String,
+    },
+    /// The complete output of a tool call.
+    ToolOutputFull {
+        call_id: String,
+        text: String,
+    },
+    /// The complete output could not be had.
+    ToolOutputUnavailable {
+        call_id: String,
+        reason: String,
+    },
+    /// The questions extensions are waiting on, their status lines and notices.
+    UiState {
+        requests: Vec<UiRequest>,
+        status: Vec<(String, String)>,
+        notices: Vec<UiNotice>,
+    },
+    /// The engine did not take an answer; the question stays open.
+    UiRespondRefused {
+        id: String,
+        reason: String,
+    },
     /// The engine's own view of the run and its queue. Not tied to any operation: it is how a
     /// run started elsewhere, or before this window opened, becomes visible and how it ends.
     EngineState {
@@ -248,6 +322,25 @@ pub enum Effect {
     SaveProject {
         path: String,
     },
+    /// Keep a copy of the conversation's transcript for offline reading and search.
+    SaveCache {
+        conversation: ConversationId,
+    },
+    /// Show the saved copy of a conversation while the engine's own state is fetched.
+    LoadCache {
+        conversation: ConversationId,
+    },
+    /// Search saved history. The controller answers with `AppState::apply_search_results`.
+    SearchHistory {
+        query: String,
+    },
+    CopyText(String),
+    /// Save text to a file the person chooses.
+    SaveText {
+        suggested_name: String,
+        text: String,
+    },
+    Launch(Launch),
     /// Durably record a submission's immutable payload. The controller must report the commit
     /// with `AppState::intent_persisted`; until then nothing is sent and the draft is kept.
     JournalIntent {

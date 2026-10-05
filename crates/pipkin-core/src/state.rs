@@ -21,6 +21,25 @@ pub struct ConversationState {
     pub queue: Vec<QueuedPrompt>,
     /// Steers and follow-ups sent to the engine and not yet confirmed (real mode).
     pub pending_queue: Vec<PendingQueued>,
+    /// Known only from its saved copy: the engine has not (yet) listed it. It goes away when the
+    /// engine's list arrives without it.
+    pub cached_only: bool,
+    /// What is shown is a saved copy from this time (Unix seconds), not the engine's own state.
+    pub cached_at: Option<i64>,
+    /// Why the engine's own state could not be had while a saved copy is shown.
+    pub stale_reason: Option<String>,
+    /// Why the last attempt to load older history failed.
+    pub older_error: Option<String>,
+    /// Questions extensions are waiting on, in the order asked.
+    pub ui_requests: Vec<UiRequest>,
+    /// Answers sent and not yet taken by the engine.
+    pub ui_answering: Vec<String>,
+    pub ui_status: Vec<(String, String)>,
+    pub ui_notices: Vec<UiNotice>,
+    /// Why the engine refused the last answer.
+    pub ui_error: Option<String>,
+    /// A complete tool output has been asked for and is on its way.
+    pub pending_output: Option<(String, OutputUse)>,
     pub draft: Draft,
     pub changes: Vec<FileChange>,
     pub selected_change: Option<usize>,
@@ -53,6 +72,16 @@ impl ConversationState {
             run: RunState::Idle,
             queue: Vec::new(),
             pending_queue: Vec::new(),
+            cached_only: false,
+            cached_at: None,
+            stale_reason: None,
+            older_error: None,
+            ui_requests: Vec::new(),
+            ui_answering: Vec::new(),
+            ui_status: Vec::new(),
+            ui_notices: Vec::new(),
+            ui_error: None,
+            pending_output: None,
             draft: Draft::default(),
             changes: Vec::new(),
             selected_change: None,
@@ -91,6 +120,13 @@ pub struct AppState {
     pub notice: Option<String>,
     /// Saved state could not be read or written as usual; shown until dismissed.
     pub storage_issue: Option<String>,
+    /// The result of searching saved history for the text in the search box.
+    pub history_search: SearchResults,
+    /// The conversation to go back to after opening a search hit.
+    pub search_return: Option<ConversationId>,
+    /// A message the view is to scroll to once its conversation shows it.
+    pub scroll_target: Option<(ConversationId, ItemId)>,
+    target_pages: u32,
     /// Project folders the user opened, kept across catalogs.
     bookmarks: Vec<Project>,
     /// A conversation creation waiting for the backend to report it.
@@ -141,6 +177,10 @@ impl AppState {
             can_create: false,
             notice: None,
             storage_issue: None,
+            history_search: SearchResults::default(),
+            search_return: None,
+            scroll_target: None,
+            target_pages: 0,
             bookmarks: Vec::new(),
             pending_create: None,
             request_prefix: "req".into(),
@@ -203,6 +243,23 @@ impl AppState {
         self.projects = merge_projects(boot.projects, &self.bookmarks);
         self.models = boot.models;
         self.now = self.now.max(boot.now);
+        // The engine's list is the truth: a conversation known only from a saved copy stays
+        // only if the engine lists it.
+        let listed: std::collections::HashSet<ConversationId> =
+            boot.conversations.iter().map(|c| c.0).collect();
+        self.conversations
+            .retain(|c| !c.cached_only || listed.contains(&c.id));
+        for c in &mut self.conversations {
+            if listed.contains(&c.id) {
+                c.cached_only = false;
+            }
+        }
+        if self
+            .selected
+            .is_some_and(|id| self.conversation(id).is_none())
+        {
+            self.selected = None;
+        }
         let mut created: Vec<(ConversationId, i64)> = Vec::new();
         for (id, project, title, at) in boot.conversations {
             if self.conv_mut(id).is_none() {
@@ -281,6 +338,14 @@ impl AppState {
         if self.connection != connection {
             let was_ready = self.connection.is_ready();
             self.connection = connection;
+            // Questions from extensions cannot be answered without the engine; its own state is
+            // read again when it is reachable.
+            if !self.connection.is_ready() {
+                for c in &mut self.conversations {
+                    c.ui_requests.clear();
+                    c.ui_answering.clear();
+                }
+            }
             out.notes.push(Note::Other);
             // Asking the engine what became of a submission is read-only, so it needs no
             // confirmation once the engine is reachable again.
@@ -344,7 +409,8 @@ impl AppState {
         let intent_free = self.mode == Mode::Demo || c.pending_intent.is_none();
         Availability {
             new_conversation,
-            submit: can_send && idle && ready,
+            // A conversation showing only a saved copy cannot be written to.
+            submit: can_send && idle && ready && (self.mode == Mode::Demo || c.opened),
             steer: can_send && intent_free && matches!(c.run, RunState::Running { .. }) && ready,
             queue: can_send
                 && intent_free
@@ -355,6 +421,10 @@ impl AppState {
                 && ready,
             refresh_models: self.mode == Mode::Real && c.opened,
             retry_save: matches!(c.draft.save, SaveState::Failed(_)),
+            open_in_editor: self.mode == Mode::Real
+                && self.current_project().is_some()
+                && c.selected_change.is_some_and(|i| i < c.changes.len()),
+            open_terminal: self.mode == Mode::Real && self.current_project().is_some(),
             cancel: matches!(
                 c.run,
                 RunState::Running { .. } | RunState::Submitting { .. }
@@ -449,9 +519,14 @@ impl AppState {
                 // conversation attaches it again; the demo keeps what it already loaded.
                 if !c.opened || (real && prev != Some(id)) {
                     c.generation += 1;
+                    let generation = c.generation;
+                    // Until the engine answers, a saved copy is better than an empty screen.
+                    if real && !c.opened && c.items.is_empty() {
+                        out.effects.push(Effect::LoadCache { conversation: id });
+                    }
                     out.effects.push(Effect::Backend(BackendRequest::Open {
                         conversation: id,
-                        generation: c.generation,
+                        generation,
                     }));
                 }
                 out.notes.push(Note::SelectionChanged);
@@ -523,6 +598,15 @@ impl AppState {
             Command::SetSearch(q) => {
                 self.search = q;
                 out.notes.push(Note::ConversationsChanged);
+                // Titles are filtered at once; saved messages are searched by the controller.
+                let query = self.search.trim().to_owned();
+                if self.mode == Mode::Real && query.chars().count() >= 2 {
+                    out.effects.push(Effect::SearchHistory { query });
+                } else if !self.history_search.query.is_empty()
+                    || !self.history_search.hits.is_empty()
+                {
+                    self.history_search = SearchResults::default();
+                }
             }
 
             Command::EditDraft(text) => {
@@ -577,6 +661,99 @@ impl AppState {
                         out.effects.push(Effect::SavePrefs(self.prefs.clone()));
                         out.notes.push(Note::Other);
                     }
+                }
+            }
+
+            Command::CopyToolOutput(item) => out.merge(self.tool_output(item, OutputUse::Copy)),
+            Command::SaveToolOutput(item) => out.merge(self.tool_output(item, OutputUse::Save)),
+            Command::AnswerUiRequest { id, answer } => {
+                if let Some(conv) = self.selected {
+                    let c = self.conv_mut(conv).unwrap();
+                    if c.ui_requests.iter().any(|r| r.id == id) && !c.ui_answering.contains(&id) {
+                        c.ui_answering.push(id.clone());
+                        c.ui_error = None;
+                        let generation = c.generation;
+                        out.effects.push(Effect::Backend(BackendRequest::UiRespond {
+                            conversation: conv,
+                            generation,
+                            id,
+                            answer,
+                        }));
+                        out.notes.push(Note::Other);
+                    }
+                }
+            }
+            Command::CancelUiRequest(id) => {
+                if let Some(conv) = self.selected {
+                    let c = self.conv_mut(conv).unwrap();
+                    if c.ui_requests.iter().any(|r| r.id == id) {
+                        let generation = c.generation;
+                        out.effects.push(Effect::Backend(BackendRequest::UiCancel {
+                            conversation: conv,
+                            generation,
+                            id,
+                        }));
+                    }
+                }
+            }
+            Command::DismissUiNotices => {
+                if let Some(conv) = self.selected {
+                    let c = self.conv_mut(conv).unwrap();
+                    if !c.ui_notices.is_empty() || c.ui_error.is_some() {
+                        c.ui_notices.clear();
+                        c.ui_error = None;
+                        out.notes.push(Note::Other);
+                    }
+                }
+            }
+            Command::OpenSearchHit(i) => {
+                if let Some(hit) = self.history_search.hits.get(i).cloned()
+                    && self.conversation(hit.conversation).is_some()
+                {
+                    if self.selected != Some(hit.conversation) {
+                        self.search_return = self.selected;
+                    }
+                    self.scroll_target = Some((hit.conversation, hit.item));
+                    self.target_pages = 0;
+                    // Showing the hit needs its conversation open, so a search never leaves the
+                    // person looking at the wrong place.
+                    self.search.clear();
+                    self.history_search = SearchResults::default();
+                    out.merge(self.dispatch(Command::SelectConversation(hit.conversation)));
+                    out.merge(self.continue_to_target(hit.conversation));
+                    out.notes.push(Note::ConversationsChanged);
+                }
+            }
+            Command::ReturnFromSearch => {
+                if let Some(back) = self.search_return.take() {
+                    self.scroll_target = None;
+                    out.merge(self.dispatch(Command::SelectConversation(back)));
+                }
+            }
+            Command::ClearScrollTarget => {
+                if self.scroll_target.take().is_some() {
+                    out.notes.push(Note::Other);
+                }
+            }
+            Command::OpenInEditor(i) => {
+                if self.availability().open_in_editor
+                    && let Some(project) = self.current_project()
+                    && let Some(change) = self.current().and_then(|c| c.changes.get(i))
+                {
+                    let path = format!("{}/{}", project.path.trim_end_matches('/'), change.path);
+                    out.effects.push(Effect::Launch(Launch::Editor {
+                        path,
+                        root: project.path.clone(),
+                    }));
+                }
+            }
+            Command::OpenTerminal => {
+                if self.availability().open_terminal
+                    && let Some(project) = self.current_project()
+                {
+                    out.effects.push(Effect::Launch(Launch::Terminal {
+                        cwd: project.path.clone(),
+                    }));
                 }
             }
 
@@ -712,6 +889,7 @@ impl AppState {
                     let id = self.selected.unwrap();
                     let c = self.conv_mut(id).unwrap();
                     c.loading_older = true;
+                    c.older_error = None;
                     let before = c.items.first().map(|i| i.id);
                     let generation = c.generation;
                     out.effects.push(Effect::Backend(BackendRequest::LoadOlder {
@@ -748,6 +926,150 @@ impl AppState {
         f(&mut self.prefs);
         out.effects.push(Effect::SavePrefs(self.prefs.clone()));
         out.notes.push(Note::Other);
+    }
+
+    /// Copy or save a tool call's complete output: at once when the preview holds all of it,
+    /// otherwise by fetching it from the engine.
+    fn tool_output(&mut self, item: ItemId, purpose: OutputUse) -> Outcome {
+        let mut out = Outcome::default();
+        let Some(conv) = self.selected else {
+            return out;
+        };
+        let c = self.conv_mut(conv).unwrap();
+        let Some(tool) = c.items.iter().find_map(|i| match &i.kind {
+            ItemKind::Tool(t) if i.id == item => Some(t.clone()),
+            _ => None,
+        }) else {
+            return out;
+        };
+        let name = format!("{}-output.txt", tool.name);
+        let finish = |text: String, out: &mut Outcome| {
+            out.effects.push(match purpose {
+                OutputUse::Copy => Effect::CopyText(text),
+                OutputUse::Save => Effect::SaveText {
+                    suggested_name: name.clone(),
+                    text,
+                },
+            });
+        };
+        match tool.call_id {
+            // The preview is everything there is, or the engine cannot be asked about it.
+            Some(_) if !tool.truncated => finish(tool.output, &mut out),
+            None => finish(tool.output, &mut out),
+            Some(call_id) => {
+                c.pending_output = Some((call_id.clone(), purpose));
+                let generation = c.generation;
+                out.effects
+                    .push(Effect::Backend(BackendRequest::FetchToolOutput {
+                        conversation: conv,
+                        generation,
+                        call_id,
+                    }));
+            }
+        }
+        out
+    }
+
+    /// While a search hit's message is not among the loaded items, keep loading older history,
+    /// up to a bound, and give up with a notice when it is not there.
+    fn continue_to_target(&mut self, id: ConversationId) -> Outcome {
+        let mut out = Outcome::default();
+        let Some((target_conv, item)) = self.scroll_target else {
+            return out;
+        };
+        if target_conv != id {
+            return out;
+        }
+        let Some(c) = self.conversation(id) else {
+            return out;
+        };
+        if !c.opened || c.items.iter().any(|i| i.id == item) {
+            return out;
+        }
+        if c.has_older && !c.loading_older && self.target_pages < 60 {
+            self.target_pages += 1;
+            out.merge(self.dispatch(Command::LoadOlder));
+        } else if !c.has_older || self.target_pages >= 60 {
+            self.scroll_target = None;
+            out.merge(
+                self.set_notice("That message is no longer in this conversation's history.".into()),
+            );
+        }
+        out
+    }
+
+    /// A conversation known only from its saved copy, so reading is possible before (or
+    /// without) the engine's own list.
+    pub fn restore_cached_conversation(
+        &mut self,
+        id: ConversationId,
+        project_path: &str,
+        title: String,
+        updated_at: i64,
+    ) {
+        if self.conversation(id).is_some() || !project_path.starts_with('/') {
+            return;
+        }
+        self.restore_project(project_path);
+        let mut c =
+            ConversationState::new(id, project_id_for_path(project_path), title, updated_at);
+        c.cached_only = true;
+        self.next_conversation = self.next_conversation.max(id.0 + 1);
+        self.conversations.push(c);
+    }
+
+    /// Show a saved copy of a conversation until the engine's own state arrives. Ignored once
+    /// the conversation has anything of its own to show.
+    pub fn apply_cache(
+        &mut self,
+        id: ConversationId,
+        items: Vec<TranscriptItem>,
+        has_older: bool,
+        synced_at: i64,
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        let Some(c) = self.conv_mut(id) else {
+            return out;
+        };
+        // The engine's refusal to open can arrive before the saved copy is read; the copy is
+        // still better than the notice, and keeps the reason it is shown.
+        let refusal = match c.items.as_slice() {
+            [
+                TranscriptItem {
+                    id: ItemId(i),
+                    kind:
+                        ItemKind::Notice {
+                            text,
+                            level: NoticeLevel::Error,
+                        },
+                    ..
+                },
+            ] if *i == LOCAL_ITEM_BASE - 1 => Some(text.clone()),
+            _ => None,
+        };
+        if c.opened || (!c.items.is_empty() && refusal.is_none()) || items.is_empty() {
+            return out;
+        }
+        if refusal.is_some() {
+            c.stale_reason = refusal;
+        }
+        c.items = items;
+        c.has_older = has_older;
+        c.cached_at = Some(synced_at);
+        out.notes.push(Note::ItemsReset(id));
+        out
+    }
+
+    /// The controller's answer to `Effect::SearchHistory`. A result for text no longer in the
+    /// search box is dropped.
+    pub fn apply_search_results(&mut self, results: SearchResults) -> Outcome {
+        let mut out = Outcome::default();
+        if results.query != self.search.trim() {
+            return out;
+        }
+        self.history_search = results;
+        out.notes.push(Note::ConversationsChanged);
+        out
     }
 
     fn conv(&self, id: ConversationId) -> &ConversationState {
@@ -1008,6 +1330,21 @@ impl AppState {
         let mut out = Outcome::default();
         let id = ev.conversation;
         let real = self.mode == Mode::Real;
+        // What is worth keeping a saved copy of: a settled view of the conversation.
+        let cache = real
+            && matches!(
+                ev.kind,
+                EventKind::Opened { .. }
+                    | EventKind::OlderPage { .. }
+                    | EventKind::Synced { .. }
+                    | EventKind::Completed
+                    | EventKind::Failed { .. }
+                    | EventKind::Cancelled
+            );
+        let reached_target = matches!(
+            ev.kind,
+            EventKind::Opened { .. } | EventKind::OlderPage { .. }
+        );
         let Some(c) = self.conv_mut(id) else {
             return out;
         };
@@ -1027,6 +1364,9 @@ impl AppState {
                 | EventKind::QueueRefused { .. }
                 | EventKind::QueueAckLost { .. }
                 | EventKind::QueueCancelled { .. }
+                | EventKind::ToolOutputFull { .. }
+                | EventKind::ToolOutputUnavailable { .. }
+                | EventKind::UiRespondRefused { .. }
         );
         if ev.generation != c.generation && !by_identity {
             return out;
@@ -1044,6 +1384,12 @@ impl AppState {
                 | EventKind::QueueAckLost { .. }
                 | EventKind::QueueCancelled { .. }
                 | EventKind::EngineState { .. }
+                | EventKind::OlderFailed { .. }
+                | EventKind::HasOlder(_)
+                | EventKind::ToolOutputFull { .. }
+                | EventKind::ToolOutputUnavailable { .. }
+                | EventKind::UiState { .. }
+                | EventKind::UiRespondRefused { .. }
         );
         if scoped && ev.op != c.run.op() {
             return out;
@@ -1058,6 +1404,8 @@ impl AppState {
                 c.streaming_item = None;
                 c.has_older = has_older;
                 c.opened = true;
+                c.cached_at = None;
+                c.stale_reason = None;
                 c.selected_change = (!changes.is_empty()).then_some(0);
                 c.changes = changes;
                 out.notes.push(Note::ItemsReset(id));
@@ -1072,6 +1420,11 @@ impl AppState {
                             request: c.current_request.clone(),
                         }));
                 }
+            }
+            EventKind::OpenFailed { message } if c.cached_at.is_some() => {
+                // The saved copy stays, labelled with why the engine's own state is missing.
+                c.stale_reason = Some(message);
+                out.notes.push(Note::Other);
             }
             EventKind::OpenFailed { message } => {
                 if !c.opened {
@@ -1096,6 +1449,7 @@ impl AppState {
             EventKind::OlderPage { items, has_older } => {
                 let n = items.len();
                 c.loading_older = false;
+                c.older_error = None;
                 c.has_older = has_older;
                 let mut v = items;
                 v.append(&mut c.items);
@@ -1103,7 +1457,79 @@ impl AppState {
                 if let Some(s) = c.streaming_item.as_mut() {
                     *s += n;
                 }
-                out.notes.push(Note::ItemsPrepended(id, n));
+                // A tool call and its result can fall on either side of the page boundary.
+                if merge_boundary_tools(&mut c.items, n) {
+                    c.streaming_item = None;
+                    out.notes.push(Note::ItemsReset(id));
+                } else {
+                    out.notes.push(Note::ItemsPrepended(id, n));
+                }
+            }
+            EventKind::HasOlder(has) => {
+                if c.opened && c.has_older != has {
+                    c.has_older = has;
+                    out.notes.push(Note::Other);
+                }
+            }
+            EventKind::OlderFailed { message } => {
+                c.loading_older = false;
+                c.older_error = Some(message);
+                out.notes.push(Note::Other);
+            }
+            EventKind::ToolOutputFull { call_id, text } => {
+                if let Some((wanted, purpose)) = c.pending_output.clone()
+                    && wanted == call_id
+                {
+                    c.pending_output = None;
+                    let name = c
+                        .items
+                        .iter()
+                        .find_map(|i| match &i.kind {
+                            ItemKind::Tool(t) if t.call_id.as_deref() == Some(call_id.as_str()) => {
+                                Some(format!("{}-output.txt", t.name))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "tool-output.txt".into());
+                    out.effects.push(match purpose {
+                        OutputUse::Copy => Effect::CopyText(text),
+                        OutputUse::Save => Effect::SaveText {
+                            suggested_name: name,
+                            text,
+                        },
+                    });
+                }
+            }
+            EventKind::ToolOutputUnavailable { call_id, reason } => {
+                if c.pending_output
+                    .as_ref()
+                    .is_some_and(|(w, _)| *w == call_id)
+                {
+                    c.pending_output = None;
+                    out.merge(
+                        self.set_notice(format!("Could not get the complete output: {reason}")),
+                    );
+                }
+            }
+            EventKind::UiState {
+                requests,
+                status,
+                notices,
+            } => {
+                c.ui_answering
+                    .retain(|a| requests.iter().any(|r| &r.id == a));
+                c.ui_requests = requests;
+                c.ui_status = status;
+                c.ui_notices = notices;
+                out.notes.push(Note::Other);
+            }
+            EventKind::UiRespondRefused {
+                id: request,
+                reason,
+            } => {
+                c.ui_answering.retain(|a| *a != request);
+                c.ui_error = Some(reason);
+                out.notes.push(Note::Other);
             }
             EventKind::Accepted => {
                 if let RunState::Submitting { op } = c.run {
@@ -1192,6 +1618,7 @@ impl AppState {
                     id,
                     ItemKind::Tool(ToolCall {
                         call_ref: Some((op, call)),
+                        call_id: None,
                         name,
                         input,
                         output: String::new(),
@@ -1378,6 +1805,12 @@ impl AppState {
                 }
             }
         }
+        if cache && self.conversation(id).is_some_and(|c| c.opened) {
+            out.effects.push(Effect::SaveCache { conversation: id });
+        }
+        if reached_target {
+            out.merge(self.continue_to_target(id));
+        }
         out
     }
 
@@ -1484,6 +1917,45 @@ impl AppState {
             self.next_conversation = self.next_conversation.max(id.0 + 1);
         }
     }
+}
+
+/// A page of older history can end on a tool call whose result is the first thing already
+/// shown (or the other way round). Join the two so one call is one item. Returns whether
+/// anything was joined.
+fn merge_boundary_tools(items: &mut Vec<TranscriptItem>, new: usize) -> bool {
+    let mut merged = false;
+    let mut i = 0;
+    while i < new.min(items.len()) {
+        let call = match &items[i].kind {
+            ItemKind::Tool(t) if t.status == ToolStatus::Running && t.output.is_empty() => {
+                t.call_id.clone()
+            }
+            _ => None,
+        };
+        if let Some(call_id) = call {
+            let found = (new..items.len().min(new + 8)).find(|j| {
+                matches!(&items[*j].kind, ItemKind::Tool(t)
+                    if t.call_id.as_deref() == Some(call_id.as_str()) && t.status != ToolStatus::Running)
+            });
+            if let Some(j) = found {
+                let ItemKind::Tool(done) = items.remove(j).kind else {
+                    unreachable!()
+                };
+                if let ItemKind::Tool(t) = &mut items[i].kind {
+                    t.output = done.output;
+                    t.truncated = done.truncated;
+                    t.full_len = done.full_len;
+                    t.status = done.status;
+                    if t.input.is_empty() {
+                        t.input = done.input;
+                    }
+                }
+                merged = true;
+            }
+        }
+        i += 1;
+    }
+    merged
 }
 
 /// Record a journal transition for the conversation's current request. Terminal states end

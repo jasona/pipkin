@@ -8,6 +8,17 @@ use super::controls::*;
 use super::workspace::{Overlay, Panel, Workspace};
 use crate::theme::ActiveTheme;
 
+/// How long ago `then` was, for a saved copy's label.
+fn ago(now: i64, then: i64) -> String {
+    let secs = (now - then).max(0);
+    match secs {
+        0..=59 => "moments ago".into(),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86_399 => format!("{} h ago", secs / 3600),
+        _ => format!("{} days ago", secs / 86_400),
+    }
+}
+
 fn fmt_size(n: u64) -> String {
     match n {
         0..=1023 => format!("{n} B"),
@@ -26,8 +37,23 @@ impl Workspace {
         let c = &t.colors;
         let nav_docked = self.nav_docked(window);
         let insp_docked = self.inspector_docked(window, cx);
-        let (title, project, has_conv, demo, banner, storage_issue) = {
+        let (title, project, has_conv, demo, banner, storage_issue, extras) = {
             let s = self.state(cx);
+            let conv = s.current();
+            // What the engine's extensions and the saved history have to say, as small facts the
+            // strips below are built from.
+            let extras = (
+                conv.and_then(|c| {
+                    c.cached_at
+                        .filter(|_| !c.opened)
+                        .map(|at| (at, c.stale_reason.clone()))
+                }),
+                conv.map(|c| c.ui_notices.clone()).unwrap_or_default(),
+                conv.map(|c| c.ui_status.clone()).unwrap_or_default(),
+                s.search_return
+                    .and_then(|id| s.conversation(id).map(|c| c.title.clone())),
+                s.now(),
+            );
             (
                 s.current().map(|c| c.title.clone()),
                 s.current_project()
@@ -37,9 +63,13 @@ impl Workspace {
                 s.mode == Mode::Demo,
                 s.connection.banner(),
                 s.storage_issue.clone(),
+                extras,
             )
         };
         let this = cx.entity();
+        let (saved_copy, ui_notices, ui_status, search_return, now) = extras;
+        let waiting = self.waiting_question(cx, true);
+        let question_open = self.overlay == Overlay::Question;
         let storage_strip = storage_issue.map(|message| {
             let this = this.clone();
             div().px(px(12.0)).pt(px(8.0)).flex_none().child(strip(
@@ -59,6 +89,133 @@ impl Workspace {
                         .into_any_element(),
                 ],
             ))
+        });
+        let mut strips: Vec<gpui::AnyElement> = Vec::new();
+        if let Some((at, reason)) = saved_copy {
+            strips.push(strip(
+                cx,
+                "clock",
+                c.warning,
+                "Saved copy",
+                &format!(
+                    "Showing the conversation as it was saved {}. {}",
+                    ago(now, at),
+                    reason.unwrap_or_else(|| "Loading the live conversation…".into())
+                ),
+                vec![],
+            ));
+        }
+        if let Some(back_to) = search_return {
+            let this = this.clone();
+            strips.push(strip(
+                cx,
+                "search",
+                c.accent,
+                "Opened from a search",
+                &format!("You were in \u{201c}{back_to}\u{201d}."),
+                vec![
+                    Btn::new("return-from-search")
+                        .label("Go back")
+                        .kind(BtnKind::Subtle)
+                        .compact()
+                        .on_click(move |_, cx| {
+                            this.update(cx, |t, cx| t.dispatch(Command::ReturnFromSearch, cx))
+                        })
+                        .into_any_element(),
+                ],
+            ));
+        }
+        if let Some(q) = waiting.as_ref().filter(|_| !question_open) {
+            let (answer_this, decline_this) = (this.clone(), this.clone());
+            let id = q.id.clone();
+            strips.push(strip(
+                cx,
+                "circle-help",
+                c.accent,
+                "An extension is waiting for an answer",
+                &q.title,
+                vec![
+                    Btn::new("question-answer")
+                        .label("Answer")
+                        .kind(BtnKind::Primary)
+                        .compact()
+                        .on_click(move |window, cx| {
+                            answer_this.update(cx, |t, cx| {
+                                t.question_dismissed.clear();
+                                t.open_overlay(Overlay::Question, window, cx);
+                            })
+                        })
+                        .into_any_element(),
+                    Btn::new("question-decline-strip")
+                        .label("Decline")
+                        .kind(BtnKind::Subtle)
+                        .compact()
+                        .on_click(move |_, cx| {
+                            decline_this.update(cx, |t, cx| {
+                                t.dispatch(Command::CancelUiRequest(id.clone()), cx)
+                            })
+                        })
+                        .into_any_element(),
+                ],
+            ));
+        }
+        if !ui_notices.is_empty() {
+            let this = this.clone();
+            // The latest three, oldest first, as they were posted.
+            let lines: Vec<String> = ui_notices
+                .iter()
+                .skip(ui_notices.len().saturating_sub(3))
+                .map(|n| n.message.clone())
+                .collect();
+            let level = ui_notices
+                .iter()
+                .map(|n| match n.level {
+                    UiNoticeLevel::Error => 2,
+                    UiNoticeLevel::Warning => 1,
+                    UiNoticeLevel::Info => 0,
+                })
+                .max()
+                .unwrap_or(0);
+            let (icon_name, color) = match level {
+                2 => ("circle-alert", c.danger),
+                1 => ("triangle-alert", c.warning),
+                _ => ("message-square", c.accent),
+            };
+            strips.push(strip(
+                cx,
+                icon_name,
+                color,
+                "From an extension",
+                &lines.join("\n"),
+                vec![
+                    Btn::new("dismiss-ui-notices")
+                        .icon("x")
+                        .aria("Dismiss")
+                        .compact()
+                        .on_click(move |_, cx| {
+                            this.update(cx, |t, cx| t.dispatch(Command::DismissUiNotices, cx))
+                        })
+                        .into_any_element(),
+                ],
+            ));
+        }
+        let status_line = (!ui_status.is_empty()).then(|| {
+            div()
+                .id("extension-status")
+                .role(Role::Status)
+                .px(px(14.0))
+                .py(px(2.0))
+                .flex_none()
+                .truncate()
+                .text_size(t.small_size())
+                .text_color(c.text_faint)
+                .child(
+                    ui_status
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {v}"))
+                        .collect::<Vec<_>>()
+                        .join("  \u{b7}  "),
+                )
         });
         let nav_toggle = (!nav_docked).then(|| {
             let this = this.clone();
@@ -170,6 +327,12 @@ impl Workspace {
             .bg(c.bg_surface)
             .child(header)
             .children(storage_strip)
+            .children(
+                strips
+                    .into_iter()
+                    .map(|s| div().px(px(12.0)).pt(px(8.0)).flex_none().child(s)),
+            )
+            .children(status_line)
             .child(body)
             .children(has_conv.then(|| self.render_bottom(window, cx)))
     }
@@ -250,28 +413,31 @@ impl Workspace {
         // ---- status strip
         let status: Option<gpui::AnyElement> = match &run {
             // The engine has no model Pipkin can offer: say what to do about it.
-            RunState::Idle if real && no_models && read_only.is_none() => Some(strip(
-                cx,
-                "circle-help",
-                c.warning,
-                "No model is ready",
-                "Pi has no model it can use. Sign in or add an API key with Pi (run `pi`, then /login), then refresh the models.",
-                vec![
-                    Btn::new("refresh-models")
-                        .icon("refresh-cw")
-                        .label("Refresh models")
-                        .kind(BtnKind::Subtle)
-                        .compact()
-                        .disabled(!avail.refresh_models)
-                        .on_click({
-                            let this = this.clone();
-                            move |_, cx| {
-                                this.update(cx, |t, cx| t.dispatch(Command::RefreshModels, cx))
-                            }
-                        })
-                        .into_any_element(),
-                ],
-            )),
+            // Only when connected: offline, which models exist is not known.
+            RunState::Idle if real && no_models && read_only.is_none() && avail.refresh_models => {
+                Some(strip(
+                    cx,
+                    "circle-help",
+                    c.warning,
+                    "No model is ready",
+                    "Pi has no model it can use. Sign in or add an API key with Pi (run `pi`, then /login), then refresh the models.",
+                    vec![
+                        Btn::new("refresh-models")
+                            .icon("refresh-cw")
+                            .label("Refresh models")
+                            .kind(BtnKind::Subtle)
+                            .compact()
+                            .disabled(!avail.refresh_models)
+                            .on_click({
+                                let this = this.clone();
+                                move |_, cx| {
+                                    this.update(cx, |t, cx| t.dispatch(Command::RefreshModels, cx))
+                                }
+                            })
+                            .into_any_element(),
+                    ],
+                ))
+            }
             // This build can read sessions but not run them: say so where sending is offered.
             RunState::Idle if read_only.is_some() => Some(strip(
                 cx,
@@ -634,7 +800,7 @@ impl Workspace {
     }
 }
 
-fn strip(
+pub(super) fn strip(
     cx: &gpui::App,
     icon_name: &'static str,
     color: gpui::Hsla,

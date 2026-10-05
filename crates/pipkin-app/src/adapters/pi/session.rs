@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use pipkin_core::{
-    Bootstrap, ConversationId, ModelInfo, Project, ProjectId, project_id_for_path,
-    project_name_for_path, stable_id,
+    Bootstrap, ConversationId, ModelInfo, Project, ProjectId, UiNotice, UiNoticeLevel, UiRequest,
+    UiRequestItem, UiRequestKind, project_id_for_path, project_name_for_path, stable_id,
 };
 use serde_json::Value;
 
@@ -172,6 +172,90 @@ pub fn selected_model(state: &Value) -> Option<String> {
 pub fn split_model_id(id: &str) -> Option<(&str, &str)> {
     let (provider, model) = id.split_once('/')?;
     (!provider.is_empty() && !model.is_empty()).then_some((provider, model))
+}
+
+/// The questions extensions are waiting on, their status lines and notices, from `pi.ui-requests`
+/// state. A question of a kind this build cannot show becomes a warning notice, so it is said
+/// that something was asked rather than the extension appearing to hang.
+pub fn parse_ui_state(state: &Value) -> (Vec<UiRequest>, Vec<(String, String)>, Vec<UiNotice>) {
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let mut requests = Vec::new();
+    let mut notices = Vec::new();
+    for r in state
+        .get("requests")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(id), Some(title)) = (text(r, "id"), text(r, "title")) else {
+            continue;
+        };
+        let kind = match r.get("kind").and_then(Value::as_str) {
+            Some("select") => UiRequestKind::Select,
+            Some("confirm") => UiRequestKind::Confirm,
+            Some("input") => UiRequestKind::Input,
+            other => {
+                notices.push(UiNotice {
+                    id: format!("unsupported-{id}"),
+                    level: UiNoticeLevel::Warning,
+                    message: format!(
+                        "An extension asked \"{title}\" ({}), which this version of Pipkin cannot show. It will time out.",
+                        other.unwrap_or("unknown kind")
+                    ),
+                });
+                continue;
+            }
+        };
+        requests.push(UiRequest {
+            id,
+            kind,
+            title,
+            message: text(r, "message"),
+            items: r
+                .get("items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|i| {
+                    Some(UiRequestItem {
+                        value: text(i, "value")?,
+                        label: text(i, "label")?,
+                        description: text(i, "description"),
+                    })
+                })
+                .collect(),
+            placeholder: text(r, "placeholder"),
+            default_value: text(r, "defaultValue"),
+            deadline: r.get("deadline").and_then(Value::as_i64),
+        });
+    }
+    let mut status: Vec<(String, String)> = state
+        .get("status")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+        .collect();
+    status.sort();
+    notices.extend(
+        state
+            .get("notices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|n| {
+                Some(UiNotice {
+                    id: text(n, "id")?,
+                    level: match n.get("level").and_then(Value::as_str) {
+                        Some("error") => UiNoticeLevel::Error,
+                        Some("warning") => UiNoticeLevel::Warning,
+                        _ => UiNoticeLevel::Info,
+                    },
+                    message: text(n, "message")?,
+                })
+            }),
+    );
+    (requests, status, notices)
 }
 
 /// What the engine said went wrong the last time it re-read its providers (expired login,

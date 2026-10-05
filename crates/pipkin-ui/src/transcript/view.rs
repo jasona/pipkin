@@ -129,6 +129,16 @@ enum Click {
     Change(usize),
 }
 
+/// What the row above the first message says: whether there is more to load, a saved copy, or a
+/// failure to load it.
+struct HeaderState {
+    has_older: bool,
+    loading: bool,
+    opened: bool,
+    saved_copy: bool,
+    older_error: Option<String>,
+}
+
 struct RowCtx {
     theme: Theme,
     conv: ConversationId,
@@ -402,7 +412,38 @@ impl TranscriptView {
             }
             _ => {}
         }
+        self.apply_scroll_target(cx);
         cx.notify();
+    }
+
+    /// Scroll to the message a search hit pointed at, once the conversation shows it, and
+    /// tell the state it has been shown.
+    fn apply_scroll_target(&mut self, cx: &mut Context<Self>) {
+        let Some((conv, item)) = self.model.read(cx).state.scroll_target else {
+            return;
+        };
+        let Some(pos) = self
+            .model
+            .read(cx)
+            .state
+            .conversation(conv)
+            .and_then(|c| c.items.iter().position(|i| i.id == item))
+        else {
+            return;
+        };
+        self.ensure_conv(conv, cx);
+        if let Some(cv) = self.convs.get(&conv) {
+            cv.list.set_follow_mode(gpui::FollowMode::Normal);
+            // Row 0 is the header, so the message is at `pos + 1`.
+            cv.list.scroll_to(ListOffset {
+                item_ix: pos + 1,
+                offset_in_item: px(0.),
+            });
+        }
+        let model = self.model.clone();
+        cx.defer(move |cx| {
+            model.update(cx, |m, cx| m.dispatch(Command::ClearScrollTarget, cx));
+        });
     }
 
     fn maybe_load_older(&mut self, cx: &mut Context<Self>) {
@@ -413,12 +454,9 @@ impl TranscriptView {
         if cv.list.logical_scroll_top().item_ix > 2 {
             return;
         }
-        let wants = self
-            .model
-            .read(cx)
-            .state
-            .conversation(id)
-            .is_some_and(|c| c.has_older && !c.loading_older && c.opened);
+        let wants = self.model.read(cx).state.conversation(id).is_some_and(|c| {
+            c.has_older && !c.loading_older && c.opened && c.older_error.is_none()
+        });
         if wants {
             self.model
                 .update(cx, |m, cx| m.dispatch(Command::LoadOlder, cx));
@@ -683,13 +721,14 @@ impl TranscriptView {
             return div().into_any_element();
         };
         if ix == 0 {
-            return self.render_header_row(
-                conv.has_older,
-                conv.loading_older,
-                conv.opened,
-                &theme,
-                cx,
-            );
+            let header = HeaderState {
+                has_older: conv.has_older,
+                loading: conv.loading_older,
+                opened: conv.opened,
+                saved_copy: conv.cached_at.is_some() && !conv.opened,
+                older_error: conv.older_error.clone(),
+            };
+            return self.render_header_row(header, &theme, cx);
         }
         let item_ix = ix - 1;
         let Some(item) = conv.items.get(item_ix) else {
@@ -758,12 +797,17 @@ impl TranscriptView {
 
     fn render_header_row(
         &self,
-        has_older: bool,
-        loading: bool,
-        opened: bool,
+        header: HeaderState,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let HeaderState {
+            has_older,
+            loading,
+            opened,
+            saved_copy,
+            older_error,
+        } = header;
         let c = &theme.colors;
         let base = div()
             .h(px(40.0))
@@ -791,11 +835,22 @@ impl TranscriptView {
                     .on_click(move |_, _, cx| {
                         model.update(cx, |m, cx| m.dispatch(Command::LoadOlder, cx));
                     })
-                    .child("Load earlier messages"),
+                    .child(match &older_error {
+                        Some(e) => format!("{e} Try again"),
+                        None => "Load earlier messages".to_owned(),
+                    })
+                    .when(older_error.is_some(), |d| d.text_color(c.danger)),
             )
             .into_any_element()
         } else if opened {
             base.child("Beginning of conversation").into_any_element()
+        } else if saved_copy {
+            base.child(if has_older {
+                "Earlier messages need the engine"
+            } else {
+                "Beginning of the saved copy"
+            })
+            .into_any_element()
         } else {
             base.child("Opening conversation…").into_any_element()
         }
@@ -1113,6 +1168,62 @@ impl TranscriptView {
                             "Output truncated — showing first {} KB of {} KB",
                             tool.output.len().div_ceil(1024),
                             tool.full_len.div_ceil(1024)
+                        )),
+                );
+            }
+            if tool.status != ToolStatus::Running && (!tool.output.is_empty() || tool.truncated) {
+                let action = |name: &'static str, label: &'static str, icon_name: &'static str| {
+                    let model = self.model.clone();
+                    let command = if name == "tool-copy" {
+                        Command::CopyToolOutput(id)
+                    } else {
+                        Command::SaveToolOutput(id)
+                    };
+                    div()
+                        .id(ElementId::NamedInteger(name.into(), id.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .text_size(theme.small_size())
+                        .text_color(c.text_muted)
+                        .hover(|s| s.bg(c.bg_hover))
+                        .cursor_pointer()
+                        .role(Role::Button)
+                        .aria_label(label)
+                        .on_mouse_down(MouseButton::Left, stop_mouse_down)
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            model.update(cx, |m, cx| m.dispatch(command.clone(), cx));
+                        })
+                        .child(icon(icon_name, 12.0, c.text_muted))
+                        .child(label)
+                };
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .pt(px(2.0))
+                        .child(action(
+                            "tool-copy",
+                            if tool.truncated {
+                                "Copy full output"
+                            } else {
+                                "Copy output"
+                            },
+                            "copy",
+                        ))
+                        .child(action(
+                            "tool-save",
+                            if tool.truncated {
+                                "Save full output…"
+                            } else {
+                                "Save output…"
+                            },
+                            "file-plus",
                         )),
                 );
             }
@@ -1510,12 +1621,9 @@ impl TranscriptView {
         if cv.list.logical_scroll_top().item_ix > 2 {
             return;
         }
-        let wants = self
-            .model
-            .read(cx)
-            .state
-            .conversation(id)
-            .is_some_and(|c| c.has_older && !c.loading_older && c.opened);
+        let wants = self.model.read(cx).state.conversation(id).is_some_and(|c| {
+            c.has_older && !c.loading_older && c.opened && c.older_error.is_none()
+        });
         if wants {
             let weak = cx.entity().downgrade();
             cx.defer(move |cx| {
