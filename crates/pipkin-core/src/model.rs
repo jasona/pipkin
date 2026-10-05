@@ -454,3 +454,22 @@ pub enum Launch {
     /// Open a terminal in a directory.
     Terminal { cwd: String },
 }
+
+/// The most characters of a prompt used as a conversation's name.
+pub const TITLE_CHARS: usize = 44;
+
+/// A conversation name from a prompt: its first non-empty line, spaces collapsed, cut to
+/// `TITLE_CHARS` characters with an ellipsis when it was longer.
+pub fn prompt_title(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= TITLE_CHARS {
+        return collapsed;
+    }
+    let cut: String = collapsed.chars().take(TITLE_CHARS).collect();
+    format!("{}\u{2026}", cut.trim_end())
+}

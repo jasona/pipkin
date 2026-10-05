@@ -87,6 +87,9 @@ struct ConvView {
     list: ListState,
     doc: Document,
     expanded: HashSet<ItemId>,
+    /// Runs of tool steps shown in full, by the id of the run's first step. A run not in here
+    /// shows only its latest step.
+    steps_open: HashSet<ItemId>,
     selection: Option<Selection>,
     last_used: u64,
 }
@@ -144,6 +147,41 @@ struct RowCtx {
     conv: ConversationId,
     change_paths: Vec<String>,
     expanded: bool,
+    /// Set on the latest row of a run of tool steps, which carries the fold control.
+    steps: Option<StepsLine>,
+}
+
+/// Whether a reply is the start of a new one, and so carries the Pipkin marker and label: it does
+/// unless the item before it is also reply text (steps and thinking in between do not continue it).
+fn starts_reply(previous: Option<&ItemKind>) -> bool {
+    !matches!(previous, Some(ItemKind::Assistant { .. }))
+}
+
+/// The most characters of a step's target (a path or a command) shown in its card.
+const TOOL_TARGET_CHARS: usize = 60;
+
+/// `text` cut to `max` characters, with an ellipsis when it was cut.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let cut: String = text.chars().take(max).collect();
+        format!("{}\u{2026}", cut.trim_end())
+    }
+}
+
+/// The fold control of a run of two or more tool calls.
+struct StepsLine {
+    count: usize,
+    open: bool,
+    first: ItemId,
+    /// "Read 2 files, ran 3 commands".
+    summary: String,
+    /// What the latest step acts on, shown beside the summary while the run is folded.
+    latest: String,
+    /// How the run stands: still going, any step failed, or all done.
+    running: bool,
+    failed: bool,
 }
 
 impl TranscriptView {
@@ -246,6 +284,27 @@ impl TranscriptView {
         cx.notify();
     }
 
+    /// Show or hide all the steps of a run of tool calls (named by its first step). The rows of the
+    /// run change height, so they are measured again.
+    pub fn toggle_steps(&mut self, conv: ConversationId, first: ItemId, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let range = model.read(cx).state.conversation(conv).and_then(|c| {
+            let s = Document::index_of(&c.items, first)?;
+            let is_tool = |i: usize| matches!(c.items[i].kind, ItemKind::Tool(_));
+            let (_, last) = super::tools::tool_run(c.items.len(), s, is_tool)?;
+            Some(s..last + 1)
+        });
+        if let Some(cv) = self.convs.get_mut(&conv) {
+            if !cv.steps_open.remove(&first) {
+                cv.steps_open.insert(first);
+            }
+            if let Some(r) = range {
+                cv.list.remeasure_items(r.start + 1..r.end + 1);
+            }
+        }
+        cx.notify();
+    }
+
     pub fn is_expanded(&self, conv: ConversationId, item: ItemId) -> bool {
         self.convs
             .get(&conv)
@@ -343,6 +402,7 @@ impl TranscriptView {
                     list,
                     doc: Document::default(),
                     expanded: HashSet::new(),
+                    steps_open: HashSet::new(),
                     selection: None,
                     last_used: self.tick,
                 },
@@ -376,6 +436,10 @@ impl TranscriptView {
                     let old = cv.list.item_count();
                     if total > old {
                         cv.list.splice(old..old, total - old);
+                        // The step before the new one may now be folded away, or carry the line.
+                        if old >= 2 {
+                            cv.list.remeasure_items(old - 1..old);
+                        }
                     }
                 }
             }
@@ -735,19 +799,57 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let item = item.clone();
-        let prev_author = item_ix
-            .checked_sub(1)
-            .map(|p| &conv.items[p].kind)
-            .map(|k| match k {
-                ItemKind::User { .. } => 1,
-                ItemKind::Assistant { .. } | ItemKind::Tool(_) => 2,
-                ItemKind::Notice { .. } => 3,
-            });
+        let new_reply = starts_reply(item_ix.checked_sub(1).map(|p| &conv.items[p].kind));
+        // Consecutive tool calls fold into one line, showing only the latest step; clicking it
+        // shows them all, and they follow along live. The rows keep their places in the list
+        // (so every index stays valid); the hidden ones simply have no height.
+        let mut steps = None;
+        if matches!(item.kind, ItemKind::Tool(_)) {
+            let is_tool = |i: usize| matches!(conv.items[i].kind, ItemKind::Tool(_));
+            if let Some((first, last)) = super::tools::tool_run(conv.items.len(), item_ix, is_tool)
+                && last > first
+            {
+                let first_id = conv.items[first].id;
+                let open = self
+                    .convs
+                    .get(&conv_id)
+                    .is_some_and(|c| c.steps_open.contains(&first_id));
+                if !open && item_ix != last {
+                    return div().h(px(0.0)).into_any_element();
+                }
+                // The fold line sits on the latest step while folded, on the first when open.
+                if item_ix == if open { first } else { last } {
+                    let mut names = Vec::new();
+                    let (mut running, mut failed) = (false, false);
+                    for step in &conv.items[first..=last] {
+                        if let ItemKind::Tool(t) = &step.kind {
+                            names.push(t.name.as_str());
+                            running |= t.status == ToolStatus::Running;
+                            failed |= t.status == ToolStatus::Failed;
+                        }
+                    }
+                    let latest = match &conv.items[last].kind {
+                        ItemKind::Tool(t) => super::tools::label(&t.name, &t.input).target,
+                        _ => String::new(),
+                    };
+                    steps = Some(StepsLine {
+                        count: last - first + 1,
+                        open,
+                        first: first_id,
+                        summary: super::tools::run_summary(names.into_iter(), running),
+                        latest: shorten(&latest, TOOL_TARGET_CHARS),
+                        running,
+                        failed,
+                    });
+                }
+            }
+        }
         let ctx = RowCtx {
             theme,
             conv: conv_id,
             change_paths: conv.changes.iter().map(|c| c.path.clone()).collect(),
             expanded: self.is_expanded(conv_id, item.id),
+            steps,
         };
         let body = match &item.kind {
             ItemKind::User {
@@ -765,21 +867,25 @@ impl TranscriptView {
                 &ctx,
                 cx,
             ),
-            ItemKind::Assistant { text, streaming } => self.render_assistant(
-                &item,
-                item_ix,
-                text,
-                *streaming,
-                prev_author != Some(2),
-                &ctx,
-                cx,
-            ),
+            ItemKind::Assistant { text, streaming } => {
+                self.render_assistant(&item, item_ix, text, *streaming, new_reply, &ctx, cx)
+            }
             ItemKind::Tool(t) => self.render_tool(&item, item_ix, t, &ctx, cx),
             ItemKind::Notice { text, level } => {
                 self.render_notice(&item, item_ix, text, *level, &ctx, cx)
             }
         };
         let scale = ctx.theme.scale;
+        // Steps and thinking are quiet, slim lines; messages keep their room.
+        let (pad_top, pad_bottom) = match &item.kind {
+            ItemKind::Tool(_) => (1.0, 1.0),
+            ItemKind::Notice { .. } => (2.0, 2.0),
+            // The header of a message ("You 11:30", "Pipkin 11:32") starts a new step in the
+            // conversation, so it gets room above it; the steps between stay tight.
+            ItemKind::User { .. } => (16.0, 4.0),
+            ItemKind::Assistant { .. } if new_reply => (16.0, 4.0),
+            _ => (3.0, 4.0),
+        };
         div()
             .w_full()
             .flex()
@@ -789,7 +895,8 @@ impl TranscriptView {
                     .w_full()
                     .max_w(px(760.0 * scale + 48.0))
                     .px(px(24.0))
-                    .py(px(5.0 * scale))
+                    .pt(px(pad_top * scale))
+                    .pb(px(pad_bottom * scale))
                     .child(body),
             )
             .into_any_element()
@@ -1042,6 +1149,81 @@ impl TranscriptView {
     ) -> AnyElement {
         let theme = &ctx.theme;
         let c = &theme.colors;
+        // The model's thinking is a quiet line: its first words, with a chevron to read it all.
+        if level == NoticeLevel::Info
+            && let Some(rest) = text.strip_prefix("Thinking")
+        {
+            let body = rest.trim();
+            let first = body
+                .lines()
+                .map(|l| l.replace("**", "").trim().to_string())
+                .find(|l| !l.is_empty())
+                .unwrap_or_default();
+            let can_open = !body.is_empty() && !body.starts_with('(');
+            let (conv, id, expanded) = (ctx.conv, item.id, ctx.expanded && can_open);
+            let mut line = div()
+                .id(ElementId::NamedInteger("think".into(), id.0))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .min_h(px(26.0 * theme.scale.max(1.0)))
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(5.0))
+                .text_size(theme.small_size())
+                .text_color(c.text_faint)
+                .role(Role::Button)
+                .aria_label(format!("Thinking: {}", clip(&first, A11Y_TEXT_LIMIT)))
+                .aria_expanded(expanded)
+                .when(can_open, |d| {
+                    d.cursor_pointer()
+                        .tab_stop(true)
+                        .focus_visible(|s| s.border_1().border_color(c.accent))
+                        .hover(|s| s.bg(c.bg_hover))
+                        .on_mouse_down(MouseButton::Left, stop_mouse_down)
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_tool(conv, id, cx)))
+                })
+                .child(icon("clock", 14.0, c.text_faint))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(c.text_muted)
+                        .child("Thinking"),
+                );
+            if !expanded {
+                line = line.child(div().flex_1().min_w_0().truncate().child(first));
+            } else {
+                line = line.child(div().flex_1());
+            }
+            if can_open {
+                line = line.child(icon(
+                    if expanded {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    },
+                    13.0,
+                    c.text_faint,
+                ));
+            }
+            let mut col = div().w_full().flex().flex_col().child(line);
+            if expanded {
+                let blocks = self.blocks_for(ctx.conv, item, true);
+                let mut full = div().w_full().pl(px(30.0)).pr(px(6.0)).pb(px(4.0));
+                for (bi, block) in blocks.iter().enumerate() {
+                    full = full.child(self.block_element(ctx, item, item_ix, bi, block, cx));
+                }
+                col = col.child(full.text_color(c.text_muted));
+            }
+            return div()
+                .id(ElementId::NamedInteger("msg".into(), item.id.0))
+                .role(Role::Article)
+                .aria_label(format!("Thinking: {}", clip(body, A11Y_TEXT_LIMIT)))
+                .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
+                .child(col)
+                .into_any_element();
+        }
         let (name, tint, bg) = match level {
             NoticeLevel::Info => ("circle-help", c.text_muted, c.bg_hover),
             NoticeLevel::Error => ("circle-alert", c.danger, c.danger_bg),
@@ -1071,6 +1253,80 @@ impl TranscriptView {
             .into_any_element()
     }
 
+    /// The line that stands for a run of steps: a status mark, what was done, and (while folded)
+    /// what the latest step is, with a chevron at the end. Clicking it opens or folds the run.
+    fn render_run_line(
+        &self,
+        line: &StepsLine,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let c = &theme.colors;
+        let (conv, first) = (self.current.unwrap_or(ConversationId(0)), line.first);
+        let (mark, color) = if line.running {
+            ("loader-circle", c.accent)
+        } else if line.failed {
+            ("circle-alert", c.danger)
+        } else {
+            ("check", c.success)
+        };
+        let hint = if line.open {
+            "Show only the latest step"
+        } else {
+            "Show all steps"
+        };
+        div()
+            .id(ElementId::NamedInteger("steps".into(), first.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .min_h(px(28.0 * theme.scale.max(1.0)))
+            .px(px(6.0))
+            .py(px(2.0))
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .tab_stop(true)
+            .hover(|s| s.bg(c.bg_hover))
+            .focus_visible(|s| s.border_1().border_color(c.accent))
+            .role(Role::Button)
+            .aria_label(format!("{}. {hint}", line.summary))
+            .aria_expanded(line.open)
+            .on_mouse_down(MouseButton::Left, stop_mouse_down)
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_steps(conv, first, cx)))
+            .child(icon(mark, 14.0, color))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(theme.small_size())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(c.text_muted)
+                    .child(line.summary.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(theme.mono_font())
+                    .text_size(theme.small_size())
+                    .text_color(c.text_faint)
+                    .child(if line.open {
+                        String::new()
+                    } else {
+                        line.latest.clone()
+                    }),
+            )
+            .child(icon(
+                if line.open {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                13.0,
+                c.text_faint,
+            ))
+    }
+
     fn render_tool(
         &self,
         item: &TranscriptItem,
@@ -1095,29 +1351,42 @@ impl TranscriptView {
         let id = item.id;
         let expanded = ctx.expanded;
         let model = self.model.clone();
+        // A folded run is just its fold line (the summary and the latest step); the steps
+        // themselves come back, one slim line each, when it is opened.
+        if let Some(line) = ctx.steps.as_ref().filter(|l| !l.open) {
+            return div()
+                .id(ElementId::NamedInteger("msg".into(), id.0))
+                .role(Role::Article)
+                .aria_label(format!("{}. Show all {} steps", line.summary, line.count))
+                .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
+                .child(self.render_run_line(line, theme, cx))
+                .into_any_element();
+        }
+        let target = shorten(&label.target, TOOL_TARGET_CHARS);
         let mut header = div()
             .id(ElementId::NamedInteger("tool".into(), id.0))
             .flex()
             .items_center()
-            .gap(px(9.0))
-            .min_h(px(36.0 * theme.scale.max(1.0)))
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .bg(c.bg_card)
+            .gap(px(8.0))
+            .min_h(px(26.0 * theme.scale.max(1.0)))
+            .px(px(6.0))
+            .py(px(2.0))
+            .rounded(px(5.0))
             .cursor_pointer()
-            .hover(|s| s.bg(c.bg_active))
+            .tab_stop(true)
+            .hover(|s| s.bg(c.bg_hover))
+            .focus_visible(|s| s.border_1().border_color(c.accent))
             .role(Role::Button)
             .aria_label(format!("Tool {}: {}", tool.name, status_text))
             .aria_expanded(expanded)
             .on_mouse_down(MouseButton::Left, stop_mouse_down)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_tool(conv, id, cx)))
-            .child(icon(label.icon, 15.0, c.text_muted))
+            .child(icon(label.icon, 14.0, c.text_faint))
             .child(
                 div()
                     .flex_none()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(c.text)
+                    .text_size(theme.small_size())
+                    .text_color(c.text_muted)
                     .child(label.verb.clone()),
             )
             .child(
@@ -1127,8 +1396,8 @@ impl TranscriptView {
                     .truncate()
                     .font_family(theme.mono_font())
                     .text_size(theme.small_size())
-                    .text_color(c.text_muted)
-                    .child(label.target.clone()),
+                    .text_color(c.text_faint)
+                    .child(target.clone()),
             );
         if let Some(ix) = file_ref {
             header = header.child(
@@ -1174,7 +1443,11 @@ impl TranscriptView {
                 13.0,
                 c.text_faint,
             ));
-        let mut col = div().w_full().flex().flex_col().child(header);
+        let mut col = div().w_full().flex().flex_col();
+        if let Some(line) = ctx.steps.as_ref().filter(|l| l.open) {
+            col = col.child(self.render_run_line(line, theme, cx));
+        }
+        col = col.child(header);
         if expanded {
             let blocks = self.blocks_for(conv, item, true);
             let mut body = div().w_full().pl(px(22.0)).pt(px(4.0));

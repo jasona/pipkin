@@ -38,8 +38,10 @@ editing, selection and accessibility tree.
 
 **Work with the agent**
 - Streaming conversations with Markdown, syntax-highlighted code and one-click copy.
-- Tool calls shown as cards: a plain verb ("Reading files", "Editing files", "Running"), what they act on, and a
-  check, spinner or failure. Expand any of them for the full output, saved or copied in full even when long.
+- Tool calls as quiet, slim lines: a plain verb ("Reading files", "Editing files", "Running"), what they act on, and a
+  check, spinner or failure. A run of steps folds to one line ("Read 2 files, edited 1 file, ran 3 commands" plus the
+  latest command) with a chevron at the end; click it to show every step and follow along live. The model's thinking is
+  a one-line summary you can open. Expand any step for its full output, saved or copied in full even when long.
 - **Steer** a run in progress, **queue** a follow-up, **stop** it, and pick it back up after a restart. The engine
   owns the queue, so what you see is what will run.
 - Attach files by picker or by dropping them on the window; choose the model from the engine's catalog.

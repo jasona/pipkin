@@ -584,3 +584,207 @@ fn repeated_traversal_of_ten_thousand_items_with_live_updates_stays_bounded(
         "memory grew {growth} KB over four more traversals: {rss:?}"
     );
 }
+
+fn tool(i: u64) -> TranscriptItem {
+    TranscriptItem {
+        id: ItemId(i),
+        at: 1_700_000_000 + i as i64,
+        kind: ItemKind::Tool(ToolCall {
+            call_ref: None,
+            call_id: None,
+            name: "read".into(),
+            input: format!("{{\"path\":\"src/f{i}.rs\"}}"),
+            output: String::new(),
+            truncated: false,
+            full_len: 0,
+            status: ToolStatus::Ok,
+        }),
+    }
+}
+
+/// How far the list can scroll: content taller than the window, which is zero while it all fits.
+fn scroll_extent(h: &Harness, cx: &mut VisualTestContext) -> f32 {
+    frame(h, cx);
+    f32::from(list_of(h, 1, cx).max_offset_for_scrollbar().y)
+}
+
+fn notice(i: u64, text: &str) -> TranscriptItem {
+    TranscriptItem {
+        id: ItemId(i),
+        at: 1_700_000_000 + i as i64,
+        kind: ItemKind::Notice {
+            text: text.into(),
+            level: NoticeLevel::Info,
+        },
+    }
+}
+
+fn toggle(h: &Harness, first: u64, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        h.view.update(cx, |v, cx| {
+            v.toggle_steps(ConversationId(1), ItemId(first), cx)
+        })
+    });
+}
+
+#[gpui::test]
+fn runs_of_tool_steps_fold_to_the_latest_and_open_to_show_all(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 0);
+    // A prompt, a thinking note, 30 steps, another thinking note, 30 more, then a reply.
+    let mut all = vec![item(0), notice(1, "Thinking\nfirst")];
+    all.extend((100..130).map(tool));
+    all.push(notice(2, "Thinking\nsecond"));
+    all.extend((200..230).map(tool));
+    all.push(item(1));
+    open(&h.model, 1, all, false, cx);
+
+    // Folded, 60 steps take the room of two cards, so everything fits in the window.
+    let folded = scroll_extent(&h, cx);
+    assert!(
+        folded < 1.0,
+        "folded steps should fit the window, scrolls {folded}"
+    );
+
+    // Opening the first run shows its 30 steps; the second stays folded.
+    toggle(&h, 100, cx);
+    let one_open = scroll_extent(&h, cx);
+    assert!(
+        one_open > 100.0,
+        "30 steps should overflow the window: {one_open}"
+    );
+
+    // Opening the second as well shows 60.
+    toggle(&h, 200, cx);
+    let both_open = scroll_extent(&h, cx);
+    assert!(
+        both_open > one_open + 500.0,
+        "the second run opens independently: {one_open} -> {both_open}"
+    );
+
+    // Folding both again returns to the start.
+    toggle(&h, 100, cx);
+    toggle(&h, 200, cx);
+    assert!(scroll_extent(&h, cx) < 1.0);
+}
+
+/// Start a run (submit, journal, accept), then send one engine event the way the controller would.
+fn run_event(h: &Harness, kind: EventKind, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        h.model.update(cx, |m, cx| {
+            if matches!(m.state.current().unwrap().run, RunState::Idle) {
+                m.dispatch(Command::EditDraft("go".into()), cx);
+                m.dispatch(Command::Submit, cx);
+                // The journal commit the controller would make before anything is sent.
+                let (conv, request) = {
+                    let c = m.state.current().unwrap();
+                    (c.id, c.pending_intent.as_ref().unwrap().request.clone())
+                };
+                m.mutate(|s| s.intent_persisted(conv, &request, Ok(())), cx);
+                let c = m.state.current().unwrap();
+                let accepted = BackendEvent {
+                    conversation: c.id,
+                    generation: c.generation,
+                    op: c.run.op(),
+                    kind: EventKind::Accepted,
+                };
+                m.apply_event(accepted, cx);
+            }
+            let c = m.state.current().unwrap();
+            let ev = BackendEvent {
+                conversation: c.id,
+                generation: c.generation,
+                op: c.run.op(),
+                kind,
+            };
+            m.apply_event(ev, cx);
+        });
+    });
+}
+
+#[gpui::test]
+fn steps_arriving_live_stay_folded_to_one_card_and_show_all_when_opened(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 0);
+    for call in 0..40u32 {
+        run_event(
+            &h,
+            EventKind::ToolStarted {
+                call,
+                name: "read".into(),
+                input: format!("{{\"path\":\"src/f{call}.rs\"}}"),
+            },
+            cx,
+        );
+        run_event(&h, EventKind::ToolFinished { call, ok: true }, cx);
+        frame(&h, cx);
+    }
+    // Forty steps, folded: still the room of a card or two.
+    let folded = scroll_extent(&h, cx);
+    assert!(folded < 1.0, "live steps should fold, scrolls {folded}");
+
+    // Open the run (named by its first step) and the forty show.
+    let first = cx.update(|_, cx| {
+        let c = h.model.read(cx).state.current().unwrap();
+        c.items
+            .iter()
+            .find(|i| matches!(i.kind, ItemKind::Tool(_)))
+            .map(|i| i.id)
+            .unwrap()
+    });
+    toggle(&h, first.0, cx);
+    let open = scroll_extent(&h, cx);
+    assert!(
+        open > 100.0,
+        "opened steps should overflow the window: {open}"
+    );
+
+    // A step that arrives while it is open is shown too (following along).
+    run_event(
+        &h,
+        EventKind::ToolStarted {
+            call: 99,
+            name: "read".into(),
+            input: "{\"path\":\"src/new.rs\"}".into(),
+        },
+        cx,
+    );
+    let longer = scroll_extent(&h, cx);
+    assert!(
+        longer > open + 20.0,
+        "a new step adds a row: {open} -> {longer}"
+    );
+}
+
+#[test]
+fn a_long_target_is_cut_to_the_first_characters_with_an_ellipsis() {
+    assert_eq!(shorten("cargo check", 60), "cargo check");
+    let long = "git clone --depth 1 https://github.com/jasona/pipkin \"$tmp/pipkin\" && ls -la";
+    let cut = shorten(long, 20);
+    assert_eq!(cut, "git clone --depth 1\u{2026}");
+    assert!(cut.chars().count() <= 21);
+    assert_eq!(
+        shorten("héllo wörld", 5),
+        "héllo\u{2026}",
+        "counts characters, not bytes"
+    );
+}
+
+#[test]
+fn a_reply_after_steps_or_thinking_is_labelled_but_one_after_a_reply_is_not() {
+    let reply = ItemKind::Assistant {
+        text: "x".into(),
+        streaming: false,
+    };
+    let user = ItemKind::User {
+        text: "q".into(),
+        attachments: vec![],
+        delivery: Delivery::Sent,
+        steer: false,
+    };
+    let step = tool(1).kind;
+    let thinking = notice(2, "Thinking\nhm").kind;
+    assert!(starts_reply(None), "the first item");
+    assert!(starts_reply(Some(&user)));
+    assert!(starts_reply(Some(&step)), "steps do not continue a reply");
+    assert!(starts_reply(Some(&thinking)));
+    assert!(!starts_reply(Some(&reply)), "a second part of one reply");
+}

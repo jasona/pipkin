@@ -69,6 +69,8 @@ pub struct Workspace {
     flush_task: Option<Task<()>>,
     /// Saves the window size once resizing has settled.
     size_task: Option<Task<()>>,
+    /// The conversation search box is showing (it also shows while it holds a query).
+    pub(super) search_open: bool,
     pub(super) toast: Option<String>,
     toast_task: Option<Task<()>>,
     pub(super) diff_scroll: UniformListScrollHandle,
@@ -141,6 +143,7 @@ impl Workspace {
             synced: (None, u64::MAX),
             flush_task: None,
             size_task: None,
+            search_open: false,
             toast: None,
             toast_task: None,
             diff_scroll: UniformListScrollHandle::new(),
@@ -331,6 +334,7 @@ impl Workspace {
                 self.dispatch(Command::SetSearch(q), cx);
             }
             ComposerEvent::Escape => {
+                self.search_open = false;
                 self.nav_search.update(cx, |e, cx| e.set_text("", cx));
                 self.dispatch(Command::SetSearch(String::new()), cx);
                 self.focus_composer(window, cx);

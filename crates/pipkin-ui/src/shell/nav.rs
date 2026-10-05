@@ -270,61 +270,46 @@ impl Workspace {
         let new_enabled = self.state(cx).availability().new_conversation;
         let new_btn = {
             let this = cx.entity();
-            let enabled = new_enabled;
-            let hover = c.bg_active;
-            let ring = c.accent;
-            div()
-                .id("new-conversation")
-                .role(Role::Button)
-                .aria_label("New chat (Ctrl+N)")
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .h(px(40.0 * t.scale.max(1.0)))
-                .px(px(12.0))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(c.border_strong)
-                .bg(c.bg_selected)
-                .text_color(c.text)
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .when(enabled, |d| {
-                    d.cursor_pointer()
-                        .tab_stop(true)
-                        .hover(move |s| s.bg(hover))
-                        .focus_visible(move |s| s.border_color(ring))
-                        .on_click(move |_, window, cx| {
-                            this.update(cx, |this, cx| {
-                                this.close_panel(window, cx);
-                                this.dispatch(Command::NewConversation, cx);
-                                this.focus_composer(window, cx);
-                            })
-                        })
+            Btn::new("new-conversation")
+                .icon("plus")
+                .aria("New chat (Ctrl+N)")
+                .disabled(!new_enabled)
+                .on_click(move |window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.close_panel(window, cx);
+                        this.dispatch(Command::NewConversation, cx);
+                        this.focus_composer(window, cx);
+                    })
                 })
-                .when(!enabled, |d| d.opacity(0.45))
-                .child(icon("plus", px(16.0), c.text))
-                .child(div().flex_1().child("New chat"))
-                .child(
-                    div()
-                        .text_size(t.small_size())
-                        .font_family(t.mono_font())
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(c.text_faint)
-                        .child("Ctrl N"),
-                )
         };
-        let (can_open_project, notice) = {
-            let s = self.state(cx);
-            (s.can_create, s.notice.clone())
-        };
-        let open_project_btn = can_open_project.then(|| {
+        // The search box shows while it is open or holds a query; the icon opens it, or closes it
+        // and clears the query.
+        let search_visible = self.search_open || !search_empty;
+        let search_btn = {
             let this = cx.entity();
-            Btn::new("open-project")
-                .icon("folder-open")
-                .label("Open project folder\u{2026}")
-                .kind(BtnKind::Subtle)
-                .on_click(move |_, cx| this.update(cx, |this, cx| this.open_project(cx)))
-        });
+            Btn::new("toggle-search")
+                .icon("search")
+                .aria("Search conversations")
+                .selected(search_visible)
+                .on_click(move |window, cx| {
+                    this.update(cx, |this, cx| {
+                        if search_visible {
+                            this.search_open = false;
+                            this.nav_search.update(cx, |e, cx| e.set_text("", cx));
+                            this.dispatch(Command::SetSearch(String::new()), cx);
+                        } else {
+                            this.search_open = true;
+                            // The box is drawn on the next frame; focus it then.
+                            cx.on_next_frame(window, |this, window, cx| {
+                                let handle = this.nav_search.read(cx).focus_handle(cx);
+                                window.focus(&handle, cx);
+                            });
+                        }
+                        cx.notify();
+                    })
+                })
+        };
+        let notice = self.state(cx).notice.clone();
         let notice_el = notice.map(|message| {
             let this = cx.entity();
             div()
@@ -406,19 +391,56 @@ impl Workspace {
             .size_full()
             .bg(c.bg_pane)
             .gap(px(8.0))
-            .py(px(12.0))
-            .child(div().px(px(16.0)).pb(px(2.0)).child(wordmark(px(22.0), cx)))
+            .pb(px(12.0))
+            // The logo is centred in a box as tall as the conversation header beside it, so the
+            // rule under it continues the header's, and "New chat" starts right below that line.
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .h(px(68.0 * t.scale.max(1.0)))
+                    .mb(px(4.0))
+                    .border_b_1()
+                    .border_color(c.border)
+                    .child(wordmark(px(24.0), cx)),
+            )
             .child(
                 div()
                     .px(px(12.0))
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .child(new_btn)
                     .child(proj)
-                    .children(open_project_btn)
-                    .children(notice_el)
+                    .children(notice_el),
+            )
+            // The list's own heading, with its two actions at the right.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pl(px(16.0))
+                    .pr(px(12.0))
                     .child(
+                        div()
+                            .text_size(t.small_size())
+                            .text_color(c.text_muted)
+                            .child("Conversations"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(search_btn)
+                            .child(new_btn),
+                    ),
+            )
+            .when(search_visible, |d| {
+                d.child(
+                    div().px(px(12.0)).child(
                         div()
                             .flex()
                             .items_center()
@@ -432,16 +454,9 @@ impl Workspace {
                             .child(icon("search", px(14.0), c.text_faint))
                             .child(div().flex_1().min_w_0().child(self.nav_search.clone())),
                     ),
-            )
+                )
+            })
             .children(found_el)
-            .child(
-                div()
-                    .px(px(16.0))
-                    .pt(px(6.0))
-                    .text_size(t.small_size())
-                    .text_color(c.text_muted)
-                    .child("Conversations"),
-            )
             .child(list)
             .child(
                 div()

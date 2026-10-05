@@ -1044,3 +1044,111 @@ fn the_window_size_is_stored_clamped_and_only_when_it_changes() {
         "nonsense is ignored"
     );
 }
+
+/// A real conversation is named for the last prompt sent in it, not for its session id.
+#[test]
+fn a_real_conversation_is_named_for_its_last_prompt() {
+    let mut s = real(1);
+    assert!(
+        s.conversation(ConversationId(1))
+            .unwrap()
+            .title
+            .starts_with("conversation")
+    );
+    open(
+        &mut s,
+        1,
+        vec![
+            user(1, "first question about the build"),
+            user(
+                2,
+                "Look at https://github.com/jasona/pipkin and create a plan for updating the website content accordingly.",
+            ),
+        ],
+        false,
+    );
+    let title = s.conversation(ConversationId(1)).unwrap().title.clone();
+    assert!(
+        title.starts_with("Look at https://github.com/jasona/pipkin"),
+        "{title}"
+    );
+    assert!(
+        title.ends_with('\u{2026}') && title.chars().count() <= TITLE_CHARS + 1,
+        "{title}"
+    );
+
+    // Sending another prompt renames it again.
+    s.dispatch(Command::EditDraft("  Make it   shorter\nplease  ".into()));
+    let out = s.dispatch(Command::Submit);
+    // In real mode the prompt joins the transcript once its journal entry is durable.
+    for e in &out.effects {
+        if let Effect::JournalIntent {
+            conversation,
+            request,
+            ..
+        } = e
+        {
+            s.intent_persisted(*conversation, request, Ok(()));
+        }
+    }
+    assert_eq!(
+        s.conversation(ConversationId(1)).unwrap().title,
+        "Make it shorter"
+    );
+}
+
+#[test]
+fn naming_a_conversation_uses_the_first_line_and_never_a_steer_or_the_demo() {
+    assert_eq!(prompt_title("  hello   world \nsecond line"), "hello world");
+    assert_eq!(
+        prompt_title("\n\n  only on line three"),
+        "only on line three"
+    );
+    assert_eq!(prompt_title(""), "");
+    let long = "word ".repeat(30);
+    let t = prompt_title(&long);
+    assert!(
+        t.ends_with('\u{2026}') && t.chars().count() <= TITLE_CHARS + 1,
+        "{t}"
+    );
+    assert_eq!(
+        prompt_title("héllo wörld"),
+        "héllo wörld",
+        "characters, not bytes"
+    );
+
+    // A steer is not the prompt the conversation is about.
+    let mut s = real(1);
+    let mut steer = user(2, "also, please hurry");
+    if let ItemKind::User { steer, .. } = &mut steer.kind {
+        *steer = true;
+    }
+    open(
+        &mut s,
+        1,
+        vec![user(1, "refactor the parser"), steer],
+        false,
+    );
+    assert_eq!(
+        s.conversation(ConversationId(1)).unwrap().title,
+        "refactor the parser"
+    );
+
+    // The demo keeps its own titles.
+    let mut d = AppState::new(boot(1), Prefs::default());
+    d.dispatch(Command::SelectConversation(ConversationId(1)));
+    d.apply_event(BackendEvent {
+        conversation: ConversationId(1),
+        generation: d.current().unwrap().generation,
+        op: None,
+        kind: EventKind::Opened {
+            items: vec![user(1, "something else")],
+            has_older: false,
+            changes: vec![],
+        },
+    });
+    assert_eq!(
+        d.conversation(ConversationId(1)).unwrap().title,
+        "conversation 1"
+    );
+}

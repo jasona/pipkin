@@ -28,7 +28,10 @@ impl Workspace {
         match self.overlay {
             Overlay::Palette => self.palette_items(cx).len(),
             Overlay::Model => self.state(cx).models.len(),
-            Overlay::Project => self.state(cx).projects.len(),
+            // The projects, then "Open project folder…" when one can be opened.
+            Overlay::Project => {
+                self.state(cx).projects.len() + usize::from(self.state(cx).can_create)
+            }
             Overlay::Question => match self.waiting_question(cx, true) {
                 Some(q) => match q.kind {
                     UiRequestKind::Select => q.items.len(),
@@ -61,7 +64,12 @@ impl Workspace {
                 }
             }
             Overlay::Project => {
-                if let Some(p) = self.state(cx).projects.get(sel).map(|p| p.id) {
+                let projects = self.state(cx).projects.len();
+                if sel == projects && self.state(cx).can_create {
+                    // The last row opens the folder picker instead of choosing a project.
+                    self.close_overlay(window, cx);
+                    self.open_project(cx);
+                } else if let Some(p) = self.state(cx).projects.get(sel).map(|p| p.id) {
                     self.dispatch(Command::SelectProject(p), cx);
                     self.close_overlay(window, cx);
                 }
@@ -424,6 +432,8 @@ impl Workspace {
                 _ => cap,
             }
         };
+        // The project menu ends with a row that opens the folder picker.
+        let action_row = !model_mode && self.state(cx).can_create;
         let entries: Vec<(String, String, bool)> = {
             let s = self.state(cx);
             if model_mode {
@@ -439,12 +449,18 @@ impl Workspace {
                     .collect()
             } else {
                 let cur = s.current_project().map(|p| p.id);
-                s.projects
+                let mut rows: Vec<(String, String, bool)> = s
+                    .projects
                     .iter()
                     .map(|p| (p.name.clone(), p.path.clone(), Some(p.id) == cur))
-                    .collect()
+                    .collect();
+                if s.can_create {
+                    rows.push(("Open project folder\u{2026}".into(), String::new(), false));
+                }
+                rows
             }
         };
+        let count = entries.len();
         elevated(cx)
             .id("menu-overlay")
             .key_context("Overlay")
@@ -472,7 +488,8 @@ impl Workspace {
                             .enumerate()
                             .map(|(i, (name, note, checked))| {
                                 let this = this.clone();
-                                menu_row(("menu", i), i == sel, cx)
+                                let is_action = action_row && i + 1 == count;
+                                let row = menu_row(("menu", i), i == sel, cx)
                                     .role(Role::MenuItem)
                                     .aria_label(name.clone())
                                     .on_click(move |_, window, cx| {
@@ -481,7 +498,10 @@ impl Workspace {
                                             t.confirm_selection(window, cx);
                                         })
                                     })
-                                    .child(div().w(px(16.0)).child(if checked {
+                                    .child(div().w(px(16.0)).child(if is_action {
+                                        icon("folder-open", px(14.0), c.text_muted)
+                                            .into_any_element()
+                                    } else if checked {
                                         icon("check", px(14.0), c.accent).into_any_element()
                                     } else {
                                         div().into_any_element()
@@ -493,14 +513,25 @@ impl Workspace {
                                             .flex()
                                             .flex_col()
                                             .child(div().truncate().child(name))
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(t.small_size())
-                                                    .text_color(c.text_faint)
-                                                    .child(note),
-                                            ),
-                                    )
+                                            .when(!note.is_empty(), |d| {
+                                                d.child(
+                                                    div()
+                                                        .truncate()
+                                                        .text_size(t.small_size())
+                                                        .text_color(c.text_faint)
+                                                        .child(note),
+                                                )
+                                            }),
+                                    );
+                                // A rule sets the action apart from the projects above it.
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_none()
+                                    .when(is_action, |d| {
+                                        d.child(div().h(px(1.0)).w_full().my(px(4.0)).bg(c.border))
+                                    })
+                                    .child(row)
                             }),
                     ),
             )

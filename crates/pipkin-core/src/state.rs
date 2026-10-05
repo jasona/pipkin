@@ -486,6 +486,43 @@ impl AppState {
     // ---------------------------------------------------------------- commands
 
     pub fn dispatch(&mut self, cmd: Command) -> Outcome {
+        let mut out = self.dispatch_inner(cmd);
+        if let Some(id) = self.selected
+            && self.retitle(id)
+        {
+            out.notes.push(Note::ConversationsChanged);
+        }
+        out
+    }
+
+    /// In real mode a conversation is named for the last prompt sent in it: the engine gives a
+    /// session only an id and a time, which say nothing about it. (Renaming is the engine's, and
+    /// is not offered here.) Returns whether the title changed. A conversation with no prompt in
+    /// view keeps whatever name it has.
+    pub fn retitle(&mut self, id: ConversationId) -> bool {
+        if self.mode != Mode::Real {
+            return false;
+        }
+        let Some(c) = self.conv_mut(id) else {
+            return false;
+        };
+        let last = c.items.iter().rev().find_map(|i| match &i.kind {
+            ItemKind::User {
+                text, steer: false, ..
+            } => Some(text.as_str()),
+            _ => None,
+        });
+        let Some(title) = last.map(prompt_title).filter(|t| !t.is_empty()) else {
+            return false;
+        };
+        if c.title == title {
+            return false;
+        }
+        c.title = title;
+        true
+    }
+
+    fn dispatch_inner(&mut self, cmd: Command) -> Outcome {
         let mut out = Outcome::default();
         match cmd {
             Command::SelectProject(p) => {
@@ -1070,6 +1107,9 @@ impl AppState {
         c.has_older = has_older;
         c.cached_at = Some(synced_at);
         out.notes.push(Note::ItemsReset(id));
+        if self.retitle(id) {
+            out.notes.push(Note::ConversationsChanged);
+        }
         out
     }
 
@@ -1164,6 +1204,20 @@ impl AppState {
     /// (if the user has not edited it since) and the request is sent; on failure the draft is
     /// kept and nothing is sent.
     pub fn intent_persisted(
+        &mut self,
+        id: ConversationId,
+        request: &RequestId,
+        result: Result<(), String>,
+    ) -> Outcome {
+        let mut out = self.intent_persisted_inner(id, request, result);
+        // The prompt joins the transcript once it is durable; that is when it names the chat.
+        if self.retitle(id) {
+            out.notes.push(Note::ConversationsChanged);
+        }
+        out
+    }
+
+    fn intent_persisted_inner(
         &mut self,
         id: ConversationId,
         request: &RequestId,
@@ -1340,6 +1394,15 @@ impl AppState {
     // ------------------------------------------------------------------ events
 
     pub fn apply_event(&mut self, ev: BackendEvent) -> Outcome {
+        let id = ev.conversation;
+        let mut out = self.apply_event_inner(ev);
+        if self.retitle(id) {
+            out.notes.push(Note::ConversationsChanged);
+        }
+        out
+    }
+
+    fn apply_event_inner(&mut self, ev: BackendEvent) -> Outcome {
         let mut out = Outcome::default();
         let id = ev.conversation;
         let real = self.mode == Mode::Real;

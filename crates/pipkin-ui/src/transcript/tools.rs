@@ -88,6 +88,72 @@ pub fn label(name: &str, input: &str) -> ToolLabel {
     }
 }
 
+/// A short phrase for a run of steps: "Read 2 files, edited 1 file, ran 3 commands". While the run is
+/// still going the verbs are progressive ("Reading 2 files, running 1 command").
+pub fn run_summary<'a>(names: impl Iterator<Item = &'a str>, running: bool) -> String {
+    // read, search, edit, write, run, other
+    let mut counts = [0usize; 6];
+    for name in names {
+        let slot = match label(name, "").icon {
+            "file-text" => 0,
+            "search" => 1,
+            "pencil" => 2,
+            "file-plus" => 3,
+            "terminal" => 4,
+            _ => 5,
+        };
+        counts[slot] += 1;
+    }
+    const PAST: [&str; 6] = ["Read", "Searched", "Edited", "Wrote", "Ran", "Used"];
+    const NOW: [&str; 6] = [
+        "Reading",
+        "Searching",
+        "Editing",
+        "Writing",
+        "Running",
+        "Using",
+    ];
+    const NOUN: [(&str, &str); 6] = [
+        ("file", "files"),
+        ("time", "times"),
+        ("file", "files"),
+        ("file", "files"),
+        ("command", "commands"),
+        ("tool", "tools"),
+    ];
+    let mut parts = Vec::new();
+    for (i, n) in counts.iter().enumerate() {
+        if *n == 0 {
+            continue;
+        }
+        let verb = if running { NOW[i] } else { PAST[i] };
+        let noun = if *n == 1 { NOUN[i].0 } else { NOUN[i].1 };
+        let mut part = format!("{verb} {n} {noun}");
+        if !parts.is_empty() {
+            part = part[..1].to_lowercase() + &part[1..];
+        }
+        parts.push(part);
+    }
+    parts.join(", ")
+}
+
+/// The run of consecutive tool rows that contains `ix`, as `(first, last)` inclusive, or `None`
+/// when `ix` is not a tool. Scans only outward from `ix`, so it stays cheap in a long transcript.
+pub fn tool_run(len: usize, ix: usize, is_tool: impl Fn(usize) -> bool) -> Option<(usize, usize)> {
+    if ix >= len || !is_tool(ix) {
+        return None;
+    }
+    let mut first = ix;
+    while first > 0 && is_tool(first - 1) {
+        first -= 1;
+    }
+    let mut last = ix;
+    while last + 1 < len && is_tool(last + 1) {
+        last += 1;
+    }
+    Some((first, last))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +223,38 @@ mod tests {
         assert_eq!(l.verb, "deploy_preview");
         assert_eq!(l.icon, "wrench");
         assert_eq!(l.target, "{\"env\":\"staging\"}");
+    }
+
+    #[test]
+    fn a_run_is_the_consecutive_tools_around_a_row() {
+        // A user message, a thinking note, three tools, a reply, two tools.
+        let tools = [false, false, true, true, true, false, true, true];
+        let is = |i: usize| tools[i];
+        assert_eq!(tool_run(tools.len(), 3, is), Some((2, 4)));
+        assert_eq!(tool_run(tools.len(), 2, is), Some((2, 4)));
+        assert_eq!(tool_run(tools.len(), 4, is), Some((2, 4)));
+        assert_eq!(tool_run(tools.len(), 7, is), Some((6, 7)));
+        assert_eq!(tool_run(tools.len(), 5, is), None, "a reply is not a tool");
+        assert_eq!(tool_run(tools.len(), 99, is), None, "out of range");
+        assert_eq!(tool_run(1, 0, |_| true), Some((0, 0)));
+    }
+
+    #[test]
+    fn a_run_is_summed_up_in_a_phrase() {
+        let names = ["read_file", "read", "edit", "bash", "bash", "bash"];
+        assert_eq!(
+            run_summary(names.iter().copied(), false),
+            "Read 2 files, edited 1 file, ran 3 commands"
+        );
+        assert_eq!(
+            run_summary(names.iter().copied(), true),
+            "Reading 2 files, editing 1 file, running 3 commands"
+        );
+        assert_eq!(run_summary(["grep"].into_iter(), false), "Searched 1 time");
+        assert_eq!(
+            run_summary(["deploy", "other"].into_iter(), false),
+            "Used 2 tools"
+        );
+        assert_eq!(run_summary(std::iter::empty(), false), "");
     }
 }
