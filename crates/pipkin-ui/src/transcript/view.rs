@@ -856,6 +856,29 @@ impl TranscriptView {
         }
     }
 
+    /// The round marker beside a message: a plain dot for the person, the amber bolt for Pipkin.
+    fn avatar(theme: &Theme, pipkin: bool) -> gpui::Div {
+        let c = &theme.colors;
+        let size = px(28.0 * theme.scale.max(1.0));
+        let base = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(size)
+            .rounded_full();
+        if pipkin {
+            // Midnight in both themes: the mascot's own colours.
+            base.bg(gpui::rgb(0x080f1a))
+                .border_1()
+                .border_color(c.border_strong)
+                .child(icon("zap", 13.0, c.accent_fill))
+        } else {
+            base.bg(c.text_muted)
+                .child(div().size(px(8.0)).rounded_full().bg(c.bg_app))
+        }
+    }
+
     fn author_line(
         &self,
         label: &str,
@@ -906,14 +929,7 @@ impl TranscriptView {
         };
         let label = if steer { "You (steering)" } else { "You" };
         let blocks = self.blocks_for(ctx.conv, item, ctx.expanded);
-        let mut card = div()
-            .w_full()
-            .px(px(12.0))
-            .py(px(8.0))
-            .rounded(px(8.0))
-            .bg(c.bg_surface)
-            .border_1()
-            .border_color(c.border);
+        let mut card = div().w_full();
         for (bi, block) in blocks.iter().enumerate() {
             card = card.child(self.block_element(ctx, item, item_ix, bi, block, cx));
         }
@@ -951,8 +967,16 @@ impl TranscriptView {
             .id(ElementId::NamedInteger("msg".into(), item.id.0))
             .role(Role::Article)
             .aria_label(aria)
-            .child(self.author_line(label, item.at, status, theme))
-            .child(card)
+            .flex()
+            .gap(px(10.0))
+            .child(Self::avatar(theme, false))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.author_line(label, item.at, status, theme))
+                    .child(card),
+            )
             .into_any_element()
     }
 
@@ -973,7 +997,7 @@ impl TranscriptView {
         let mut col = div().w_full().flex().flex_col();
         if show_label {
             let status = streaming.then(|| ("Writing…".to_string(), c.text_faint));
-            col = col.child(self.author_line("Pi", item.at, status, theme));
+            col = col.child(self.author_line("Pipkin", item.at, status, theme));
         }
         for (bi, block) in blocks.iter().enumerate() {
             col = col.child(self.block_element(ctx, item, item_ix, bi, block, cx));
@@ -989,12 +1013,21 @@ impl TranscriptView {
                     .bg(c.accent),
             );
         }
-        let aria = format!("Pi: {}", clip(text, A11Y_TEXT_LIMIT));
+        let aria = format!("Pipkin: {}", clip(text, A11Y_TEXT_LIMIT));
+        // Follow-on parts of one reply line up under the first, without repeating the marker.
+        let marker = if show_label {
+            Self::avatar(theme, true)
+        } else {
+            div().flex_none().w(px(28.0 * theme.scale.max(1.0)))
+        };
         div()
             .id(ElementId::NamedInteger("msg".into(), item.id.0))
             .role(Role::Article)
             .aria_label(aria)
-            .child(col)
+            .flex()
+            .gap(px(10.0))
+            .child(marker)
+            .child(div().flex_1().min_w_0().child(col))
             .into_any_element()
     }
 
@@ -1049,11 +1082,11 @@ impl TranscriptView {
         let theme = &ctx.theme;
         let c = &theme.colors;
         let (status_icon, status_text, status_color) = match tool.status {
-            ToolStatus::Running => ("loader-circle", "Running", c.text_muted),
+            ToolStatus::Running => ("loader-circle", "Running", c.accent),
             ToolStatus::Ok => ("check", "Done", c.success),
             ToolStatus::Failed => ("circle-alert", "Failed", c.danger),
         };
-        let summary = tool.input.lines().next().unwrap_or("").trim().to_string();
+        let label = super::tools::label(&tool.name, &tool.input);
         let file_ref = ctx
             .change_paths
             .iter()
@@ -1066,36 +1099,26 @@ impl TranscriptView {
             .id(ElementId::NamedInteger("tool".into(), id.0))
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .h(px(28.0 * theme.scale.max(1.0)))
-            .px(px(8.0))
+            .gap(px(9.0))
+            .min_h(px(36.0 * theme.scale.max(1.0)))
+            .px(px(10.0))
+            .py(px(6.0))
             .rounded(px(6.0))
-            .border_1()
-            .border_color(c.border)
+            .bg(c.bg_card)
             .cursor_pointer()
-            .hover(|s| s.bg(c.bg_hover))
+            .hover(|s| s.bg(c.bg_active))
             .role(Role::Button)
             .aria_label(format!("Tool {}: {}", tool.name, status_text))
             .aria_expanded(expanded)
             .on_mouse_down(MouseButton::Left, stop_mouse_down)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_tool(conv, id, cx)))
-            .child(icon(
-                if expanded {
-                    "chevron-down"
-                } else {
-                    "chevron-right"
-                },
-                14.0,
-                c.text_faint,
-            ))
-            .child(icon("terminal", 14.0, c.text_muted))
+            .child(icon(label.icon, 15.0, c.text_muted))
             .child(
                 div()
-                    .font_family(theme.mono_font())
-                    .text_size(theme.code_size())
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(c.text)
-                    .child(tool.name.clone()),
+                    .child(label.verb.clone()),
             )
             .child(
                 div()
@@ -1103,9 +1126,9 @@ impl TranscriptView {
                     .min_w_0()
                     .truncate()
                     .font_family(theme.mono_font())
-                    .text_size(theme.code_size())
+                    .text_size(theme.small_size())
                     .text_color(c.text_muted)
-                    .child(summary),
+                    .child(label.target.clone()),
             );
         if let Some(ix) = file_ref {
             header = header.child(
@@ -1130,16 +1153,27 @@ impl TranscriptView {
                     .child("Diff"),
             );
         }
-        header = header.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .text_size(theme.small_size())
-                .text_color(status_color)
-                .child(icon(status_icon, 12.0, status_color))
-                .child(status_text),
-        );
+        // Success is a quiet check; a failure or a run in progress says so in words.
+        header = header
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .text_size(theme.small_size())
+                    .text_color(status_color)
+                    .child(icon(status_icon, 14.0, status_color))
+                    .when(tool.status != ToolStatus::Ok, |d| d.child(status_text)),
+            )
+            .child(icon(
+                if expanded {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                13.0,
+                c.text_faint,
+            ));
         let mut col = div().w_full().flex().flex_col().child(header);
         if expanded {
             let blocks = self.blocks_for(conv, item, true);
@@ -1233,6 +1267,8 @@ impl TranscriptView {
             .id(ElementId::NamedInteger("msg".into(), id.0))
             .role(Role::Article)
             .aria_label(format!("Tool {}: {}", tool.name, status_text))
+            // Under the message text, past the marker column.
+            .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
             .child(col)
             .into_any_element()
     }
@@ -1529,6 +1565,7 @@ impl Render for TranscriptView {
                 }));
             }
             _ => {
+                let welcome = self.current.is_some() && read_only.is_none();
                 let (title, hint): (&str, String) = if self.current.is_none() {
                     (
                         "No conversation selected",
@@ -1537,7 +1574,7 @@ impl Render for TranscriptView {
                 } else {
                     match &read_only {
                         Some(reason) => ("No messages in this session", reason.clone()),
-                        None => ("No messages yet", "Write a prompt below to begin.".into()),
+                        None => ("Ready when you are.", "Connect. Prompt. Build.".into()),
                     }
                 };
                 root = root.child(
@@ -1549,11 +1586,25 @@ impl Render for TranscriptView {
                         .justify_center()
                         .gap(px(6.0))
                         .font_family(theme.ui_font())
+                        .when(welcome, |d| {
+                            // The approved mascot, at its own proportions (420 x 436).
+                            d.child(
+                                gpui::img(crate::assets::MASCOT)
+                                    .w(px(126.0 * theme.scale.max(1.0)))
+                                    .h(px(131.0 * theme.scale.max(1.0)))
+                                    .object_fit(gpui::ObjectFit::Contain)
+                                    .mb(px(8.0)),
+                            )
+                        })
                         .child(
                             div()
-                                .text_size(theme.ui_size())
+                                .text_size(if welcome {
+                                    px(18.0 * theme.scale)
+                                } else {
+                                    theme.ui_size()
+                                })
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(c.text_muted)
+                                .text_color(if welcome { c.text } else { c.text_muted })
                                 .child(title),
                         )
                         .child(

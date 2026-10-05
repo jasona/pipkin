@@ -113,7 +113,7 @@ impl RenderOnce for Btn {
             t.control_height()
         };
         let (fg, bg) = match (self.kind, self.selected) {
-            (BtnKind::Primary, _) => (c.accent_text, c.accent),
+            (BtnKind::Primary, _) => (c.accent_text, c.accent_fill),
             (BtnKind::Danger, _) => (c.danger, c.danger_bg),
             (BtnKind::Subtle, _) => (c.text, c.bg_active),
             (BtnKind::Ghost, true) => (c.text, c.bg_selected),
@@ -127,12 +127,12 @@ impl RenderOnce for Btn {
         let on_key = self.on_click.clone();
         let kind = self.kind;
         let hover_bg = if kind == BtnKind::Primary {
-            c.accent.opacity(0.85)
+            c.accent_fill.opacity(0.85)
         } else {
             c.bg_hover
         };
         let active_bg = if kind == BtnKind::Primary {
-            c.accent.opacity(0.7)
+            c.accent_fill.opacity(0.7)
         } else {
             c.bg_active
         };
@@ -305,4 +305,19 @@ pub fn marked_text(
         });
     }
     gpui::StyledText::new(SharedString::from(text)).with_runs(runs)
+}
+
+/// The Pipkin wordmark: Poppins Bold, with the brand amber on "in".
+pub fn wordmark(size: gpui::Pixels, cx: &App) -> Div {
+    let t = cx.theme();
+    div()
+        .flex()
+        .items_baseline()
+        .font_family(t.ui_font())
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_size(size)
+        .line_height(size * 1.15)
+        .text_color(t.colors.text)
+        .child("Pipk")
+        .child(div().text_color(t.colors.accent_fill).child("in"))
 }

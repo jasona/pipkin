@@ -301,16 +301,42 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .gap(px(8.0))
+                // With nothing wrong to report, greet with the mascot; otherwise say what is.
+                .when(banner.is_none(), |d| {
+                    d.child(
+                        gpui::img(crate::assets::MASCOT)
+                            .w(px(126.0 * t.scale.max(1.0)))
+                            .h(px(131.0 * t.scale.max(1.0)))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                })
                 .child(
                     div()
-                        .text_color(c.text_muted)
-                        .child("No conversation selected"),
+                        .text_size(if banner.is_none() {
+                            px(18.0 * t.scale)
+                        } else {
+                            t.ui_size()
+                        })
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(if banner.is_none() {
+                            c.text
+                        } else {
+                            c.text_muted
+                        })
+                        .child(if banner.is_none() {
+                            "Ready when you are."
+                        } else {
+                            "No conversation selected"
+                        }),
                 )
                 .child(
                     div()
                         .text_size(t.small_size())
                         .text_color(c.text_faint)
-                        .child(banner.unwrap_or_else(|| "Create one with Ctrl+N.".into())),
+                        .child(
+                            banner
+                                .unwrap_or_else(|| "Press Ctrl+N to start a conversation.".into()),
+                        ),
                 )
                 .into_any_element()
         };
@@ -698,8 +724,8 @@ impl Workspace {
                 .into_any_element()
         } else {
             Btn::new("send")
-                .icon("arrow-up")
-                .label("Send")
+                .icon("arrow-right")
+                .aria("Send message (Enter)")
                 .kind(BtnKind::Primary)
                 .disabled(!avail.submit)
                 .on_click({
@@ -751,6 +777,16 @@ impl Workspace {
                     )
             })
             .child(div().flex_1())
+            .when(!running, |d| {
+                d.child(
+                    div()
+                        .px(px(8.0))
+                        .text_size(t.small_size())
+                        .font_family(t.mono_font())
+                        .text_color(c.text_faint)
+                        .child("Enter to send \u{b7} Shift+Enter for a new line"),
+                )
+            })
             .child(
                 div()
                     .text_size(t.small_size())
@@ -800,12 +836,13 @@ impl Workspace {
                             .aria_label("Message composer")
                             .flex()
                             .flex_col()
-                            .p(px(10.0))
-                            .rounded(px(10.0))
+                            .p(px(12.0))
+                            .rounded(px(9.0))
                             .bg(c.bg_input)
                             .border_1()
+                            // Neutral like the mock; focus is a lighter edge, still clearly visible.
                             .border_color(if focused_ring {
-                                c.accent
+                                c.text_faint
                             } else {
                                 c.border_strong
                             })

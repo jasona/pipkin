@@ -324,6 +324,10 @@ Caveats:
 - Engine upgrade is atomic with the app (one package), but a rollback after a schema change needs the backup restored by hand.
 - Only x86_64 Arch with Wayland and system Node was considered. Power-loss, disk-full and GPU-driver coverage are unmeasured.
 
+#### Brand pass (2026-10-05)
+
+The UI now follows the Pipkin brand (`../pipkinai.com`: guide, palette, Poppins) and the website's app demo: the Midnight/Slate/Amber palette through the theme tokens (dark and light), Poppins (italics stay IBM Plex Sans, as Poppins has none here), the wordmark, a rail with a "New chat" button, two-line conversation rows with the amber marker, bottom Commands/Settings rows, avatar-led messages ("You", "Pipkin"), tool calls as cards with a verb, target and status, a bordered composer with an amber send button, a changes pane with a diff card and a "Files changed" list, the mascot on the empty state, and PNG app icons for the package. Checked on screen in the demo at 125% in both themes; **not** checked at other scales, with the real engine, with a screen reader, or on the narrow layouts, and the gates in `native-gate-testing.md` should be re-run on it. The assistant is labelled "Pipkin" (as in the demo), though the words come from the model behind Pi.
+
 Caveats of the features themselves:
 
 - Search covers only what has been opened here (saved copies, the latest 400 items each), not the engine's whole history, and says so. An engine-side search service would be a Pi change.

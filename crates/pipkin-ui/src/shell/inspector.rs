@@ -66,7 +66,7 @@ impl Workspace {
                 Some(cv) => (
                     cv.changes
                         .iter()
-                        .map(|f| (f.path.clone(), f.added, f.removed))
+                        .map(|f| (f.path.clone(), f.added, f.removed, change_letter(f)))
                         .collect::<Vec<_>>(),
                     cv.selected_change,
                 ),
@@ -110,11 +110,10 @@ impl Workspace {
             .flex_none()
             .items_center()
             .gap(px(8.0))
-            .h(px(48.0))
-            .px(px(12.0))
+            .h(px(52.0))
+            .px(px(16.0))
             .border_b_1()
             .border_color(c.border)
-            .child(icon("file-diff", px(16.0), c.text_muted))
             .child(
                 div()
                     .id("inspector-title")
@@ -164,61 +163,116 @@ impl Workspace {
                 )
                 .into_any_element()
         } else {
+            let count = changes.len();
             let list = div()
                 .id("changed-files")
                 .role(Role::List)
                 .aria_label("Changed files")
                 .flex()
                 .flex_col()
-                .flex_none()
                 .max_h(px(180.0 * t.scale))
                 .overflow_y_scroll()
                 .track_scroll(&self.changes_scroll)
-                .p(px(6.0))
-                .gap(px(2.0))
-                .children(changes.iter().enumerate().map(|(i, (path, add, rem))| {
-                    let this = this.clone();
-                    let sel = selected == Some(i);
-                    menu_row(("change", i), sel, cx)
-                        .role(Role::ListItem)
-                        .aria_label(format!("{path}, {add} added, {rem} removed"))
-                        .aria_selected(sel)
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |t, cx| t.dispatch(Command::SelectChange(i), cx))
-                        })
+                .children(
+                    changes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (path, add, rem, letter))| {
+                            let this = this.clone();
+                            let sel = selected == Some(i);
+                            let badge = match letter {
+                                'A' => c.success,
+                                'D' => c.danger,
+                                _ => c.accent_fill,
+                            };
+                            menu_row(("change", i), sel, cx)
+                                .role(Role::ListItem)
+                                .aria_label(format!("{path}, {add} added, {rem} removed"))
+                                .aria_selected(sel)
+                                .rounded(px(0.0))
+                                .on_click(move |_, _, cx| {
+                                    this.update(cx, |t, cx| {
+                                        t.dispatch(Command::SelectChange(i), cx)
+                                    })
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(18.0 * t.scale.max(1.0)))
+                                        .rounded(px(3.0))
+                                        .bg(badge)
+                                        .text_color(c.accent_text)
+                                        .text_size(t.small_size())
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(letter.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_ellipsis_start()
+                                        .font_family(t.mono_font())
+                                        .text_size(t.small_size())
+                                        .child(path.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .font_family(t.mono_font())
+                                        .text_size(t.small_size())
+                                        .text_color(c.diff_add_text)
+                                        .child(format!("+{add}")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .font_family(t.mono_font())
+                                        .text_size(t.small_size())
+                                        .text_color(c.diff_remove_text)
+                                        .child(format!("\u{2212}{rem}")),
+                                )
+                        }),
+                );
+            let files_card = div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .overflow_hidden()
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(c.border_strong)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .border_b_1()
+                        .border_color(c.border_strong)
+                        .text_size(t.small_size())
+                        .text_color(c.text_muted)
                         .child(
                             div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_ellipsis_start()
-                                .font_family(t.mono_font())
-                                .text_size(t.small_size())
-                                .child(path.clone()),
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Files changed"),
                         )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(t.small_size())
-                                .text_color(c.diff_add_text)
-                                .child(format!("+{add}")),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(t.small_size())
-                                .text_color(c.diff_remove_text)
-                                .child(format!("−{rem}")),
-                        )
-                }));
+                        .child(format!("{count} file{}", if count == 1 { "" } else { "s" })),
+                )
+                .child(list);
             div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .child(list)
-                .child(div().h(px(1.0)).w_full().bg(c.border))
+                .gap(px(10.0))
+                .p(px(12.0))
                 .child(self.render_diff(cx))
+                .child(files_card)
                 .into_any_element()
         };
 
@@ -229,7 +283,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .size_full()
-            .bg(c.bg_pane)
+            .bg(c.bg_changes)
             .child(header)
             .child(body)
     }
@@ -260,9 +314,12 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.0))
-            .px(px(12.0))
-            .h(px(32.0))
+            .gap(px(6.0))
+            .px(px(10.0))
+            .h(px(38.0))
+            .border_b_1()
+            .border_color(t.colors.border_strong)
+            .child(icon("chevron-right", px(14.0), t.colors.accent))
             .child(
                 div()
                     .flex_1()
@@ -349,8 +406,66 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .overflow_hidden()
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(t.colors.border_strong)
+            .bg(t.colors.code_bg)
             .child(header)
             .child(div().flex_1().min_h_0().child(list))
             .into_any_element()
+    }
+}
+
+/// The one-letter kind shown beside a changed file: A for a new file, D for a removed one,
+/// M for anything else. Inferred from the diff, which carries no explicit status.
+fn change_letter(f: &FileChange) -> char {
+    let lines = || f.hunks.iter().flat_map(|h| h.lines.iter());
+    let any = lines().next().is_some();
+    if any && lines().all(|l| l.kind == DiffKind::Add) && f.removed == 0 {
+        'A'
+    } else if any && lines().all(|l| l.kind == DiffKind::Remove) && f.added == 0 {
+        'D'
+    } else {
+        'M'
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(kind: DiffKind) -> DiffLine {
+        DiffLine {
+            kind,
+            old_no: None,
+            new_no: None,
+            text: String::new(),
+        }
+    }
+
+    fn change(added: u32, removed: u32, kinds: &[DiffKind]) -> FileChange {
+        FileChange {
+            path: "a.rs".into(),
+            added,
+            removed,
+            hunks: vec![Hunk {
+                header: String::new(),
+                lines: kinds.iter().map(|k| line(*k)).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_file_is_new_removed_or_modified_by_what_its_diff_holds() {
+        use DiffKind::*;
+        assert_eq!(change_letter(&change(2, 0, &[Add, Add])), 'A');
+        assert_eq!(change_letter(&change(0, 2, &[Remove, Remove])), 'D');
+        assert_eq!(change_letter(&change(1, 1, &[Context, Remove, Add])), 'M');
+        assert_eq!(
+            change_letter(&change(0, 0, &[])),
+            'M',
+            "an empty diff is not called new"
+        );
     }
 }

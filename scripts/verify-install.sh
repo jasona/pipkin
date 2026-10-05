@@ -23,7 +23,7 @@ check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 check "binary is executable" "[ -x '$root/prefix/usr/bin/pipkin' ]"
 check "engine manifest present" "[ -f '$root/prefix/usr/lib/pipkin/engine/engine.json' ]"
 check "desktop entry present" "grep -q '^Exec=pipkin' '$root/prefix/usr/share/applications/pipkin.desktop'"
-check "icon present" "[ -f '$root/prefix/usr/share/icons/hicolor/scalable/apps/pipkin.svg' ]"
+check "icon present" "[ -f '$root/prefix/usr/share/icons/hicolor/256x256/apps/pipkin.png' ]"
 if command -v desktop-file-validate >/dev/null; then
   check "desktop entry validates" "desktop-file-validate '$root/prefix/usr/share/applications/pipkin.desktop'"
 fi

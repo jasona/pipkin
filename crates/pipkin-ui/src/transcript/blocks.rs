@@ -273,6 +273,9 @@ pub fn build_runs(
             }
             if st.italic {
                 style = FontStyle::Italic;
+                if family == base.family {
+                    family = crate::assets::ITALIC_FONT.into();
+                }
             }
             if st.code {
                 family = base.mono.clone();

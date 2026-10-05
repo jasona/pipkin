@@ -51,14 +51,24 @@ icons!(
     "ellipsis",
     "circle-help",
     "circle-check",
+    "zap",
+    "arrow-right",
 );
 
 pub struct Assets;
+
+/// Brand artwork (the mascot), kept apart from the icon set.
+pub const MASCOT: &str = "brand/mascot.png";
+const BRAND: &[(&str, &[u8])] = &[(
+    MASCOT,
+    include_bytes!("../../../assets/brand/mascot.png") as &[u8],
+)];
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         Ok(ICONS
             .iter()
+            .chain(BRAND)
             .find(|(p, _)| *p == path)
             .map(|(_, bytes)| Cow::Borrowed(*bytes)))
     }
@@ -66,6 +76,7 @@ impl AssetSource for Assets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         Ok(ICONS
             .iter()
+            .chain(BRAND)
             .filter(|(p, _)| p.starts_with(path))
             .map(|(p, _)| SharedString::from(*p))
             .collect())
@@ -78,14 +89,17 @@ macro_rules! font {
     };
 }
 
-pub const UI_FONT: &str = "IBM Plex Sans";
+pub const UI_FONT: &str = "Poppins";
+/// Poppins ships no italic here, so emphasis uses IBM Plex Sans Italic.
+pub const ITALIC_FONT: &str = "IBM Plex Sans";
 pub const MONO_FONT: &str = "Lilex";
 
 pub fn load_fonts(cx: &gpui::App) -> Result<()> {
     cx.text_system().add_fonts(vec![
-        font!("IBMPlexSans-Regular.ttf"),
+        font!("Poppins-Regular.ttf"),
+        font!("Poppins-SemiBold.ttf"),
+        font!("Poppins-Bold.ttf"),
         font!("IBMPlexSans-Italic.ttf"),
-        font!("IBMPlexSans-SemiBold.ttf"),
         font!("IBMPlexSans-SemiBoldItalic.ttf"),
         font!("Lilex-Regular.ttf"),
         font!("Lilex-Bold.ttf"),

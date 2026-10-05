@@ -16,7 +16,9 @@ cargo build -p pipkin-app --release --locked
 "$here/scripts/build-engine.sh" "${1:-$here/../pi-fork/pi}" "$stage/usr/lib/pipkin/engine"
 install -Dm755 target/release/pipkin "$stage/usr/bin/pipkin"
 install -Dm644 packaging/pipkin.desktop "$stage/usr/share/applications/pipkin.desktop"
-install -Dm644 packaging/pipkin.svg "$stage/usr/share/icons/hicolor/scalable/apps/pipkin.svg"
+for size in 128 256 512; do
+  install -Dm644 "packaging/pipkin-$size.png" "$stage/usr/share/icons/hicolor/${size}x${size}/apps/pipkin.png"
+done
 install -Dm644 assets/icons/LICENSE "$stage/usr/share/licenses/pipkin/icons-LICENSE"
 install -Dm644 assets/PROVENANCE.md "$stage/usr/share/doc/pipkin/PROVENANCE.md"
 install -Dm644 README.md "$stage/usr/share/doc/pipkin/README.md"

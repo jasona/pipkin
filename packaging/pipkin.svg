@@ -1,5 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Pipkin">
-  <rect width="128" height="128" rx="28" fill="#1f2430"/>
-  <path d="M40 94V34h26a20 20 0 0 1 0 40H40" fill="none" stroke="#9fd3ff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="92" cy="94" r="7" fill="#9fd3ff"/>
-</svg>

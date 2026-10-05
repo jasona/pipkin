@@ -1,6 +1,6 @@
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, Role, StatefulInteractiveElement,
-    Styled, Window, div, px,
+    Styled, Window, div, prelude::*, px,
 };
 use pipkin_core::*;
 
@@ -124,35 +124,65 @@ impl Workspace {
                 .children(rows.into_iter().map(|(id, title, at, activity)| {
                     let is_sel = selected == Some(id);
                     let this = this.clone();
-                    let mut row = menu_row(("conv", id.0 as usize), is_sel, cx)
+                    let hover = c.bg_hover;
+                    let ring = c.accent;
+                    div()
+                        .id(("conv", id.0 as usize))
                         .role(Role::ListItem)
                         .aria_label(title.clone())
                         .aria_selected(is_sel)
-                        .justify_between()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .gap(px(2.0))
+                        .px(px(12.0))
+                        .py(px(9.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .tab_stop(true)
+                        .when(is_sel, |d| d.bg(c.bg_selected))
+                        .hover(move |s| s.bg(hover))
+                        .focus_visible(move |s| s.border_1().border_color(ring))
                         .on_click(move |_, window, cx| {
                             this.update(cx, |this, cx| {
                                 this.close_panel(window, cx);
                                 this.dispatch(Command::SelectConversation(id), cx);
                             });
                         })
+                        // The brand's amber marker on the open conversation.
+                        .when(is_sel, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left_0()
+                                    .w(px(4.0))
+                                    .rounded_l(px(6.0))
+                                    .bg(c.accent_fill),
+                            )
+                        })
                         .child(
                             div()
-                                .flex_1()
-                                .min_w_0()
+                                .w_full()
                                 .truncate()
                                 .text_color(if is_sel { c.text } else { c.text_muted })
                                 .child(title),
-                        );
-                    if let Some(a) = activity {
-                        row = row.child(chip(a, c.accent, c.accent_bg, cx));
-                    }
-                    row.child(
-                        div()
-                            .flex_none()
-                            .text_size(t.small_size())
-                            .text_color(c.text_faint)
-                            .child(relative_time(now, at)),
-                    )
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .text_size(t.small_size())
+                                .text_color(c.text_faint)
+                                .child(
+                                    format!("{} ago", relative_time(now, at))
+                                        .replace("now ago", "just now"),
+                                )
+                                .children(activity.map(|a| chip(a, c.accent, c.accent_bg, cx))),
+                        )
                 }))
                 .into_any_element()
         };
@@ -240,18 +270,48 @@ impl Workspace {
         let new_enabled = self.state(cx).availability().new_conversation;
         let new_btn = {
             let this = cx.entity();
-            Btn::new("new-conversation")
-                .icon("plus")
-                .label("New conversation")
-                .kind(BtnKind::Subtle)
-                .disabled(!new_enabled)
-                .on_click(move |window, cx| {
-                    this.update(cx, |this, cx| {
-                        this.close_panel(window, cx);
-                        this.dispatch(Command::NewConversation, cx);
-                        this.focus_composer(window, cx);
-                    })
+            let enabled = new_enabled;
+            let hover = c.bg_active;
+            let ring = c.accent;
+            div()
+                .id("new-conversation")
+                .role(Role::Button)
+                .aria_label("New chat (Ctrl+N)")
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .h(px(40.0 * t.scale.max(1.0)))
+                .px(px(12.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(c.border_strong)
+                .bg(c.bg_selected)
+                .text_color(c.text)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .when(enabled, |d| {
+                    d.cursor_pointer()
+                        .tab_stop(true)
+                        .hover(move |s| s.bg(hover))
+                        .focus_visible(move |s| s.border_color(ring))
+                        .on_click(move |_, window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.close_panel(window, cx);
+                                this.dispatch(Command::NewConversation, cx);
+                                this.focus_composer(window, cx);
+                            })
+                        })
                 })
+                .when(!enabled, |d| d.opacity(0.45))
+                .child(icon("plus", px(16.0), c.text))
+                .child(div().flex_1().child("New chat"))
+                .child(
+                    div()
+                        .text_size(t.small_size())
+                        .font_family(t.mono_font())
+                        .font_weight(gpui::FontWeight::NORMAL)
+                        .text_color(c.text_faint)
+                        .child("Ctrl N"),
+                )
         };
         let (can_open_project, notice) = {
             let s = self.state(cx);
@@ -291,25 +351,50 @@ impl Workspace {
                         }),
                 )
         });
+        let util_row = |id: &'static str,
+                        glyph: &'static str,
+                        label: &'static str,
+                        hint: Option<&'static str>,
+                        cx: &mut Context<Self>| {
+            let hover = c.bg_hover;
+            let ring = c.accent;
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(label)
+                .flex()
+                .items_center()
+                .gap(px(9.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .tab_stop(true)
+                .text_size(t.small_size())
+                .text_color(c.text_muted)
+                .hover(move |s| s.bg(hover))
+                .focus_visible(move |s| s.border_1().border_color(ring))
+                .child(icon(glyph, px(15.0), c.text_muted))
+                .child(div().flex_1().child(label))
+                .children(hint.map(|h| kbd(h, cx)))
+        };
         let prefs_btn = {
             let this = cx.entity();
-            Btn::new("open-prefs")
-                .icon("settings")
-                .aria("Preferences")
-                .on_click(move |window, cx| {
+            util_row("open-prefs", "settings", "Settings", Some("Ctrl ,"), cx).on_click(
+                move |_, window, cx| {
                     this.update(cx, |this, cx| this.open_overlay(Overlay::Prefs, window, cx))
-                })
+                },
+            )
         };
         let palette_btn = {
             let this = cx.entity();
-            Btn::new("open-palette")
-                .icon("command")
-                .aria("Command palette")
-                .on_click(move |window, cx| {
+            util_row("open-palette", "command", "Commands", Some("Ctrl K"), cx).on_click(
+                move |_, window, cx| {
                     this.update(cx, |this, cx| {
                         this.open_overlay(Overlay::Palette, window, cx)
                     })
-                })
+                },
+            )
         };
 
         div()
@@ -321,15 +406,16 @@ impl Workspace {
             .size_full()
             .bg(c.bg_pane)
             .gap(px(8.0))
-            .py(px(8.0))
+            .py(px(12.0))
+            .child(div().px(px(16.0)).pb(px(2.0)).child(wordmark(px(22.0), cx)))
             .child(
                 div()
-                    .px(px(8.0))
+                    .px(px(12.0))
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .child(proj)
                     .child(new_btn)
+                    .child(proj)
                     .children(open_project_btn)
                     .children(notice_el)
                     .child(
@@ -348,15 +434,23 @@ impl Workspace {
                     ),
             )
             .children(found_el)
+            .child(
+                div()
+                    .px(px(16.0))
+                    .pt(px(6.0))
+                    .text_size(t.small_size())
+                    .text_color(c.text_muted)
+                    .child("Conversations"),
+            )
             .child(list)
             .child(
                 div()
-                    .px(px(8.0))
+                    .px(px(12.0))
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(prefs_btn)
-                    .child(palette_btn),
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(palette_btn)
+                    .child(prefs_btn),
             )
     }
 }

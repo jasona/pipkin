@@ -6,7 +6,7 @@
 /usr/bin/pipkin                         the application
 /usr/lib/pipkin/engine/                 a self-contained Pi engine (sources, production node_modules, engine.json)
 /usr/share/applications/pipkin.desktop  launcher entry (StartupWMClass=pipkin)
-/usr/share/icons/hicolor/scalable/apps/pipkin.svg
+/usr/share/icons/hicolor/{128,256,512}x…/apps/pipkin.png
 ```
 
 The engine runs on the system `nodejs` (>= 22.19, a package dependency). `engine.json` records the engine

@@ -110,9 +110,7 @@ impl Workspace {
         overlay_input.update(cx, |e, cx| {
             e.set_label("Command palette or dialog input", cx)
         });
-        composer.update(cx, |e, _| {
-            e.set_placeholder("Message Pi — Enter to send, Shift+Enter for a new line")
-        });
+        composer.update(cx, |e, _| e.set_placeholder("Ask anything\u{2026}"));
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(&composer, window, Self::on_composer_event));
         subs.push(cx.subscribe_in(&nav_search, window, Self::on_search_event));
