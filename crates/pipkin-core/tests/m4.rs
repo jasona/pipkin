@@ -1045,6 +1045,15 @@ fn the_window_size_is_stored_clamped_and_only_when_it_changes() {
     );
 }
 
+#[test]
+fn inspector_width_can_exceed_the_old_fixed_limit() {
+    let mut s = real(0);
+    s.dispatch(Command::SetInspectorWidth(1200.0));
+    assert_eq!(s.prefs.inspector_width, 1200.0);
+    s.dispatch(Command::SetInspectorWidth(99_999.0));
+    assert_eq!(s.prefs.inspector_width, 8192.0);
+}
+
 /// A real conversation is named for the last prompt sent in it, not for its session id.
 #[test]
 fn a_real_conversation_is_named_for_its_last_prompt() {

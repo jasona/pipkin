@@ -952,7 +952,7 @@ impl AppState {
             Command::SetReducedMotion(v) => self.pref(&mut out, |p| p.reduced_motion = v),
             Command::SetNavWidth(w) => self.pref(&mut out, |p| p.nav_width = w.clamp(180.0, 420.0)),
             Command::SetInspectorWidth(w) => {
-                self.pref(&mut out, |p| p.inspector_width = w.clamp(280.0, 720.0))
+                self.pref(&mut out, |p| p.inspector_width = w.clamp(280.0, 8192.0))
             }
             Command::SetInspectorOpen(v) => self.pref(&mut out, |p| p.inspector_open = v),
             Command::SetWindowSize(w, h) => {

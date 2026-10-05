@@ -23,6 +23,7 @@ pub enum Overlay {
     Project,
     Rename(ConversationId),
     Prefs,
+    About,
     /// A question an extension asked, for the first one waiting.
     Question,
 }
@@ -48,6 +49,26 @@ impl Render for DragGhost {
 
 pub const MIN_CENTER: f32 = 480.0;
 pub const DOCK_NAV_MIN_WIDTH: f32 = 900.0;
+const DIVIDER_WIDTH: f32 = 5.0;
+
+// The inspector can use all available space except the navigation pane and a readable centre.
+fn inspector_drag_width(x: f32, total: f32, nav: f32) -> f32 {
+    let available = total - nav - 2.0 * DIVIDER_WIDTH - MIN_CENTER;
+    (total - x).clamp(280.0, available.max(280.0))
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::inspector_drag_width;
+
+    #[test]
+    fn inspector_uses_available_room_instead_of_a_fixed_ceiling() {
+        assert_eq!(inspector_drag_width(500.0, 1920.0, 240.0), 1190.0);
+        assert_eq!(inspector_drag_width(1800.0, 1920.0, 240.0), 280.0);
+        assert_eq!(inspector_drag_width(1100.0, 1200.0, 240.0), 280.0);
+        assert_eq!(inspector_drag_width(0.0, 1200.0, 240.0), 470.0);
+    }
+}
 
 pub struct Workspace {
     pub(super) model: Entity<Model>,
@@ -451,7 +472,9 @@ impl Workspace {
                 self.menu_scroll.scroll_to_item(self.overlay_sel);
                 window.focus(&self.menu_focus, cx);
             }
-            Overlay::Project | Overlay::Prefs => window.focus(&self.menu_focus, cx),
+            Overlay::Project | Overlay::Prefs | Overlay::About => {
+                window.focus(&self.menu_focus, cx)
+            }
             Overlay::Question => {
                 let question = self.waiting_question(cx, true);
                 match question {
@@ -511,6 +534,12 @@ impl Workspace {
             && !self.question_dismissed.contains(&q.id)
         {
             self.question_dismissed.push(q.id);
+        }
+        if self.overlay == Overlay::About {
+            self.overlay = Overlay::Prefs;
+            window.focus(&self.menu_focus, cx);
+            cx.notify();
+            return;
         }
         self.overlay = Overlay::None;
         match self.restore_focus.take() {
@@ -869,7 +898,9 @@ impl Workspace {
     fn on_drag_move(&mut self, split: Split, x: f32, total: f32, cx: &mut Context<Self>) {
         match split {
             Split::Nav => self.live_nav = Some(x.clamp(180.0, 420.0)),
-            Split::Inspector => self.live_insp = Some((total - x).clamp(280.0, 720.0)),
+            Split::Inspector => {
+                self.live_insp = Some(inspector_drag_width(x, total, self.nav_width(cx)))
+            }
         }
         cx.notify();
     }
@@ -897,7 +928,7 @@ impl Workspace {
         };
         div()
             .id(id)
-            .w(px(5.0))
+            .w(px(DIVIDER_WIDTH))
             .h_full()
             .flex_none()
             .cursor_col_resize()

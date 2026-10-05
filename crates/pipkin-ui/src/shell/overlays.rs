@@ -123,6 +123,7 @@ impl Workspace {
             Overlay::Project => self.render_menu_overlay(cx).into_any_element(),
             Overlay::Rename(_) => self.render_rename(cx).into_any_element(),
             Overlay::Prefs => self.render_prefs(cx).into_any_element(),
+            Overlay::About => self.render_about(cx).into_any_element(),
             Overlay::Question => self.render_question(cx).into_any_element(),
             Overlay::None => div().into_any_element(),
         };
@@ -708,14 +709,80 @@ impl Workspace {
                     ),
                 ],
             ))
-            .child(div().flex().justify_end().child({
-                let this = this.clone();
-                Btn::new("prefs-close")
-                    .label("Done")
-                    .kind(BtnKind::Primary)
-                    .on_click(move |window, cx| {
-                        this.update(cx, |t, cx| t.close_overlay(window, cx))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child({
+                        let this = this.clone();
+                        Btn::new("prefs-about")
+                            .label("About")
+                            .on_click(move |window, cx| {
+                                this.update(cx, |t, cx| t.open_overlay(Overlay::About, window, cx))
+                            })
                     })
-            }))
+                    .child({
+                        let this = this.clone();
+                        Btn::new("prefs-close")
+                            .label("Done")
+                            .kind(BtnKind::Primary)
+                            .on_click(move |window, cx| {
+                                this.update(cx, |t, cx| t.close_overlay(window, cx))
+                            })
+                    }),
+            )
+    }
+
+    fn render_about(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let c = &t.colors;
+        let this = cx.entity();
+        elevated(cx)
+            .id("about")
+            .key_context("Overlay")
+            .track_focus(&self.menu_focus)
+            .role(Role::Dialog)
+            .aria_label("About Pipkin")
+            .w(px(360.0 * t.scale.max(1.0)))
+            .max_w_full()
+            .p(px(24.0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.0))
+            .occlude()
+            .child(
+                gpui::img(crate::assets::MASCOT)
+                    .w(px(126.0 * t.scale.max(1.0)))
+                    .h(px(131.0 * t.scale.max(1.0)))
+                    .object_fit(gpui::ObjectFit::Contain),
+            )
+            .child(
+                div()
+                    .text_size(px(22.0 * t.scale))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Pipkin"),
+            )
+            .child(div().text_color(c.text_muted).child(format!(
+                "Pipkin desktop · Version {}",
+                env!("CARGO_PKG_VERSION")
+            )))
+            .child(
+                Btn::new("about-website")
+                    .label("Visit pipkinai.com")
+                    .kind(BtnKind::Subtle)
+                    .on_click(|_, cx| cx.open_url("https://pipkinai.com")),
+            )
+            .child(
+                div().w_full().flex().justify_end().pt(px(8.0)).child(
+                    Btn::new("about-back")
+                        .label("Back to settings")
+                        .kind(BtnKind::Primary)
+                        .on_click(move |window, cx| {
+                            this.update(cx, |t, cx| t.close_overlay(window, cx))
+                        }),
+                ),
+            )
     }
 }
