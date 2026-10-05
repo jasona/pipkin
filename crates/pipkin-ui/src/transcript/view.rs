@@ -151,6 +151,19 @@ struct RowCtx {
     steps: Option<StepsLine>,
 }
 
+/// Work between a prompt and its reply that folds into one line: the tool steps and the model's
+/// thinking. (Errors and other notices stay visible on their own.)
+fn is_activity(kind: &ItemKind) -> bool {
+    match kind {
+        ItemKind::Tool(_) => true,
+        ItemKind::Notice {
+            level: NoticeLevel::Info,
+            text,
+        } => super::tools::is_thinking(text),
+        _ => false,
+    }
+}
+
 /// Whether a reply is the start of a new one, and so carries the Pipkin marker and label: it does
 /// unless the item before it is also reply text (steps and thinking in between do not continue it).
 fn starts_reply(previous: Option<&ItemKind>) -> bool {
@@ -290,7 +303,7 @@ impl TranscriptView {
         let model = self.model.clone();
         let range = model.read(cx).state.conversation(conv).and_then(|c| {
             let s = Document::index_of(&c.items, first)?;
-            let is_tool = |i: usize| matches!(c.items[i].kind, ItemKind::Tool(_));
+            let is_tool = |i: usize| is_activity(&c.items[i].kind);
             let (_, last) = super::tools::tool_run(c.items.len(), s, is_tool)?;
             Some(s..last + 1)
         });
@@ -804,8 +817,8 @@ impl TranscriptView {
         // shows them all, and they follow along live. The rows keep their places in the list
         // (so every index stays valid); the hidden ones simply have no height.
         let mut steps = None;
-        if matches!(item.kind, ItemKind::Tool(_)) {
-            let is_tool = |i: usize| matches!(conv.items[i].kind, ItemKind::Tool(_));
+        if is_activity(&item.kind) {
+            let is_tool = |i: usize| is_activity(&conv.items[i].kind);
             if let Some((first, last)) = super::tools::tool_run(conv.items.len(), item_ix, is_tool)
                 && last > first
             {
@@ -828,15 +841,33 @@ impl TranscriptView {
                             failed |= t.status == ToolStatus::Failed;
                         }
                     }
+                    // Still going if the run is busy and this stretch is the newest thing in it.
+                    let live = conv.run.is_busy() && last + 1 == conv.items.len();
+                    running |= live;
                     let latest = match &conv.items[last].kind {
                         ItemKind::Tool(t) => super::tools::label(&t.name, &t.input).target,
+                        ItemKind::Notice { text, .. } => {
+                            format!("Thinking: {}", super::tools::thinking_first_line(text))
+                        }
                         _ => String::new(),
                     };
+                    let end = if live {
+                        self.model.read(cx).state.now().max(conv.items[last].at)
+                    } else {
+                        conv.items[last].at
+                    };
+                    let mut summary = super::tools::run_summary(names.into_iter(), running);
+                    if summary.is_empty() {
+                        summary = if running { "Thinking" } else { "Thought" }.into();
+                    }
+                    if let Some(took) = super::tools::format_elapsed(end - conv.items[first].at) {
+                        summary = format!("{summary} \u{b7} {took}");
+                    }
                     steps = Some(StepsLine {
                         count: last - first + 1,
                         open,
                         first: first_id,
-                        summary: super::tools::run_summary(names.into_iter(), running),
+                        summary,
                         latest: shorten(&latest, TOOL_TARGET_CHARS),
                         running,
                         failed,
@@ -1107,7 +1138,21 @@ impl TranscriptView {
             col = col.child(self.author_line("Pipkin", item.at, status, theme));
         }
         for (bi, block) in blocks.iter().enumerate() {
+            // A run of list items reads as one section, with breathing room around the
+            // whole list rather than a repeated card around every point.
+            if matches!(block.kind, BlockKind::ListItem)
+                && (bi == 0 || !matches!(blocks[bi - 1].kind, BlockKind::ListItem))
+            {
+                col = col.child(div().h(px(6.0 * theme.scale)));
+            }
             col = col.child(self.block_element(ctx, item, item_ix, bi, block, cx));
+            if matches!(block.kind, BlockKind::ListItem)
+                && !blocks
+                    .get(bi + 1)
+                    .is_some_and(|b| matches!(b.kind, BlockKind::ListItem))
+            {
+                col = col.child(div().h(px(6.0 * theme.scale)));
+            }
         }
         if streaming {
             // Static indicator: no animation, identical under reduced motion.
@@ -1153,12 +1198,18 @@ impl TranscriptView {
         if level == NoticeLevel::Info
             && let Some(rest) = text.strip_prefix("Thinking")
         {
+            // A folded run is just its fold line, wherever its latest item is a thinking line.
+            if let Some(line) = ctx.steps.as_ref().filter(|l| !l.open) {
+                return div()
+                    .id(ElementId::NamedInteger("msg".into(), item.id.0))
+                    .role(Role::Article)
+                    .aria_label(format!("{}. Show all {} steps", line.summary, line.count))
+                    .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
+                    .child(self.render_run_line(line, theme, cx))
+                    .into_any_element();
+            }
             let body = rest.trim();
-            let first = body
-                .lines()
-                .map(|l| l.replace("**", "").trim().to_string())
-                .find(|l| !l.is_empty())
-                .unwrap_or_default();
+            let first = super::tools::thinking_first_line(text);
             let can_open = !body.is_empty() && !body.starts_with('(');
             let (conv, id, expanded) = (ctx.conv, item.id, ctx.expanded && can_open);
             let mut line = div()
@@ -1207,7 +1258,12 @@ impl TranscriptView {
                     c.text_faint,
                 ));
             }
-            let mut col = div().w_full().flex().flex_col().child(line);
+            let mut col = div().w_full().flex().flex_col();
+            // An opened run carries its fold line above its first item.
+            if let Some(run) = ctx.steps.as_ref().filter(|l| l.open) {
+                col = col.child(self.render_run_line(run, theme, cx));
+            }
+            col = col.child(line);
             if expanded {
                 let blocks = self.blocks_for(ctx.conv, item, true);
                 let mut full = div().w_full().pl(px(30.0)).pr(px(6.0)).pb(px(4.0));
@@ -1648,8 +1704,26 @@ impl TranscriptView {
             let actions: Vec<Click> = clicks.into_iter().map(|(_, a)| a).collect();
             let model = self.model.clone();
             InteractiveText::new(ElementId::NamedInteger("tb".into(), key), styled)
-                .on_click(ranges, move |i, _, cx| match &actions[i] {
-                    Click::Url(u) => cx.open_url(u),
+                .on_click(ranges, move |i, window, cx| match &actions[i] {
+                    Click::Url(u) => {
+                        let project = model
+                            .read(cx)
+                            .state
+                            .current_project()
+                            .map(|p| p.path.as_str());
+                        match super::links::target(u, project) {
+                            Ok(uri) => cx.open_url(&uri),
+                            Err(reason) => {
+                                drop(window.prompt(
+                                    gpui::PromptLevel::Warning,
+                                    "Cannot open document",
+                                    Some(&reason),
+                                    &["OK"],
+                                    cx,
+                                ));
+                            }
+                        }
+                    }
                     Click::Change(ix) => {
                         let ix = *ix;
                         model.update(cx, |m, cx| m.dispatch(Command::SelectChange(ix), cx));
@@ -1738,7 +1812,10 @@ impl TranscriptView {
             }
             BlockKind::ListItem => {
                 let depth = block.indent.max(1) as f32 - 1.0;
-                let mut d = div().w_full().pl(px(depth * 20.0 + 4.0)).mb(px(2.0));
+                let mut d = div()
+                    .w_full()
+                    .pl(px((depth * 20.0 + 12.0) * theme.scale.max(1.0)))
+                    .mb(px(6.0 * theme.scale));
                 if block.quote {
                     d = d.border_l_2().border_color(c.border_strong).pl(px(12.0));
                 }
@@ -1746,12 +1823,12 @@ impl TranscriptView {
             }
             BlockKind::Heading(_) => div()
                 .w_full()
-                .mt(px(8.0))
-                .mb(px(3.0))
+                .mt(px(16.0 * theme.scale))
+                .mb(px(6.0 * theme.scale))
                 .child(text_box)
                 .into_any_element(),
             _ => {
-                let mut d = div().w_full().mb(px(6.0));
+                let mut d = div().w_full().mb(px(10.0 * theme.scale));
                 if block.quote {
                     d = d.border_l_2().border_color(c.border_strong).pl(px(12.0));
                 }

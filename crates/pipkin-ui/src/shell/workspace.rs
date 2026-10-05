@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
@@ -9,6 +10,7 @@ use gpui::{
 use pipkin_core::*;
 
 use super::actions::*;
+use super::clipboard_image;
 use super::commands::Run;
 use crate::model::{DemoControls, Model};
 use crate::text::{ComposerEditor, ComposerEvent};
@@ -72,6 +74,7 @@ mod resize_tests {
 
 pub struct Workspace {
     pub(super) model: Entity<Model>,
+    pasted_image_dir: PathBuf,
     pub(super) transcript: Entity<TranscriptView>,
     pub(super) composer: Entity<ComposerEditor>,
     pub(super) nav_search: Entity<ComposerEditor>,
@@ -123,7 +126,12 @@ impl Focusable for Workspace {
 }
 
 impl Workspace {
-    pub fn new(model: Entity<Model>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        model: Entity<Model>,
+        data_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let transcript = cx.new(|cx| TranscriptView::new(model.clone(), window, cx));
         let composer = cx.new(|cx| ComposerEditor::new(window, cx));
         let nav_search = cx.new(|cx| ComposerEditor::single_line(window, cx));
@@ -148,6 +156,7 @@ impl Workspace {
         }));
         let mut ws = Workspace {
             model,
+            pasted_image_dir: data_dir,
             transcript,
             composer,
             nav_search,
@@ -295,9 +304,56 @@ impl Workspace {
                 self.schedule_flush(cx);
             }
             ComposerEvent::Submit => self.submit_primary(window, cx),
+            ComposerEvent::PasteImage(image) => self.paste_image(image.clone(), cx),
             ComposerEvent::Escape => {}
             _ => {}
         }
+    }
+
+    fn paste_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
+        let Some(conversation) = self.state(cx).selected else {
+            self.show_toast("Open a conversation before pasting an image", cx);
+            return;
+        };
+        let dir = self.pasted_image_dir.clone();
+        cx.spawn(async move |this, cx| {
+            let saved = cx
+                .background_spawn(async move { clipboard_image::save(&image, &dir) })
+                .await;
+            match saved {
+                Ok(path) => {
+                    let attached = this
+                        .update(cx, |this, cx| {
+                            if this.state(cx).selected != Some(conversation) {
+                                this.show_toast(
+                                    "Image not attached: conversation changed during paste",
+                                    cx,
+                                );
+                                return false;
+                            }
+                            this.dispatch(
+                                Command::AddAttachments(vec![describe_attachment(&path)]),
+                                cx,
+                            );
+                            this.schedule_flush(cx);
+                            this.show_toast("Image attached to draft", cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !attached {
+                        cx.background_spawn(async move {
+                            let _ = std::fs::remove_file(path);
+                        })
+                        .detach();
+                    }
+                }
+                Err(message) => {
+                    this.update(cx, |this, cx| this.show_toast(message, cx))
+                        .ok();
+                }
+            }
+        })
+        .detach();
     }
 
     /// Enter: send when idle, steer when a run is active.
@@ -385,6 +441,7 @@ impl Workspace {
             }
             ComposerEvent::Up => self.move_selection(-1, cx),
             ComposerEvent::Down => self.move_selection(1, cx),
+            ComposerEvent::PasteImage(_) => {}
             ComposerEvent::Escape => self.close_overlay(window, cx),
             ComposerEvent::Submit => match self.overlay {
                 Overlay::Rename(id) => {

@@ -88,6 +88,43 @@ pub fn label(name: &str, input: &str) -> ToolLabel {
     }
 }
 
+/// Whether a notice is the model's thinking (`Thinking\n<text>` or `Thinking (not shown)`).
+pub fn is_thinking(text: &str) -> bool {
+    text.starts_with("Thinking")
+}
+
+/// The first words of a thinking notice, without Markdown emphasis; empty when it has none.
+pub fn thinking_first_line(text: &str) -> String {
+    text.strip_prefix("Thinking")
+        .unwrap_or(text)
+        .trim()
+        .lines()
+        .map(|l| l.replace("**", "").trim().to_string())
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+}
+
+/// How long a stretch of work took, for display: nothing under five seconds, then "12s",
+/// "1m 38s" (whole minutes alone as "2m"), "1h 5m".
+pub fn format_elapsed(secs: i64) -> Option<String> {
+    if secs < 5 {
+        return None;
+    }
+    Some(if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        match secs % 60 {
+            0 => format!("{}m", secs / 60),
+            s => format!("{}m {s}s", secs / 60),
+        }
+    } else {
+        match secs % 3600 / 60 {
+            0 => format!("{}h", secs / 3600),
+            m => format!("{}h {m}m", secs / 3600),
+        }
+    })
+}
+
 /// A short phrase for a run of steps: "Read 2 files, edited 1 file, ran 3 commands". While the run is
 /// still going the verbs are progressive ("Reading 2 files, running 1 command").
 pub fn run_summary<'a>(names: impl Iterator<Item = &'a str>, running: bool) -> String {
@@ -256,5 +293,30 @@ mod tests {
             "Used 2 tools"
         );
         assert_eq!(run_summary(std::iter::empty(), false), "");
+    }
+
+    #[test]
+    fn elapsed_time_reads_naturally_and_hides_the_trivial() {
+        assert_eq!(format_elapsed(0), None);
+        assert_eq!(format_elapsed(4), None);
+        assert_eq!(format_elapsed(5).as_deref(), Some("5s"));
+        assert_eq!(format_elapsed(59).as_deref(), Some("59s"));
+        assert_eq!(format_elapsed(98).as_deref(), Some("1m 38s"));
+        assert_eq!(format_elapsed(120).as_deref(), Some("2m"));
+        assert_eq!(format_elapsed(3900).as_deref(), Some("1h 5m"));
+        assert_eq!(format_elapsed(7200).as_deref(), Some("2h"));
+    }
+
+    #[test]
+    fn thinking_is_recognised_and_its_first_words_found() {
+        assert!(is_thinking("Thinking\n**Checking git status**\nmore"));
+        assert!(is_thinking("Thinking (not shown)"));
+        assert!(!is_thinking("A notice"));
+        assert_eq!(
+            thinking_first_line("Thinking\n\n**Checking git status**\nmore"),
+            "Checking git status"
+        );
+        assert_eq!(thinking_first_line("Thinking (not shown)"), "(not shown)");
+        assert_eq!(thinking_first_line("Thinking"), "");
     }
 }

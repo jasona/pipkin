@@ -630,12 +630,14 @@ fn toggle(h: &Harness, first: u64, cx: &mut VisualTestContext) {
 #[gpui::test]
 fn runs_of_tool_steps_fold_to_the_latest_and_open_to_show_all(cx: &mut TestAppContext) {
     let (h, cx) = setup(cx, 0);
-    // A prompt, a thinking note, 30 steps, another thinking note, 30 more, then a reply.
+    // A prompt, a thinking note and 30 steps, a reply, then another thinking note, 30 more
+    // steps and a last reply: two runs, kept apart by the reply between them.
     let mut all = vec![item(0), notice(1, "Thinking\nfirst")];
     all.extend((100..130).map(tool));
+    all.push(item(6));
     all.push(notice(2, "Thinking\nsecond"));
     all.extend((200..230).map(tool));
-    all.push(item(1));
+    all.push(item(11));
     open(&h.model, 1, all, false, cx);
 
     // Folded, 60 steps take the room of two cards, so everything fits in the window.
@@ -646,7 +648,7 @@ fn runs_of_tool_steps_fold_to_the_latest_and_open_to_show_all(cx: &mut TestAppCo
     );
 
     // Opening the first run shows its 30 steps; the second stays folded.
-    toggle(&h, 100, cx);
+    toggle(&h, 1, cx);
     let one_open = scroll_extent(&h, cx);
     assert!(
         one_open > 100.0,
@@ -654,7 +656,7 @@ fn runs_of_tool_steps_fold_to_the_latest_and_open_to_show_all(cx: &mut TestAppCo
     );
 
     // Opening the second as well shows 60.
-    toggle(&h, 200, cx);
+    toggle(&h, 2, cx);
     let both_open = scroll_extent(&h, cx);
     assert!(
         both_open > one_open + 500.0,
@@ -662,8 +664,8 @@ fn runs_of_tool_steps_fold_to_the_latest_and_open_to_show_all(cx: &mut TestAppCo
     );
 
     // Folding both again returns to the start.
-    toggle(&h, 100, cx);
-    toggle(&h, 200, cx);
+    toggle(&h, 1, cx);
+    toggle(&h, 2, cx);
     assert!(scroll_extent(&h, cx) < 1.0);
 }
 
@@ -787,4 +789,60 @@ fn a_reply_after_steps_or_thinking_is_labelled_but_one_after_a_reply_is_not() {
     assert!(starts_reply(Some(&step)), "steps do not continue a reply");
     assert!(starts_reply(Some(&thinking)));
     assert!(!starts_reply(Some(&reply)), "a second part of one reply");
+}
+
+#[gpui::test]
+fn thinking_and_steps_between_a_prompt_and_its_reply_fold_into_one_line(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 0);
+    // A prompt, then thirty rounds of "Thinking" and a step, then the reply.
+    let mut all = vec![item(0)];
+    for n in 0..30u64 {
+        all.push(notice(
+            1000 + n,
+            &format!("Thinking\n**round {n}**\nsome thoughts"),
+        ));
+        all.push(tool(2000 + n));
+    }
+    all.push(item(1));
+    open(&h.model, 1, all, false, cx);
+
+    // Sixty alternating rows fold to one line, so everything fits in the window.
+    let folded = scroll_extent(&h, cx);
+    assert!(
+        folded < 1.0,
+        "interleaved work should fold to one line, scrolls {folded}"
+    );
+
+    // Opened by the run's first item, all sixty show.
+    toggle(&h, 1000, cx);
+    let open = scroll_extent(&h, cx);
+    assert!(open > 100.0, "an opened run shows every line: {open}");
+
+    toggle(&h, 1000, cx);
+    assert!(scroll_extent(&h, cx) < 1.0);
+}
+
+#[gpui::test]
+fn an_error_notice_is_never_folded_into_a_run(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 0);
+    let mut all = vec![item(0)];
+    all.extend((0..30).map(|n| tool(100 + n)));
+    // An error between two runs keeps them apart and stays visible itself.
+    all.push(TranscriptItem {
+        id: ItemId(500),
+        at: 1_700_000_500,
+        kind: ItemKind::Notice {
+            text: "The engine failed".into(),
+            level: NoticeLevel::Error,
+        },
+    });
+    all.extend((0..30).map(|n| tool(600 + n)));
+    open(&h.model, 1, all, false, cx);
+    toggle(&h, 100, cx);
+    toggle(&h, 600, cx);
+    let both_open = scroll_extent(&h, cx);
+    // Folding only the first run leaves the second (60 steps' worth) open.
+    toggle(&h, 100, cx);
+    let one_open = scroll_extent(&h, cx);
+    assert!(both_open > one_open + 500.0, "{both_open} vs {one_open}");
 }

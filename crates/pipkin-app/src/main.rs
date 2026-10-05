@@ -34,10 +34,11 @@ fn main() {
             std::process::exit(if bad { 1 } else { 0 });
         }
     }
+    let data_dir = platform::data_dir(options.data_dir.as_deref());
     application()
         .with_assets(pipkin_ui::assets::Assets)
         .run(|cx: &mut App| {
             let model = controller::start(cx, options);
-            pipkin_ui::shell::open_main_window(cx, model);
+            pipkin_ui::shell::open_main_window(cx, model, data_dir);
         });
 }

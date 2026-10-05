@@ -6,19 +6,19 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AvailableSpace, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    GlobalElementId, Hsla, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Role, ScrollWheelEvent, SharedString, Style, Task, TextAlign, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, fill, point, prelude::*, px, relative,
-    size,
+    App, AvailableSpace, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, Hsla, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Role, ScrollWheelEvent, SharedString, Style, Task, TextAlign,
+    TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, fill, point, prelude::*, px,
+    relative, size,
 };
 
 use super::actions::*;
 use super::model::EditorModel;
 use crate::theme::ActiveTheme;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposerEvent {
     /// The user edited the text (typing, paste, undo, IME commit). Not emitted by `set_text`.
     Changed,
@@ -28,6 +28,8 @@ pub enum ComposerEvent {
     /// Single-line mode only: Up / Down arrow (lets a host move a list selection).
     Up,
     Down,
+    /// Clipboard image data, handled by the workspace as a durable draft attachment.
+    PasteImage(gpui::Image),
 }
 
 const DEFAULT_MAX_LINES: usize = 8;
@@ -662,7 +664,22 @@ impl ComposerEditor {
     }
 
     fn on_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        if self.disabled || self.model.is_composing() {
+            return;
+        }
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        // A screenshot may offer both a bitmap and text. Attach the bitmap rather than
+        // accidentally inserting its fallback text into the message.
+        if !self.single_line
+            && let Some(image) = item.entries().iter().find_map(|entry| match entry {
+                ClipboardEntry::Image(image) => Some(image),
+                _ => None,
+            })
+        {
+            cx.emit(ComposerEvent::PasteImage(image.clone()));
+        } else if let Some(text) = item.text() {
             let text = self.sanitize(&text);
             self.edit(|m| m.insert(&text), cx);
         }
@@ -1304,7 +1321,7 @@ mod tests {
                 }
             });
             cx.subscribe(&editor, move |_, _, ev: &ComposerEvent, _| {
-                sink.borrow_mut().push(*ev);
+                sink.borrow_mut().push(ev.clone());
             })
             .detach();
             Host {
@@ -1367,6 +1384,22 @@ mod tests {
             .filter(|e| **e == ComposerEvent::Changed)
             .count();
         assert!(changed >= 8, "edits emit Changed, got {changed}");
+    }
+
+    #[gpui::test]
+    fn pasting_an_image_emits_an_attachment_event_without_inserting_text(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 300.);
+        let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![137, 80, 78, 71]);
+        cx.write_to_clipboard(ClipboardItem {
+            entries: vec![image.clone().into(), "fallback text".to_string().into()],
+        });
+        cx.simulate_keystrokes("ctrl-v");
+        assert_eq!(text_of(&h, cx), "");
+        assert!(
+            h.events
+                .borrow()
+                .contains(&ComposerEvent::PasteImage(image))
+        );
     }
 
     #[gpui::test]

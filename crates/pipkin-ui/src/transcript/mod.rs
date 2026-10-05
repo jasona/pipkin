@@ -3,6 +3,7 @@
 pub mod blocks;
 pub mod document;
 pub mod highlight;
+mod links;
 pub mod markdown;
 pub mod tools;
 pub mod view;

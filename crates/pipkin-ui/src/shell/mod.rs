@@ -2,6 +2,7 @@
 
 pub mod actions;
 mod center;
+mod clipboard_image;
 pub mod commands;
 pub mod controls;
 mod inspector;
@@ -35,7 +36,7 @@ pub fn init(cx: &mut App, model: &Entity<Model>) {
 }
 
 /// Open the main Pipkin window.
-pub fn open_main_window(cx: &mut App, model: Entity<Model>) {
+pub fn open_main_window(cx: &mut App, model: Entity<Model>, data_dir: std::path::PathBuf) {
     init(cx, &model);
     // The size it was last left at, else the default.
     let (w, h) = model
@@ -57,7 +58,7 @@ pub fn open_main_window(cx: &mut App, model: Entity<Model>) {
             }),
             ..Default::default()
         },
-        move |window, cx| cx.new(|cx| Workspace::new(m.clone(), window, cx)),
+        move |window, cx| cx.new(|cx| Workspace::new(m.clone(), data_dir.clone(), window, cx)),
     )
     .expect("open main window");
     cx.activate(true);
