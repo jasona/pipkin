@@ -3,6 +3,7 @@ name = "pi-client"
 edition.workspace = true
 version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 serde_json = "1"

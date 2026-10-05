@@ -6,6 +6,7 @@
 /usr/bin/pipkin                         the application
 /usr/lib/pipkin/engine/                 a self-contained Pi engine (sources, production node_modules, engine.json)
 /usr/share/applications/pipkin.desktop  launcher entry (StartupWMClass=pipkin)
+/usr/share/licenses/pipkin/             MIT licence for Pipkin, plus the font and icon licences
 /usr/share/icons/hicolor/{128,256,512}x…/apps/pipkin.png
 ```
 

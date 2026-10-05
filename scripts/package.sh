@@ -19,7 +19,11 @@ install -Dm644 packaging/pipkin.desktop "$stage/usr/share/applications/pipkin.de
 for size in 128 256 512; do
   install -Dm644 "packaging/pipkin-$size.png" "$stage/usr/share/icons/hicolor/${size}x${size}/apps/pipkin.png"
 done
+install -Dm644 LICENSE "$stage/usr/share/licenses/pipkin/LICENSE"
 install -Dm644 assets/icons/LICENSE "$stage/usr/share/licenses/pipkin/icons-LICENSE"
+for f in Poppins-OFL.txt Lilex-OFL.txt IBMPlexSans-LICENSE.txt; do
+  install -Dm644 "assets/fonts/$f" "$stage/usr/share/licenses/pipkin/$f"
+done
 install -Dm644 assets/PROVENANCE.md "$stage/usr/share/doc/pipkin/PROVENANCE.md"
 install -Dm644 README.md "$stage/usr/share/doc/pipkin/README.md"
 install -Dm644 docs/native-gate-testing.md "$stage/usr/share/doc/pipkin/native-gate-testing.md"
