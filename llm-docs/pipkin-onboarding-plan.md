@@ -46,8 +46,8 @@ DESIGN.md, and every shipping raster carrying its provenance.
 
 ## Engine contract findings and required implementation work
 
-The initial Mac `.app` did not bundle Pi/Node. A self-contained packaging/runtime path is now implemented,
-with native artifact qualification pending; Finder startup cannot rely on Terminal's shell configuration. Ship a pinned, verified architecture-matched runtime
+The initial Mac `.app` did not bundle Pi/Node. The self-contained packaging/runtime path now passed native
+CI and an extracted-app bare-PATH probe; actual Finder/UI/provider setup still needs observation. Ship a pinned, verified architecture-matched runtime
 and engine with retained notices, then qualify that actual pair in a bare PATH/disposable profile. Do not
 mutate an owner's global Node installation or download executable updates without an explicit setup policy.
 
@@ -72,13 +72,14 @@ Ad-hoc signing fixes bundle integrity, not normal Gatekeeper trust; Developer ID
 ## Current delivery status
 
 - [x] Owner-approved design/flow contract and tested first-run/attempt-scoped readiness policy.
-- [ ] Self-contained Mac package qualification: pinned Node 22.23.3 archive inputs, minimal runtime with full
-  notices, bundled engine/runtime layout, explicit runtime PATH and bare-PATH extracted-app probe implemented;
-  actual native CI/artifact results must be recorded before closing this step.
+- [x] Self-contained Mac package/runtime automated qualification: clean `c91bbfe`, native run
+  [37507592573](https://github.com/last-refuge/pipkin/actions/runs/37507592573), pinned Node 22.23.3,
+  actual staged engine lifecycle/file-edit/history tests, signed archive extraction and bare-PATH owned
+  engine probe. See `docs/macos-first-pass.md` for exact artifact/hash. Not Finder/UI/auth acceptance.
 - [ ] Provider capability/authentication boundary and secret-safe synthetic tests.
 - [ ] Branded native screens, persistent progress and real acknowledgement wiring.
 - [ ] Native visual/error/interruption review and owner first reply.
 
-No implemented credential UI, successful bundled Mac runtime qualification, setup completion observation or
-native visual review is claimed by this document. Product/design context contains prototype-era statements; use current source and release-gate
+No implemented credential UI, setup completion observation, native visual review or owner first real reply
+is claimed by this document. The successful bundled runtime qualification is automated native CI evidence. Product/design context contains prototype-era statements; use current source and release-gate
 evidence for capabilities rather than silently repairing unrelated context as part of this feature.

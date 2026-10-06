@@ -759,6 +759,32 @@ No native Mac bundle/runtime success, implemented provider login, setup UI, cred
 observation is claimed. The full onboarding plan remains open; no owner profile or desktop/runtime configuration
 was modified. Signing trust, notices/provenance review and provider integration remain explicit workstreams.
 
+## Self-contained Mac runtime: first green native artifact (2026-10-06)
+
+Native Apple Silicon run [37507592573](https://github.com/last-refuge/pipkin/actions/runs/37507592573) passed
+on clean `c91bbfe17e27d5f42ebceda9c0784d8bd5c93e6e`. The pinned production Pi + bundled Node 22.23.3 pair
+passed lifecycle/owned-process cleanup and scripted-provider file-edit/diff/history reopen tests. The completed
+app and extracted archive passed strict/deep codesign verification. **The actual extracted CLI**, with private
+short HOME/agent/TMPDIR and bare `/usr/bin:/bin:/usr/sbin:/sbin` PATH, found the bundled engine/runtime and
+reported Node **22.23.3**, protocol8/schema7, handshake **OK in 1.9s**. A third signature check after the probe
+confirmed startup did not mutate sealed bundle resources. No owner credentials or source-engine override used.
+
+Artifact `pipkin-macos-ARM64-c91bbfe17e27d5f42ebceda9c0784d8bd5c93e6e`:
+- Archive SHA-256: `31c95536ce8e82c2c7d86faa15b4185029247dfce4d96294a8331a363cc46590`.
+- Final signed app binary SHA-256: `091ffa8f234de0c9c08bb11effa2759d6e88bf0019fc7fd7828c450e44845940`.
+- Bundled Node binary SHA-256: `68f4d07ca49e0500cc135c7e0a445093e228e42e126ac22306d045f0a8c2636b`.
+- Static downloaded-archive review on Linux independently checked archive/app/Node/full-LICENSE hashes,
+  exact clean Pi revision, production-prune flag and explicit bundled-runtime declaration; 615 Rust/npm
+  package inventory entries retained. This is not license/security clearance or Linux execution of Mac code.
+
+Evidence log `/tmp/pipkin-bundled-node-ci-full.log`; downloaded artifact pointer
+`/tmp/pipkin-bundled-macos-artifact-root`. Public evaluation instructions now distinguish the old unbundled
+artifacts from this self-contained one. The archive embeds the instructions as they existed at its clean source
+revision; updated instructions do not retroactively alter its resource seal. Concurrent `5da88cd` (live tool
+activity status) preserved. The onboarding plan's automated runtime milestone is now checked; actual Finder,
+provider-authentication/credential-consent UI, native visual review and owner first reply remain **unverified**.
+Ad-hoc signing still supplies no publisher identity/notarization; no 1.0 release/tag/publication authorized here.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

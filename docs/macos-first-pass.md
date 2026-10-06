@@ -19,8 +19,8 @@ archiving and after extraction. The embedded build report records the pre-bundle
 external `build-info.json` records the final signed executable hash, avoiding a self-referential resource seal.
 Corrected run [37488722228](https://github.com/last-refuge/pipkin/actions/runs/37488722228) on clean
 `91e1586000a1ed999d28b04fe9dbf4dcae316c83` passed both actual signature checks (“valid on disk” and
-“satisfies its Designated Requirement”). Download its `pipkin-macos-ARM64-91e1586000a1ed999d28b04fe9dbf4dcae316c83`
-artifact and extract a fresh app; replace the old bundle rather than merging files into it.
+“satisfies its Designated Requirement”). That run fixed the signature defect; it did not include Pi/Node. For the newer self-contained build below,
+extract a fresh app and replace the old bundle rather than merging files into it.
 Ad-hoc signatures verify integrity, **not publisher identity or Gatekeeper acceptance**; Developer ID signing
 and notarization remain absent.
 
@@ -39,7 +39,18 @@ separate trust/distribution gate, not something compilation or signature-integri
 - `Pipkin.app`, with bundled UI assets, target-specific Rust dependency notices and exact source for
   identified MPL dependencies. Notice retention is not legal clearance.
 - Source/binary/target identity and direct `otool -L` dependencies; this is not a complete native SBOM.
-- The Pi source pin required for protocol compatibility. **The engine and Node are not bundled.**
+- Starting with clean `c91bbfe17e27d5f42ebceda9c0784d8bd5c93e6e`: the actual pinned Pi engine
+  (`d2a311097cbcf669e699479587332ae3988a49d0`), immutable model snapshot, production npm dependencies
+  with retained notices, and architecture-matched Node **22.23.3** with its full dependency LICENSE.
+  Node/npm are not installed globally; the engine uses the app's private runtime, not Terminal's PATH.
+
+Self-contained qualification: [37507592573](https://github.com/last-refuge/pipkin/actions/runs/37507592573).
+Artifact: `pipkin-macos-ARM64-c91bbfe17e27d5f42ebceda9c0784d8bd5c93e6e`.
+Archive SHA-256: `31c95536ce8e82c2c7d86faa15b4185029247dfce4d96294a8331a363cc46590`.
+The native runner tested the staged bundled pair, then extracted the signed archive and ran its actual CLI
+with a bare system PATH/private profile: Node 22.23.3, owned engine handshake **OK (1.9s)**. Strict signatures
+passed before archive, after extraction and after engine startup. This is automated CLI/runtime evidence,
+not observed Finder UI startup, publisher trust or provider login.
 
 The initial CI checks the pure core, Unix transport (including kernel peer uid), macOS owned-process
 identification and native compilation. It also checks owned engine startup/stop and one real
@@ -54,20 +65,20 @@ To try the interface without an engine, use a disposable app data directory:
 ./Pipkin.app/Contents/MacOS/pipkin --demo normal --data-dir /private/tmp/pipkin-mac-demo
 ```
 
-The demo is simulated, not an agent. For real mode, use a **separate** checkout of the pinned Pi
-engine (`d2a311097cbcf669e699479587332ae3988a49d0`), Node >=22.19 and Git. Install its dependencies
-with `npm ci`, then restore the immutable model snapshot using the matching Pipkin source checkout's
-`scripts/stage-model-data.sh ENGINE_ROOT`. That source helper currently requires GNU `sha256sum`,
-GNU tar and zstd; on macOS, Homebrew's `coreutils`, `gnu-tar` and `zstd` supply them (put the GNU tar
-`libexec/gnubin` directory on PATH). These are evaluator prerequisites, not bundled components.
+The demo is simulated, not an agent. The self-contained artifact requires **no Pi checkout, npm install,
+system Node or manual server startup**. Real-mode engine/runtime evaluation can use a disposable app and
+agent profile. The existing credential behavior is not yet replaced by the planned consent-based setup UI;
+keep personal credentials out of unattended tests. Deliberate real provider configuration remains necessary.
 
-Launch from a terminal whose PATH contains Node; Finder does not necessarily inherit that PATH:
+For a disposable runtime evaluation (no credentials):
 
 ```sh
-./Pipkin.app/Contents/MacOS/pipkin --pi-repo /absolute/path/to/pinned-pi \
-  --data-dir /private/tmp/pipkin-mac-evaluation
+PI_CODING_AGENT_DIR=/private/tmp/pipkin-mac-eval-agent \
+  ./Pipkin.app/Contents/MacOS/pipkin --data-dir /private/tmp/pipkin-mac-evaluation
 ```
 
+The `--pi-repo`/`PIPKIN_ENGINE_DIR` override remains available for advanced development with a separately
+prepared pinned checkout and compatible system Node. It is not required by the self-contained artifact.
 Choose a disposable project and deliberately configure provider credentials if making real requests.
 See [getting started](https://github.com/last-refuge/pipkin/blob/main/docs/getting-started.md),
 [support/privacy](https://github.com/last-refuge/pipkin/blob/main/docs/support.md) and
