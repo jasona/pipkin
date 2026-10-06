@@ -18,14 +18,15 @@ protocol, an incomplete one, or one that needs a newer Pipkin, and says why (`pi
 
 With no flags, Pipkin looks for the engine at `PIPKIN_ENGINE_DIR`, then `../lib/pipkin/engine` relative to its own
 binary (so a relocated prefix works), then `/usr/lib/pipkin/engine`. When it finds one it launches and owns it:
-profile under `~/.pi/server`, credentials and sessions under Pi's own `~/.pi/agent`. `--pi-repo` (a checkout) and
+server profile/durable engine state under `~/.pi/server`, credentials/configuration under Pi's `~/.pi/agent`.
+The desktop cache and journal are separate; see [data ownership and recovery](support.md). `--pi-repo` (a checkout) and
 `--pi-dir` / `--pi-server-id` (an engine already running) still win, for development.
 
 ## Building
 
 ```
 scripts/package.sh [PI_CHECKOUT]      # dist/pipkin-<ver>-<arch>.tar.zst and dist/stage/
-cd packaging && makepkg -d -f         # an Arch package from the same steps (PI_CHECKOUT=../../pi-fork/pi)
+cd packaging && makepkg -si           # an Arch package; set PI_CHECKOUT to the clean pinned checkout
 scripts/verify-install.sh [PKG]       # unpack into a scratch prefix and check it with a bare environment
 scripts/verify-install.sh --full      # ...and run the real-engine workflow tests against the unpacked engine
 ```
@@ -72,8 +73,10 @@ compiled engine is a Pi-side follow-up. The original installed-size measurement 
 
 ## Upgrade and rollback
 
-- **Application and engine upgrade together**: one package replaces `/usr/bin/pipkin` and `/usr/lib/pipkin/engine`, so
-  they never disagree. A running engine from the old package is left to finish; the new Pipkin starts its own.
+- **Application and engine upgrade together**: one package replaces `/usr/bin/pipkin` and `/usr/lib/pipkin/engine`.
+  Quit the app and its owned engine before replacing an Arch installation; do not assume an in-flight process can
+  safely keep reading files from a replaced engine directory. Generic versioned installs retain the old directory,
+  but interruption/ownership semantics still apply (see [support](support.md)).
 - **Data upgrades**: Pipkin's database migrates in place on first start. Before migrating it writes a backup of the
   old schema next to the database; a test upgrades from every earlier schema and checks the draft survives and a
   backup exists.
@@ -90,15 +93,18 @@ pipkin --diagnose            # versions, paths, database health, engine manifest
 pipkin --diagnose --probe    # also starts a throwaway engine (offline, empty profile) and checks it answers
 ```
 
-The report replaces the home directory with `~`, never prints credentials (it reads none), exits non-zero when
-something blocks Pipkin, and is safe to paste into an issue. The engine's own output is in
-`<data dir>/engine.log` (default `~/.local/share/pipkin/`).
+The report replaces the home directory with `~` and exits non-zero when something blocks Pipkin. It does not
+read the credential store, but **includes an engine-log tail and arbitrary error text**, which can contain secrets,
+private endpoints, prompts or source paths. Home substitution is not comprehensive redaction. Review and redact it
+before sharing; do not assume it is safe to paste into an issue. The engine's own output is in
+`<data dir>/engine.log` (default `~/.local/share/pipkin/`). See [diagnostics privacy](support.md#diagnostics-privacy).
 
 ## Soak
 
 `PIPKIN_PI_REPO=<engine dir> PIPKIN_SOAK_ROUNDS=1500 cargo test -p pipkin-app --release many_prompts -- --ignored --nocapture`
-sends prompts through one conversation of a real engine and fails if memory or open files keep growing. A
-1500-prompt run on the bundled engine: app 22 -> 52 MiB, engine 633 -> 700 MiB, open files 15 -> 19.
+sends prompts through one conversation of a real engine and fails if memory or open files keep growing.
+**Historical, not current-candidate qualification:** a prior 1500-prompt bundled-engine run reported app 22 -> 52 MiB,
+engine 633 -> 700 MiB, open files 15 -> 19. Current RC soak and real-window day-long evidence remain open.
 
 ## Generic Linux install, upgrade and rollback
 

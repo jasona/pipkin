@@ -8,7 +8,7 @@
 A native desktop client for the [Pi](https://github.com/jasona/pi) coding agent, written in Rust with GPUI.
 
 ![status](https://img.shields.io/badge/status-alpha-F59E0B?style=flat-square)
-![platform](https://img.shields.io/badge/Arch%20%2F%20Omarchy-Wayland%20%26%20X11-1F2937?style=flat-square)
+![platform](https://img.shields.io/badge/Arch%20%2F%20Omarchy-Wayland-1F2937?style=flat-square)
 ![rust](https://img.shields.io/badge/Rust-GPUI-374151?style=flat-square)
 ![engine](https://img.shields.io/badge/engine-Pi%20(bundled)-080F1A?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-F59E0B?style=flat-square)
@@ -26,8 +26,8 @@ A native desktop client for the [Pi](https://github.com/jasona/pi) coding agent,
 ## Why Pipkin
 
 Pi is a coding agent with a powerful engine. Pipkin gives it a fast, calm, native home: streaming answers,
-tool calls you can read at a glance, the diff of every file the agent touched, and a composer that never loses
-what you typed. It is a real application, not a web view: one Rust binary, GPU-drawn, with its own text
+tool calls you can read at a glance, a view of the project's working-tree changes, and a composer that saves drafts
+with visible save status. It is a real application, not a web view: one Rust binary, GPU-drawn, with its own text
 editing, selection and accessibility tree.
 
 > **Alpha.** Built and used on Arch / Omarchy (Hyprland, Wayland). It runs against a real Pi engine, and the
@@ -45,8 +45,9 @@ editing, selection and accessibility tree.
 - **Steer** a run in progress, **queue** a follow-up, **stop** it, and pick it back up after a restart. The engine
   owns the queue, so what you see is what will run.
 - Attach files by picker or by dropping them on the window; choose the model from the engine's catalog.
-- Extensions can ask you questions through dialogs (choices, yes/no, text), with decline and a banner if you put one
-  aside.
+- Experimental Pi remote plugins can ask you questions through dialogs (choices, yes/no, text), with decline and a
+  banner if you put one aside. Stable Pi `ctx.ui.*` and terminal widgets are not bridged; see
+  [extension compatibility](docs/extensions.md).
 
 **See what changed**
 - A changes pane with a diff card (line numbers, additions and removals) and a "Files changed" list with
@@ -54,16 +55,17 @@ editing, selection and accessibility tree.
 - Open the selected file in your editor, or a terminal in the project, from the pane.
 
 **Never lose work**
-- Drafts are saved as you type; a send is written to a journal *before* it leaves, so a crash or a lost connection
-  can never run a prompt twice or drop one silently.
+- Drafts are saved as you type; a send is journalled *before* dispatch and reconciled with the engine after a crash
+  or lost connection. Uncertain outcomes are not blindly resent. This does not guarantee exactly-once external tool
+  effects; see [recovery semantics](docs/support.md#quitting-and-interrupted-work).
 - Conversations are cached on your machine: without the engine they still open, read and search, clearly marked as
   saved copies.
 - Search messages across everything saved, and page back through history past a compaction.
 
 **Feels native**
 - A brand-true dark theme and a light one, Poppins throughout, text sizes, reduced motion, keyboard-first.
-- Remembers your window size and pane widths. Input methods (IME) and a screen-reader tree are supported, and
-  tested as far as is listed under [Status](#status).
+- Remembers your window size and pane widths. IME and accessibility integration exist, but native qualification
+  is partial and typed-character screen-reader speech remains a failing/unverified gate; see [Status](#status).
 
 <table>
   <tr>
@@ -92,12 +94,13 @@ the Pi engine, so nothing else has to be installed; your own Pi credentials in `
 ### Arch / Omarchy
 
 ```sh
-git clone https://github.com/jasona/pipkin && cd pipkin
-cd packaging && makepkg -si          # builds the package and installs it (needs a Pi checkout beside the repo)
-pipkin --diagnose --probe            # checks the install and starts a throwaway engine to prove it answers
+git clone https://github.com/last-refuge/pipkin.git && cd pipkin
+# Prepare the clean, pinned engine and install build dependencies first:
+# follow docs/getting-started.md, then run makepkg with PI_CHECKOUT pointing to that engine.
+pipkin --diagnose --probe            # after installation: offline handshake, not provider authentication
 ```
 
-### Any Linux, from a release tarball
+### Experimental generic Linux installer
 
 ```sh
 tar --zstd -xf pipkin-<version>-x86_64.tar.zst && ./install.sh     # into ~/.local, no root needed
@@ -105,8 +108,9 @@ tar --zstd -xf pipkin-<version>-x86_64.tar.zst && ./install.sh     # into ~/.loc
 ./install.sh --rollback        # go back to the previous version in one step
 ```
 
-Each version is kept in its own directory with its own engine, so an upgrade never leaves a mismatched pair, and
-your drafts and history are never touched. Verify a download with `scripts/verify-release.sh`. Details:
+There is no published signed release yet. Each version is kept with its own paired engine. The installer preserves
+user-data locations; application database migrations and schema-compatible rollback require the documented backup
+procedure. Verify a download with `scripts/verify-release.sh`. Details:
 [`docs/packaging.md`](docs/packaging.md).
 
 ### From source
@@ -118,6 +122,12 @@ cargo run -p pipkin-app --release -- --pi-repo ../pi-fork/pi --pi-agent-dir ~/.p
 
 `--pi-repo` points at a checkout of the Pi engine with its dependencies installed (`npm ci`). Without it (and
 without `--pi-dir` / `--pi-server-id`), Pipkin looks for an installed engine, then for a running server.
+The checkout must have validated generated model inputs as well as dependencies; see
+[the pinned-engine build and first-run guide](docs/getting-started.md).
+
+Provider setup, missing/expired credentials and model refresh are documented in
+[getting started](docs/getting-started.md). Data ownership, quitting, uncertain work and diagnostic privacy are in
+[support and recovery](docs/support.md). Review diagnostic output before sharing it: engine logs may contain secrets.
 
 ## Using it
 

@@ -117,7 +117,7 @@ working tree on 2026-10-06; see `docs/v1-release-gates.md` for identified code/a
 - [ ] Verify pane resizing after window/display changes and menu placement in narrow/tall/short layouts.
 - [ ] Verify effort selection remains engine-authoritative and conversation-specific.
 - [ ] Verify project-scoped `@` completion: mouse/Tab selection, linked paths, spaces/Unicode, undo/redo, project switches, inaccessible/deleted/new files, and no completion during IME composition.
-- [ ] Confirm `@` mention semantics are transparent: path references are not automatic file-content attachments.
+- [x] Confirm `@` mention semantics are transparent: the first-run guide explicitly distinguishes inserted path references from file-content attachments. Native completion/IME qualification remains separate.
 
 ### Exit criteria
 
@@ -135,8 +135,8 @@ No known silent no-op remains in the advertised workflow. Changes failures canno
 - [x] Make release builds reject dirty/unidentified engine sources, or use a clean checkout created from the pin. Dirty/untracked or mismatched revisions are rejected before staging; `PIPKIN_ENGINE_DEV=1` is explicit and recorded in the manifest.
 - [x] Record app version/revision, full engine revision, protocol/compatibility information, and relevant build inputs in the manifest/diagnostics. Compiled app stamp appears in `--version`/`--diagnose`; packaged `build-info.json` records identities, hashes, compatibility and tool versions with explicit dirty/custom-flag state. Release builds reject dirty/unidentified app sources.
 - [x] Verify required generated engine assets and production dependencies exist. Generated provider data is validated against the source contracts, copied explicitly and fingerprinted. The staged engine passed the full scripted-provider suite; dependency provenance/license auditing remains separate.
-- [x] Add CI for Rust tests, Clippy, formatting, and installer tests. Pinned-action workflow added; a passing remote run is still required for the Phase 2 exit gate.
-- [x] Add a real-engine CI qualification job using the pinned engine and scripted provider, without credentials or paid requests. Includes development and packaged engines, locked dependency provisioning and immutable generated model inputs; remote pass evidence remains separate.
+- [x] Add CI for Rust tests, Clippy, formatting, and installer tests. Pinned-action workflow passed remotely in runs 37421406544 (528457c) and 37422216176 (12c9dba); future/final candidates still require their own pass.
+- [x] Add a real-engine CI qualification job using the pinned engine and scripted provider, without credentials or paid requests. Development and packaged engines, clean locked provisioning, immutable generated inputs and bare probe passed in remote runs 37421406544 and 37422216176; see the gate record.
 - [x] Test the packaged engine, not only the development checkout; run `verify-install.sh --full` or its equivalent. The pinned/staged engine passed 37 suite tests; candidate changes still require fresh qualification.
 - [ ] Audit bundled licenses/provenance and runtime dependencies.
 - [x] Ensure release artifact collection cannot accidentally include obsolete packages from previous builds. `release.sh` collects only the current version/architecture, rejects the development engine override, and passes disposable collection tests.
@@ -207,17 +207,17 @@ The supported desktop workflow passes the agreed native gates. Every remaining l
 
 ### Tasks
 
-- [ ] Document first-run provider setup, missing credentials, expired authentication, and model refresh.
+- [x] Document first-run provider setup, missing credentials, expired authentication, and model refresh. `docs/getting-started.md` describes the current workflow; clean-desktop/new-user observation remains open.
 - [ ] Add an in-app **Copy diagnostics** action with clear privacy expectations. Audit redaction before encouraging users to share reports.
-- [ ] Document locations and ownership of drafts, sessions, credentials, caches, backups, and logs.
-- [ ] Document what quitting does to active engine work and how to recover after interruption.
-- [ ] Explain workspace-wide Changes semantics, partial cached-history search coverage, and `@` references versus attachments.
-- [ ] Publish the extension compatibility matrix. Decide whether stable Pi `ctx.ui.*` routing is required for the advertised extension promise; bridge it or explicitly exclude it.
+- [x] Document locations and ownership of drafts, sessions, credentials, caches, backups, and logs. `docs/support.md` distinguishes app cache/journal, engine profile and agent credentials; `--data-dir` alone does not isolate the engine.
+- [x] Document what quitting does to active engine work and how to recover after interruption. Owned versus external engines and possible repeated partial tool effects are explicit; recovery tests/native gates remain separate.
+- [x] Explain workspace-wide Changes semantics, partial cached-history search coverage, and `@` references versus attachments. `docs/getting-started.md` publishes these boundaries.
+- [x] Publish the extension compatibility matrix. `docs/extensions.md`, README and the first-run guide explicitly exclude stable Pi `ctx.ui.*`/TUI routing from the current promise; the experimental remote question contract is retained.
 - [ ] Publish the exact supported platform, engine compatibility, runtime dependencies, and unsupported environments.
 - [ ] Replace historical/contradictory status claims with current evidence; keep old measurements labelled historical.
 - [ ] Update README commands, repository links, screenshots, and version/support labels.
 - [ ] Observe several new users going from installation to first reply where feasible; record stalls and fix blocking onboarding problems. Do not fabricate a participant count or completion rate.
-- [ ] Provide a bug-report template and documented diagnostics/recovery procedure.
+- [x] Provide a bug-report template and documented diagnostics/recovery procedure. `.github/ISSUE_TEMPLATE/bug-report.md` and `docs/support.md` warn that current CLI reports contain unredacted log/error text. Share-safe in-app diagnostics and private security reporting remain open.
 
 ### Exit criteria
 

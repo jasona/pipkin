@@ -314,6 +314,35 @@ not yet a green gate. CI concurrency now lets an identified run finish while que
 repeatedly cancelling qualification as release-hardening commits arrive. Changed candidates still require their
 own pass. No native acceptance, legal clearance, signing or v1 publication is claimed.
 
+## Phase 2 green CI and Phase 5 support drafts (2026-10-06)
+
+Observed **green remote CI**:
+
+- [37421406544](https://github.com/last-refuge/pipkin/actions/runs/37421406544), full app revision
+  `528457c091762bf2e3f5700f275a23ab3eb46e3e`.
+- [37422216176](https://github.com/last-refuge/pipkin/actions/runs/37422216176), full app revision
+  `12c9dbab4453116939bd7c2f74ed84ad1b25e97d` (includes immutable notice recovery).
+
+Both completed successfully with Rust/policy checks, pinned clean-engine provisioning, development and packaged
+scripted-provider qualification, bare-environment probe and scratch installer checks. They use the pinned Pi engine
+`d2a311097cbcf669e699479587332ae3988a49d0`, Node 22.19.0, repo Rust toolchain, and headless Ubuntu 24.04.
+These establish the CI mechanics/automation gate, **not native Ubuntu support or approval of a v1 candidate**.
+License/provenance findings and candidate-specific final qualification remain open.
+
+Added `docs/getting-started.md`, `docs/support.md` and a privacy-conscious bug-report template. They document fresh
+pinned-source preparation, provider setup/expired credentials/model refresh, app versus engine/credential storage,
+`--data-dir` not isolating the server, owned versus external engine shutdown, possible repeated partial tool effects,
+workspace-wide Changes, cached-history search and reference-versus-attachment semantics. The advertised extension
+promise explicitly excludes stable `ctx.ui.*`/TUI routing. README no longer promises infallible draft saving or
+exactly-once tool effects; IME/accessibility and generic Linux support claims are bounded by actual evidence.
+
+Corrected the old claim that `--diagnose` is automatically safe to share: its engine-log tail and arbitrary errors
+are **not comprehensively redacted**. Reports must be reviewed before sharing. Share-safe in-app Copy diagnostics
+and redaction tests remain open. First-run/new-user/clean-desktop results are not claimed by documentation alone.
+
+Documentation working-delta checks on app base `12c9dba`: **531 workspace tests passed (40 ignored)**, Clippy/fmt clean.
+Logs: `/tmp/pipkin-onboarding-{workspace,clippy}.log`. No destructive owner-profile testing or desktop changes.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -327,9 +356,9 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Changes scan failure | 1 | Addressed in working tree: automated/core/real-engine/package checks passed; native AT-SPI failure/stale/recovery observed | Broader native visual/Orca/mouse checks remain open; repeat on the final candidate |
 | Interrupted tools/unresolved operations | 1 | Open | Engineering audit recovery messaging and safe reconciliation actions; no blind replay |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
-| Pinned clean engine build and manifest | 2 | Open: baseline identified, build still uses adjacent checkout | Engineering pin full revision, verify clean/generated inputs, and reject unidentified release sources |
-| CI and retained evidence | 2 | Open: no repository CI workflow established | Engineering automate tests, packaged-engine qualification, and retained artifacts/logs |
-| Runtime/dependency/license audit | 2 | Open | Engineering check bundled licenses, generated assets, minimum Node, and runtime dependencies |
+| Pinned clean engine build and manifest | 2 | Passed (automated): full engine pin, clean-source checks, immutable generated inputs and build identity | Requalify changed candidates; development overrides are not release approval |
+| CI and retained evidence | 2 | Passed (automated) on 528457c and 12c9dba; identified logs/artifacts retained | Required future/final candidate checks must also pass |
+| Runtime/dependency/license audit | 2 | Partial: inventory, notice retention and MPL source; 59 review flags, 12 entries without notices | Resolve/appraise notice applicability, data/asset provenance and external runtime dependencies |
 | Clean installed desktop workflow | 3 | Unverified | Owner/second supported environment: actual package installation, launcher, provider, real reply |
 | Real app upgrade/rollback and schema backup restore | 3 | Partial: automated migration/installer tests; manual installed workflow open | Owner/engineering use disposable profile and actual old/new packages |
 | Minimize/restore | 4 | Unverified in gate record | Owner runs documented native procedure |
@@ -341,7 +370,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Picker/drop/clipboard/links/launching | 4 | Partial; not fully walked on installed candidate | Owner performs real interactions; engineering fixes findings |
 | Engine-unavailable native state | 4 | Automated behavior covered; native installed observation open | Owner/engineering check actionable error, cached history, and disabled dispatch |
 | Cold reboot/start | 4 | Unverified | Owner records recovery and usable startup, not just window mapping |
-| Onboarding/diagnostics/compatibility docs | 5 | Open | Engineering add safe Copy diagnostics and update setup/support/extension boundaries; observe new users where possible |
+| Onboarding/diagnostics/compatibility docs | 5 | Partial: setup/support/recovery guides, extension exclusions and report template published in source | Add share-safe Copy diagnostics/redaction tests; finalize support after native acceptance; observe new users where possible |
 | Extended soak + real-window day | 6 | Open; 40-prompt baseline tripwire passed, historical 1500-prompt measurement exists | Engineering + owner run documented longer workloads and record app/engine resources |
 | Real signing key and independently verifiable candidate | 6 | Open; signature tooling previously exercised with throwaway key | Owner manages real key; engineering builds/verifies candidate |
 | RC stabilization and final release | 6/7 | Not started | Owner approves gates; engineering publishes identified signed artifacts and update/recovery policy |
@@ -349,7 +378,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 ## Immediate execution queue
 
 1. Audit interrupted-tool and unresolved-stop messaging/recovery.
-2. Establish the pinned clean release engine and CI so subsequent fixes are qualified against a repeatable build.
+2. Resolve dependency/license/provenance findings and implement share-safe in-app Copy diagnostics; pinned builds and remote CI are established.
 3. Schedule owner-run clean-install and native gates while onboarding/support work proceeds.
 
 For step details and exit criteria, use the sequenced plan. `docs/native-gate-testing.md` remains the manual procedure reference; unrecorded owner use must not be assumed to have passed a particular gate.
