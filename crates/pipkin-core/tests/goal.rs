@@ -151,6 +151,69 @@ fn restored_goal_is_visible_but_never_replays_without_an_explicit_update() {
 }
 
 #[test]
+fn replacement_goal_waits_for_old_stop_and_is_not_paused_by_its_confirmation() {
+    let mut s = state();
+    let old = s.dispatch(Command::SetGoal("commit and push".into()));
+    settle(&mut s, old);
+    s.apply_event(event(&s, EventKind::Accepted));
+    s.dispatch(Command::Cancel);
+    assert_eq!(
+        s.current()
+            .unwrap()
+            .goal
+            .as_ref()
+            .unwrap()
+            .paused
+            .as_deref(),
+        Some("Stop requested.")
+    );
+    let stop = event(&s, EventKind::Cancelled);
+    let replacement = s.dispatch(Command::SetGoal("count to 100".into()));
+    assert!(
+        !replacement
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::JournalIntent { .. }))
+    );
+    let confirmed = s.apply_event(stop);
+    let next = settle(&mut s, confirmed);
+    let texts: Vec<_> = next
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Backend(BackendRequest::Submit { text, .. }) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("count to 100"));
+    assert!(!texts[0].contains("commit and push"));
+    assert!(s.current().unwrap().goal.as_ref().unwrap().paused.is_none());
+    assert_eq!(s.current().unwrap().goal.as_ref().unwrap().turns, 1);
+}
+
+#[test]
+fn stop_pauses_the_current_goal_even_when_completion_races_confirmation() {
+    let mut s = state();
+    let old = s.dispatch(Command::SetGoal("commit and push".into()));
+    settle(&mut s, old);
+    s.apply_event(event(&s, EventKind::Accepted));
+    s.dispatch(Command::Cancel);
+    s.apply_event(event(
+        &s,
+        EventKind::Token("continue\n[PIPKIN_GOAL_CONTINUE]".into()),
+    ));
+    let finished = s.apply_event(event(&s, EventKind::Completed));
+    assert!(
+        !finished
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::JournalIntent { .. }))
+    );
+    assert!(s.current().unwrap().goal.as_ref().unwrap().paused.is_some());
+}
+
+#[test]
 fn missing_marker_pauses_and_clear_does_not_submit_again() {
     let mut s = state();
     let out = s.dispatch(Command::SetGoal("test".into()));

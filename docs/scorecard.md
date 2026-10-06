@@ -3,10 +3,12 @@
 ## Current v1 qualification baseline (2026-10-06)
 
 The owner reports heavy daily-use beta, including building Pipkin itself and using it on other projects.
-Following Changes-pane hardening, the current working tree has **511 workspace tests passed (37 ignored)**,
-Clippy/fmt clean, **34 real-engine e2e suite tests passed**, and another **34 passed against the packaged engine**.
-Scratch-prefix install, upgrade, rollback and uninstall checks also passed. A disposable native AT-SPI walkthrough
-observed scan failure, retained stale diff, and guarded palette refresh/recovery. This is not a clean-system,
+Following Changes-pane, recovery, goals, and Stop hardening, the current working tree has **523 workspace tests
+passed (40 ignored)**, Clippy/fmt clean, **37 real-engine e2e suite tests passed**, and another **37 passed against
+the packaged engine**. The paired Pi fix passed its full check and **223 targeted durable tests**. Scratch-prefix
+install, upgrade, rollback and uninstall checks also passed. A prior disposable native AT-SPI walkthrough observed
+scan failure, retained stale diff, and guarded palette refresh/recovery; Stop/replacement-task behavior was qualified
+with automated real-engine regressions, not a new native walkthrough. This is not a clean-system,
 visual-matrix, mouse, or screen-reader speech pass. Native and clean-system qualification remain separately tracked.
 Full app/engine revisions, environment, artifact checksum, evidence boundaries, and open gates are in
 [v1-release-gates.md](v1-release-gates.md).

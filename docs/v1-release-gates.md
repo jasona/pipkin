@@ -128,6 +128,53 @@ Temporary logs: `/tmp/pipkin-changes-{workspace,clippy,e2e,package,verify-instal
 Native tree captures remain under the disposable `/tmp/pk-changes-JzYiFq/` profile. They are local/temporary;
 this summary is the durable gate evidence. Future CI/candidate runs must retain fresh evidence.
 
+## Stop retires obsolete instructions (2026-10-06)
+
+Owner-reported regression: submit “commit and push,” Stop, then enter a new prompt or `/goal count to 100`;
+the agent finished the stopped request before handling the replacement.
+
+Confirmed engine defect: aborted assistant messages were excluded from model context, but their original user
+instructions remained. New durable settlement appends a context-omit edit atomically with an aborted placed input.
+This retires the instruction from future model requests without deleting visible history or completed tool effects.
+Queued inputs are still withdrawn by the engine's abort operation. This applies to all prompts, not only goals.
+
+Pi fix committed/pushed on `client-history-and-ui-requests`:
+**`d2a311097cbcf669e699479587332ae3988a49d0`**. Full `npm run check` passed; **223 targeted durable tests passed**
+across cancellation/context, submissions, generation/recovery, inbox, conversations, compaction, tables and forks.
+The new prompt/goal regressions failed before the fix and passed after it. Tests also verify durable reopen,
+atomic settlement/retirement, idempotent repeated Stop, preservation of original entries, and withdrawal of queued work.
+Tests used a temporary Vitest source-alias configuration because this checkout's AI package has no built `dist`;
+no dependency installation or unrelated package build was performed.
+
+Pipkin changes on top of **`a3ee2bd5d9feb86788a1118791b14b4895455bc4`**:
+
+- Stop pauses the goal present at the instant it is requested, preventing continuation if completion races the stop.
+- A replacement goal entered while stopping waits for confirmation, then starts without being paused by the old ack.
+- A fresh goal also waits for the engine-owned queue to clear.
+- The adapter synchronizes the latest replicated transcript before terminal settlement, so goal verdict parsing
+  does not race the final reply's queued notification.
+
+Tested source delta (`git diff --binary -- crates/ | sha256sum`):
+`03f46b06a716420d50df117f6b697322f8e8e90db37f23d0b9509b81847c52ed`.
+
+Validation: **523 workspace tests passed (40 ignored)**, Clippy/fmt clean; **37 real-engine e2e suite tests passed**
+against the updated Pi checkout and **37 passed against the rebuilt bundled engine**. Suite counts include the
+opt-in seeding helper, a no-op when its environment flag is unset. Both replacement-prompt and replacement-goal
+regressions assert that the next scripted-provider request contains only the new task, not the stopped request or
+withdrawn follow-up; the stopped prompt remains visible in the transcript. Scratch-prefix installer checks passed.
+This is automated engine/controller qualification, not a new native keyboard/mouse or real-provider walkthrough.
+
+Rebuilt `dist/pipkin-0.0.1-x86_64.tar.zst`, still unsigned and not a release candidate:
+
+```text
+5ac8cd98fccbd944e603db63a835a0543db11e60575dd686f43c4348686aec1f  pipkin-0.0.1-x86_64.tar.zst
+```
+
+**Deployment requires the updated engine as well as the app.** Rebuild/reinstall the bundled package and restart;
+an app-only update against the old engine retains the context defect. Existing tool effects, commits or pushes
+cannot be undone by Stop. No installed app, owner profile, or desktop configuration was changed during qualification.
+Local temporary logs: `/tmp/pipkin-stop-{workspace,clippy,e2e,targeted,package,verify-install,installer}.log`.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

@@ -1274,6 +1274,90 @@ fn a_lost_stop_request_remains_unsettled_and_can_be_checked_then_retried_without
     h.backend.shutdown();
 }
 
+fn stopped_input_is_not_presented_to_the_next_model_turn(as_goal: bool) {
+    let gate = Gate::new();
+    let fx = Fixture::start(held_first(
+        &gate,
+        Reply::Text("old task not completed".into()),
+        vec![Reply::Text("1 2 3 ... 100\n[PIPKIN_GOAL_MET]".into())],
+    ));
+    init_project(&fx.project);
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&fx.server_dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    h.send("commit and push");
+    h.until_asked(&fx.provider, 1);
+    h.until("the original request is running", is_running);
+    h.dispatch(Command::EditDraft("also publish the old work".into()));
+    h.dispatch(Command::QueueFollowUp);
+    h.until("the old follow-up is queued", |s| {
+        !s.current().unwrap().queue.is_empty()
+    });
+    h.dispatch(Command::Cancel);
+    if as_goal {
+        // Entering a new goal while stop confirmation is still pending must neither send it
+        // early nor pause it when the previous run's cancellation eventually arrives.
+        h.dispatch(Command::SetGoal("count to 100".into()));
+    } else {
+        h.until("stop is confirmed and old queued work is withdrawn", |s| {
+            is_idle(s) && s.current().unwrap().queue.is_empty()
+        });
+        h.send("count to 100");
+    }
+    h.until("only the replacement finishes", |s| {
+        is_idle(s)
+            && assistant_texts(s)
+                .iter()
+                .any(|text| text.starts_with("1 2 3"))
+    });
+    let requests = fx.provider.requests();
+    assert_eq!(requests.len(), 2, "the withdrawn follow-up must not run");
+    let users = user_texts(&requests[1]);
+    assert_eq!(
+        users.len(),
+        1,
+        "stopped instructions must not leak into the next model context: {users:?}"
+    );
+    assert!(users[0].contains("count to 100"));
+    assert!(!users[0].contains("commit and push"));
+    assert!(!users[0].contains("publish the old work"));
+    assert!(
+        h.user_messages()
+            .iter()
+            .any(|text| text == "commit and push"),
+        "keep the visible audit trail"
+    );
+    if as_goal {
+        assert_eq!(
+            h.state
+                .current()
+                .unwrap()
+                .goal
+                .as_ref()
+                .unwrap()
+                .paused
+                .as_deref(),
+            Some("Goal met.")
+        );
+    }
+    h.storage.shutdown();
+    journal_is_clean(&db);
+    gate.open();
+    h.backend.shutdown();
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn stopping_a_prompt_flushes_its_instruction_before_a_new_prompt() {
+    stopped_input_is_not_presented_to_the_next_model_turn(false);
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn stopping_a_prompt_flushes_its_instruction_before_a_replacement_goal() {
+    stopped_input_is_not_presented_to_the_next_model_turn(true);
+}
+
 /// A follow-up waits behind the run in the engine's own queue, then runs on its own.
 #[test]
 #[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]

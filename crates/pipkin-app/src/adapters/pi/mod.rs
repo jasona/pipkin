@@ -1288,6 +1288,15 @@ impl Live {
                     );
                 } else {
                     worker.runs.remove(&op);
+                    // Put the latest durable reply into core before settlement/goal evaluation;
+                    // the lookup response can beat the view's queued dirty notification.
+                    self.flush(
+                        worker,
+                        Dirty {
+                            transcript: true,
+                            ..Dirty::default()
+                        },
+                    );
                     let kind = outcome_event(reason.as_deref(), detail.as_deref());
                     worker.emit_op(conversation, generation, op, kind);
                     self.schedule_changes(worker);
@@ -1335,6 +1344,13 @@ impl Live {
                 },
             };
             worker.runs.remove(&op);
+            self.flush(
+                worker,
+                Dirty {
+                    transcript: true,
+                    ..Dirty::default()
+                },
+            );
             worker.emit_op(run.conversation, run.generation, op, event);
             if let Some(current) = self.current.as_mut() {
                 current.workspace_ready = true;

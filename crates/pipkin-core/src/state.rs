@@ -1012,6 +1012,18 @@ impl AppState {
                     let op = c.run.op().unwrap();
                     c.run = RunState::Stopping { op };
                     c.stop_error = None;
+                    // Pause the goal that exists at the instant Stop is requested. A goal set
+                    // afterwards is a replacement task and must not be paused by the old ack.
+                    if matches!(cmd, Command::Cancel)
+                        && let Some(goal) = &mut c.goal
+                    {
+                        goal.paused = Some("Stop requested.".into());
+                        out.effects.push(Effect::SaveGoal {
+                            conversation: id,
+                            text: Some(goal.text.clone()),
+                            paused: goal.paused.clone(),
+                        });
+                    }
                     let generation = c.generation;
                     out.effects.push(Effect::Backend(BackendRequest::Cancel {
                         conversation: id,
@@ -2073,6 +2085,14 @@ impl AppState {
                         _ => {}
                     }
                     out.notes.push(Note::Other);
+                    if !busy
+                        && self
+                            .conversation(id)
+                            .and_then(|c| c.goal.as_ref())
+                            .is_some_and(|goal| goal.turns == 0)
+                    {
+                        out.merge(self.start_goal_if_idle(id));
+                    }
                 }
             }
             EventKind::Completed => {
@@ -2113,7 +2133,10 @@ impl AppState {
                 out.notes.push(Note::Other);
             }
             EventKind::Cancelled => {
-                if let Some(goal) = &mut c.goal {
+                if c.goal_op == ev.op
+                    && let Some(goal) = &mut c.goal
+                    && goal.turns > 0
+                {
                     goal.paused = Some("Run stopped.".into());
                     out.effects.push(Effect::SaveGoal {
                         conversation: id,
@@ -2141,8 +2164,10 @@ impl AppState {
                         },
                         &mut out,
                     );
-                    // Queued follow-ups stay queued after a user cancel.
+                    // Real-mode abort withdraws engine-owned inputs; its replicated queue
+                    // remains authoritative. A replacement goal starts only after settlement.
                     out.notes.push(Note::Other);
+                    out.merge(self.start_goal_if_idle(id));
                 }
             }
         }
