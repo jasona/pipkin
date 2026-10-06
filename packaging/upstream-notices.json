@@ -2,6 +2,28 @@
   "formatVersion": 1,
   "notices": [
     {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-x64",
+      "version": "0.28.2",
+      "file": "upstream-notices/npm-esbuild-linux-x64-0.28.2/LICENSE.md",
+      "url": "https://raw.githubusercontent.com/evanw/esbuild/609683d892977362a0f99026cb74b96263d728a9/LICENSE.md",
+      "revision": "609683d892977362a0f99026cb74b96263d728a9",
+      "revisionBasis": "published npm version gitHead",
+      "registryMetadataURL": "https://registry.npmjs.org/@esbuild/linux-x64/0.28.2",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "standardwebhooks",
+      "version": "1.1.1",
+      "file": "upstream-notices/npm-standardwebhooks-1.1.1/LICENSE",
+      "url": "https://raw.githubusercontent.com/standard-webhooks/standard-webhooks/b4d2c14fc5b4ccff3ff271e3b087dff812254c59/libraries/LICENSE",
+      "revision": "b4d2c14fc5b4ccff3ff271e3b087dff812254c59",
+      "revisionBasis": "published npm version gitHead",
+      "registryMetadataURL": "https://registry.npmjs.org/standardwebhooks/1.1.1",
+      "sha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27"
+    },
+    {
       "ecosystem": "rust",
       "name": "accesskit",
       "version": "0.24.1",

@@ -406,6 +406,41 @@ Logs: `/tmp/pipkin-recovery-review-{workspace,clippy,engine,package,verify,insta
 Remote [37445564908](https://github.com/last-refuge/pipkin/actions/runs/37445564908) was still in progress at the
 last check; this delta/final candidate must obtain its own green qualification.
 
+## Phase 2: npm notices, native/runtime inspection and CI evidence loss (2026-10-06)
+
+Recovered two immutable MIT notices using the published npm version's `gitHead`: `@esbuild/linux-x64` 0.28.2
+and `standardwebhooks` 1.1.1. The latter uses **libraries/LICENSE**, not the repository-root Apache specification
+license. Cached URLs/revisions/hashes are retained and verified offline. Missing notices decreased **12 → 10**;
+**552 Rust / 155 npm-workspace entries and 59 review flags** remain. Failed/missing upstream lookup findings are
+recorded in `docs/bundled-licenses.md`; no unrelated current notice or fabricated copyright was substituted.
+
+Added packaged `runtime-inventory.json` and retained CI evidence. The readelf-only scanner never executes binaries;
+fixtures verify direct dependencies/ABI references, foreign ELF/non-ELF flags, symlink deduplication, deterministic
+regeneration, path omission and non-execution. Python/binutils are explicit build dependencies. The current tree
+has **33 native artifacts** (including build object files), **seven foreign architecture/format flags**. Optional
+VM components, bundled libkrun/libcap-ng and C++ runtime links need additional review; the wrapper npm license is
+not proof of native/static component clearance. The local app references **GLIBC_2.44**; do not assume portability
+of this artifact to older Linux systems or count headless Ubuntu CI as native support.
+
+Remote [37445564908](https://github.com/last-refuge/pipkin/actions/runs/37445564908), on `14ee65d`, **failed**:
+36 packaged-engine tests passed and `a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history`
+failed. The verifier's `tail -5` discarded the assertion detail, so the cause is **unknown**, not a diagnosed or
+fixed flake. Removed truncation and added `--locked` so future CI retains the complete test failure. Installer
+checks were not reached in that failed job. Remote
+[37447515009](https://github.com/last-refuge/pipkin/actions/runs/37447515009) on clean full app revision
+`77fa11d6838d232678b9f00874db3faab2752e8f` **passed** the full workflow. That later pass does not establish the
+cause of the earlier failure; recurrence must be investigated during stabilization.
+
+Local validation on app base `77fa11d`: **537 workspace tests passed (40 ignored)**, Clippy/fmt clean, inventory
+fixtures passed, packaging and **37 unpacked-engine tests** passed, installer checks passed. Repeated the full
+37-test packaged suite with the untruncated verifier; passed again. No new development-engine run is claimed for
+this packaging-only delta. Unsigned working-delta 0.0.1 package SHA-256:
+`f332d4ab60c86f58e9465e18102d7ecbf3f2fc8bb3d458441898f234f6cfd25d`.
+A final rebuild includes hashes for foreign-format native addons; all 37 packaged tests and installer checks
+passed against that final working-delta artifact too.
+Logs: `/tmp/pipkin-runtime-audit-{workspace,clippy,package,verify,full-verify,installer}.log`,
+`/tmp/pipkin-diag-ci-failed.log`. No owner profile/configuration/clipboard changes or paid requests.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -420,8 +455,8 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Interrupted tools/unresolved operations | 1 | Passed (automated) behavior; recovery/status/stop-only retry and metadata support guidance present | Native installed walkthrough/final-candidate qualification remain; never infer settlement from timeout |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
 | Pinned clean engine build and manifest | 2 | Passed (automated): full engine pin, clean-source checks, immutable generated inputs and build identity | Requalify changed candidates; development overrides are not release approval |
-| CI and retained evidence | 2 | Passed (automated) on 528457c and 12c9dba; identified logs/artifacts retained | Required future/final candidate checks must also pass |
-| Runtime/dependency/license audit | 2 | Partial: inventory, notice retention and MPL source; 59 review flags, 12 entries without notices | Resolve/appraise notice applicability, data/asset provenance and external runtime dependencies |
+| CI and retained evidence | 2 | Passed (automated) on 77fa11d; earlier 14ee65d packaged-test failure recorded; fuller failure output now retained | Required future/final candidate checks must also pass |
+| Runtime/dependency/license audit | 2 | Partial: inventories, immutable notices and MPL source; 59 review flags, 10 entries without notices; native/ABI findings documented | Resolve/appraise notice applicability, data/asset provenance and external runtime dependencies |
 | Clean installed desktop workflow | 3 | Unverified | Owner/second supported environment: actual package installation, launcher, provider, real reply |
 | Real app upgrade/rollback and schema backup restore | 3 | Partial: automated migration/installer tests; manual installed workflow open | Owner/engineering use disposable profile and actual old/new packages |
 | Minimize/restore | 4 | Unverified in gate record | Owner runs documented native procedure |

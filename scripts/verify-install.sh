@@ -47,6 +47,6 @@ check "no problems reported" "! echo \"\$out\" | grep -qE 'PROBLEM|NOT FOUND|FAI
 if [ $full = 1 ]; then
   echo "running the real-engine workflow tests against the unpacked engine..."
   (cd "$here" && PIPKIN_PI_REPO="$root/prefix/usr/lib/pipkin/engine" \
-    cargo test -p pipkin-app --release e2e -- --ignored --test-threads=1 2>&1 | tail -5)
+    cargo test -p pipkin-app --release --locked e2e -- --ignored --test-threads=1 2>&1)
 fi
 [ $fail = 0 ] && echo "install verified" || { echo "install NOT verified"; exit 1; }

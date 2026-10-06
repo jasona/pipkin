@@ -138,7 +138,7 @@ No known silent no-op remains in the advertised workflow. Changes failures canno
 - [x] Add CI for Rust tests, Clippy, formatting, and installer tests. Pinned-action workflow passed remotely in runs 37421406544 (528457c) and 37422216176 (12c9dba); future/final candidates still require their own pass.
 - [x] Add a real-engine CI qualification job using the pinned engine and scripted provider, without credentials or paid requests. Development and packaged engines, clean locked provisioning, immutable generated inputs and bare probe passed in remote runs 37421406544 and 37422216176; see the gate record.
 - [x] Test the packaged engine, not only the development checkout; run `verify-install.sh --full` or its equivalent. The pinned/staged engine passed 37 suite tests; candidate changes still require fresh qualification.
-- [ ] Audit bundled licenses/provenance and runtime dependencies.
+- [ ] Audit bundled licenses/provenance and runtime dependencies. Partial: locked/staged license inventories, immutable notice inputs and non-executing native/ABI inventory are packaged; 59 license review flags, 10 missing notices and native/static/foreign-component findings remain. See `docs/bundled-licenses.md`.
 - [x] Ensure release artifact collection cannot accidentally include obsolete packages from previous builds. `release.sh` collects only the current version/architecture, rejects the development engine override, and passes disposable collection tests.
 
 ### Exit criteria
@@ -217,7 +217,7 @@ The supported desktop workflow passes the agreed native gates. Every remaining l
 - [ ] Replace historical/contradictory status claims with current evidence; keep old measurements labelled historical.
 - [ ] Update README commands, repository links, screenshots, and version/support labels.
 - [ ] Observe several new users going from installation to first reply where feasible; record stalls and fix blocking onboarding problems. Do not fabricate a participant count or completion rate.
-- [x] Provide a bug-report template and documented diagnostics/recovery procedure. `.github/ISSUE_TEMPLATE/bug-report.md` and `docs/support.md` warn that current CLI reports contain unredacted log/error text. Share-safe in-app diagnostics and private security reporting remain open.
+- [x] Provide a bug-report template and documented diagnostics/recovery procedure. `.github/ISSUE_TEMPLATE/bug-report.md` and `docs/support.md` warn that current CLI reports contain unredacted log/error text. Share-safe in-app diagnostics are implemented/tested; private security reporting remains open.
 
 ### Exit criteria
 

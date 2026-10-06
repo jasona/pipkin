@@ -56,19 +56,49 @@ fetch is needed during packaging. Recovered repository notices remain explicitly
 downloading a notice is not an automatic legal-clearance decision.
 
 This reduced packages with no copied notice from 32 to 12, while the total review flags remain 59. Remaining
-missing-notice cases include five Rust package versions and seven npm package versions. Their provenance and
-applicability still require follow-up; do not replace immutable inputs with unreviewed current upstream text.
+missing-notice cases initially included five Rust package versions and seven npm package versions.
+
+A subsequent npm metadata review recovered the MIT notice for `@esbuild/linux-x64` 0.28.2 from its published
+`gitHead`, and the MIT **libraries/LICENSE** notice for `standardwebhooks` 1.1.1 from its `gitHead`. The latter's
+repository-root LICENSE is Apache-2.0 for the specification, not the JavaScript library's MIT license: do not
+substitute that root text. These inputs retain immutable URLs/hashes and remain applicability-review flagged.
+The current missing-notice count is **10 (five Rust, five npm)**, with **59 total review flags** unchanged.
+
+The remaining AWS packages and `proxy-agent-negotiate` publish no `gitHead`; attempted version-tag lookup did not
+provide corresponding AWS tags. The negotiate version's tag resolves to an exact commit with matching package
+name/version but no package LICENSE, and no repository-root license. `data-uri-to-buffer`'s published commit also
+has no notice file. Do not fabricate copyrights or copy an unrelated current license to make the list appear closed.
 
 The inventory's `reviewRequired` entries are the machine-readable follow-up list. Do not mark the release-plan
 license/provenance task complete until those findings are resolved or an explicit acceptable review decision is
 recorded. Regenerate/review the inventory for every changed candidate; a prior snapshot is not clearance of a new
 app/engine pair.
 
+## Native/runtime inspection
+
+Packages also carry `usr/share/doc/pipkin/runtime-inventory.json`, generated using **readelf without executing any
+artifact**. It lists staged ELF hashes/machines, direct NEEDED shared-library names and referenced GLIBC/GLIBCXX/
+CXXABI versions, plus non-ELF `.node` files. It flags foreign architectures/formats without pretending those are
+supported runtimes. This is evidence, not a complete static/dlopen/linked-component SBOM or legal clearance.
+
+The initial local scan found 33 native artifacts (including build object files), with seven foreign-format/architecture
+flags. Pi's full source/dependency tree includes ARM, Darwin and Windows artifacts; their presence does not extend
+Pipkin's supported platform. The scan also exposes optional sandbox/VM components, C++ runtime dependencies and
+bundled `libkrun` depending on `libcap-ng`; these need applicability/licensing/runtime review in addition to npm
+wrapper declarations. Do not infer that every optional dependency is exercised by the scripted-provider suite.
+
+The actual locally built app references **GLIBC_2.44**. The package's ABI requirements depend on its build inputs;
+this unsigned local artifact is not a promise of portability to older Linux systems. The final supported-platform
+candidate needs its own ABI/runtime qualification. Node >=22.19 and the PKGBUILD's desktop/GPU dependencies remain
+external runtime requirements. Rust/Go standard libraries and bundled native components also require provenance/
+notice review beyond the Cargo/npm package graph.
+
 ## Reproduction
 
 ```sh
 scripts/package.sh "$PI_CHECKOUT"  # includes inventory generation from locked metadata and the actual engine
 python3 scripts/test-license-inventory.py
+python3 scripts/test-runtime-inventory.py
 ```
 
 Python 3 is a build/qualification dependency, not a new installed-app runtime dependency. The fixture test checks

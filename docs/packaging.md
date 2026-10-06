@@ -9,6 +9,7 @@
 /usr/share/licenses/pipkin/             MIT licence for Pipkin, plus the font and icon licences
 /usr/share/doc/pipkin/build-info.json   source/binary identity, compatibility and public build inputs
 /usr/share/doc/pipkin/third-party/      conservative dependency inventory, notices and MPL source
+/usr/share/doc/pipkin/runtime-inventory.json  staged native format, direct shared libraries and ABI references
 /usr/share/icons/hicolor/{128,256,512}x…/apps/pipkin.png
 ```
 
@@ -48,7 +49,10 @@ or certify third-party dependency provenance; those audits and CI qualification 
 Packaging generates a conservative Linux Rust/staged npm inventory and copies found package/vendored notices.
 It also provides the current MPL-2.0 dependency's source. Missing declarations/notices and inherited-license
 applicability are explicitly flagged. See [bundled-licenses.md](bundled-licenses.md): this is a partial audit, not
-release clearance. Python 3 is required for building/qualification, not for running the installed app.
+release clearance. `runtime-inventory.json` inspects staged native files with readelf, without executing them;
+it records direct shared-library/ABI references and flags foreign artifacts. Static/dlopen and vendored/native
+provenance still require review. The local build references GLIBC_2.44; do not assume the artifact works on older
+Linux systems. Python 3 and binutils are build/qualification dependencies, not new installed-app runtime requirements.
 
 `pipkin --version` and `--diagnose` report the compiled full app revision and explicit dirty/unknown state.
 `build-info.json` records app version/revision/dirty state and binary hash, protocol/schema, full engine revision,

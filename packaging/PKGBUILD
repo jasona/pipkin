@@ -9,7 +9,7 @@ arch=('x86_64')
 url='https://github.com/jasona/pipkin'
 license=('MIT')
 depends=('nodejs>=22.19' 'wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'vulkan-icd-loader' 'fontconfig' 'git')
-makedepends=('rust' 'cargo' 'npm' 'zstd' 'clang' 'cmake' 'python')
+makedepends=('rust' 'cargo' 'npm' 'zstd' 'clang' 'cmake' 'python' 'binutils')
 optdepends=('foot: terminal for the "open terminal" action'
             'orca: screen reader'
             'fcitx5: input methods')
