@@ -17,12 +17,13 @@ commit=$("$here/scripts/check-engine-source.sh" "$pi")
 
 [ -d "$pi/node_modules" ] || { echo "no node_modules in $pi (run npm ci there)" >&2; exit 1; }
 [ -f "$pi/pi-test.sh" ] || { echo "$pi is not a Pi checkout" >&2; exit 1; }
-# Provider JSON is generated/ignored, but required by the tracked source entry points.
-# Validate it against the pinned contracts before touching a previous staged build.
-[ -f "$pi/packages/ai/src/providers/data/.manifest.json" ] || {
-  echo "missing generated model data; run npm run hydrate:model-data in the pinned Pi checkout" >&2; exit 1;
-}
-node "$pi/packages/ai/scripts/check-model-data.ts"
+# Generated provider data comes from the immutable input paired with the source pin,
+# not the owner's checkout or mutable public model catalogs.
+if [ "${PIPKIN_ENGINE_DEV:-0}" = 1 ]; then
+  node "$pi/packages/ai/scripts/check-model-data.ts"
+else
+  "$here/scripts/stage-model-data.sh" --check
+fi
 rm -rf "$out"
 mkdir -p "$out"
 # Stage only identified source files, not stale ignored build output or checkout-local extras.
@@ -32,9 +33,6 @@ if [ "${PIPKIN_ENGINE_DEV:-0}" = 1 ]; then
 else
   git -C "$pi" archive "$commit" | tar -C "$out" -xf -
 fi
-mkdir -p "$out/packages/ai/src/providers"
-cp -a "$pi/packages/ai/src/providers/data" "$out/packages/ai/src/providers/data"
-model_data_hash=$(sha256sum "$out/packages/ai/src/providers/data/.manifest.json" | cut -d' ' -f1)
 # Installed dependencies are build inputs; preserve workspace links within the staged tree.
 cp -a "$pi/node_modules" "$out/node_modules"
 while IFS= read -r -d '' dependencies; do
@@ -42,6 +40,14 @@ while IFS= read -r -d '' dependencies; do
   mkdir -p "$out/$(dirname "$relative")"
   cp -a "$dependencies" "$out/$relative"
 done < <(find "$pi/packages" -mindepth 2 -maxdepth 2 -type d -name node_modules -print0)
+if [ "${PIPKIN_ENGINE_DEV:-0}" = 1 ]; then
+  mkdir -p "$out/packages/ai/src/providers"
+  cp -a "$pi/packages/ai/src/providers/data" "$out/packages/ai/src/providers/data"
+  node "$out/packages/ai/scripts/check-model-data.ts"
+else
+  "$here/scripts/stage-model-data.sh" "$out"
+fi
+model_data_hash=$(sha256sum "$out/packages/ai/src/providers/data/.manifest.json" | cut -d' ' -f1)
 if [ "${PIPKIN_ENGINE_KEEP_DEV:-0}" != 1 ]; then
   (cd "$out" && npm prune --omit=dev --offline --no-audit --no-fund >/dev/null 2>&1) \
     || echo "warning: could not prune dev dependencies; the engine is larger than needed" >&2

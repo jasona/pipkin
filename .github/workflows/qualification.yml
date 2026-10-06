@@ -1,0 +1,90 @@
+name: Release qualification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripted-qualification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install runner build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config zstd jq \
+            libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev \
+            libvulkan-dev libegl1-mesa-dev libssl-dev libasound2-dev libdbus-1-dev \
+            libxcb1-dev libxcb-xkb-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev
+      - name: Install the repository Rust toolchain
+        run: |
+          toolchain=$(awk -F '"' '/^channel =/ {print $2}' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.19.0"
+      - name: Rust and packaging policy checks
+        run: |
+          mkdir -p qualification-logs
+          set -o pipefail
+          cargo test --workspace --locked 2>&1 | tee qualification-logs/workspace.log
+          cargo clippy --workspace --all-targets --locked 2>&1 | tee qualification-logs/clippy.log
+          cargo fmt --all --check
+          scripts/test-engine-source.sh
+          scripts/test-release-collection.sh
+          scripts/test-guard.sh
+      - name: Provision a clean pinned engine
+        run: |
+          revision=$(<packaging/pi-engine-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          engine="$RUNNER_TEMP/pi-engine"
+          git init "$engine"
+          git -C "$engine" fetch --depth=1 https://github.com/jasona/pi.git "$revision"
+          git -C "$engine" checkout --detach FETCH_HEAD
+          (cd "$engine" && npm ci)
+          scripts/stage-model-data.sh "$engine"
+          scripts/check-engine-source.sh "$engine"
+          echo "PIPKIN_PI_REPO=$engine" >> "$GITHUB_ENV"
+      - name: Scripted-provider development engine qualification
+        run: |
+          set -o pipefail
+          cargo test -p pipkin-app --release --locked e2e -- --ignored --test-threads=1 2>&1 | tee qualification-logs/engine.log
+      - name: Bundled engine and installer qualification
+        run: |
+          set -o pipefail
+          scripts/package.sh "$PIPKIN_PI_REPO" 2>&1 | tee qualification-logs/package.log
+          version=$(cargo pkgid -p pipkin-app | sed 's/.*[#@]//')
+          package="dist/pipkin-$version-$(uname -m).tar.zst"
+          scripts/verify-install.sh --full "$package" 2>&1 | tee qualification-logs/packaged-engine.log
+          scripts/test-install.sh "$package" 2>&1 | tee qualification-logs/installer.log
+          sha256sum "$package" > qualification-logs/SHA256SUMS
+          cp dist/stage/usr/lib/pipkin/engine/engine.json qualification-logs/
+          git rev-parse HEAD > qualification-logs/app-revision.txt
+      - name: Retain qualification evidence (not release publication)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qualification-${{ github.sha }}
+          path: qualification-logs/
+          if-no-files-found: warn
+          retention-days: 30

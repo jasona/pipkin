@@ -30,14 +30,22 @@ scripts/verify-install.sh --full      # ...and run the real-engine workflow test
 
 Release engine sources must match the full revision in `packaging/pi-engine-revision` and have a clean Git
 working tree. `scripts/check-engine-source.sh PI_CHECKOUT` verifies both before staging. Prepare a clean checkout
-of that revision with `npm ci`, then `npm run hydrate:model-data` at the Pi root if generated provider data is missing.
+of that revision with `npm ci`. Release builds restore the checksummed provider-data snapshot paired with the pin;
+they do not fetch a mutable public model catalog. `scripts/stage-model-data.sh PI_CHECKOUT` can restore/validate that
+snapshot for development-engine qualification. See `packaging/engine-model-data.md` for provenance and pin updates.
 `PIPKIN_ENGINE_DEV=1 scripts/package.sh PI_CHECKOUT` is an explicit development override, not release qualification.
 
 `scripts/build-engine.sh` stages the identified tracked sources through Git archive, not arbitrary ignored build
-output. It separately validates/copies required generated provider JSON and installed workspace dependencies,
+output. It separately restores/validates pinned generated provider JSON and copies installed workspace dependencies,
 then prunes dev dependencies offline. The manifest records the full source revision, generated-data manifest hash,
 protocol, minimum client and whether the development override was used. It does not yet identify every build input
 or certify third-party dependency provenance; those audits and CI qualification remain release gates.
+
+`.github/workflows/qualification.yml` runs locked Rust checks, disposable packaging policy tests, a clean pinned
+engine with scripted-provider tests, and bundled-engine/installer tests. Actions and Node are pinned; the Rust
+version comes from `rust-toolchain.toml`. Logs and engine metadata are retained as CI evidence, not published
+release artifacts. The Ubuntu runner is headless automation, not an additional supported native desktop. Workflow
+presence is not a green gate: refer to `v1-release-gates.md` for observed run results.
 
 The engine is source plus dependencies run by Node's
 TypeScript support, as Pi's own `pi-test.sh` does; Pi does not yet publish a compiled experimental server, so a

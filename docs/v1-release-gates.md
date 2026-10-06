@@ -206,6 +206,34 @@ license/provenance auditing still need work. This is identified staging, not a c
 builds. Temporary logs: `/tmp/pipkin-pin-{package,verify,installer,workspace,clippy}.log`; the final verification log
 records the corrected pass, while the failure cause/count above preserves the initial failure evidence.
 
+## Phase 2: clean provisioning and CI implementation (2026-10-06)
+
+On app base `fbc2076`, added `.github/workflows/qualification.yml` with full-SHA-pinned actions, Node 22.19.0,
+the repository Rust toolchain, locked Rust checks, disposable packaging/guard tests, clean pinned Pi provisioning,
+scripted-provider development-engine tests, and full bundled-engine/installer qualification. It needs no provider
+credentials or paid inference. Job logs/metadata are retained for 30 days; this does not publish a release. Ubuntu
+headless automation is not qualification of an additional supported native desktop. **Remote CI pass is not yet
+observed**; adding a workflow alone does not close the Phase 2 exit gate.
+
+Clean provisioning was actually attempted in a disposable checkout fetched from the public Pi repository at the
+pin. `npm ci` succeeded, but live model-data hydration **failed with public-catalog connection timeouts**. Builds
+now restore a checksummed, approximately 57 KiB generated-data snapshot paired with the full source pin. It is the
+same validated runtime metadata used in previous qualified packages, not user credentials/session data; provenance
+and update procedure are in `packaging/engine-model-data.md`. Release staging no longer relies on the owner's
+ignored assets or a mutable catalog service. Development overrides still validate the developer's own data.
+
+After snapshot restoration, the fresh fetched checkout remained clean and passed the source pin check. Packaging
+from that checkout passed **37 full packaged-engine suite tests** and the installer checks. **531 workspace tests
+passed (40 ignored)**, Clippy/fmt clean; source/staging, corruption/missing-input, exact-release collection and stub
+native-input-guard tests passed. The generated-data manifest fingerprint remains the recorded `b92d631b…` value.
+Local unsigned 0.0.1 package SHA-256:
+`310750ed6795999f9bc36493199c4baa47a7ac4829e976e3bc89efb30b9c3da8`.
+
+This verifies clean engine provisioning on the current host, not a clean desktop installation or byte-for-byte
+reproducible app build. Complete app/build-input identification, bundled provenance/license auditing, remote green
+CI, native gates, signing and release acceptance remain open. Logs:
+`/tmp/pipkin-clean-engine-{fetch,npm,hydrate}.log` and `/tmp/pipkin-ci-{package,verify,installer,workspace,clippy,guard}.log`.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

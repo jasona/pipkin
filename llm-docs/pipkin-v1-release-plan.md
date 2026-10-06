@@ -135,8 +135,8 @@ No known silent no-op remains in the advertised workflow. Changes failures canno
 - [x] Make release builds reject dirty/unidentified engine sources, or use a clean checkout created from the pin. Dirty/untracked or mismatched revisions are rejected before staging; `PIPKIN_ENGINE_DEV=1` is explicit and recorded in the manifest.
 - [ ] Record app version/revision, full engine revision, protocol/compatibility information, and relevant build inputs in the manifest/diagnostics.
 - [x] Verify required generated engine assets and production dependencies exist. Generated provider data is validated against the source contracts, copied explicitly and fingerprinted. The staged engine passed the full scripted-provider suite; dependency provenance/license auditing remains separate.
-- [ ] Add CI for Rust tests, Clippy, formatting, and installer tests.
-- [ ] Add a real-engine CI qualification job using the pinned engine and scripted provider, without credentials or paid requests.
+- [x] Add CI for Rust tests, Clippy, formatting, and installer tests. Pinned-action workflow added; a passing remote run is still required for the Phase 2 exit gate.
+- [x] Add a real-engine CI qualification job using the pinned engine and scripted provider, without credentials or paid requests. Includes development and packaged engines, locked dependency provisioning and immutable generated model inputs; remote pass evidence remains separate.
 - [x] Test the packaged engine, not only the development checkout; run `verify-install.sh --full` or its equivalent. The pinned/staged engine passed 37 suite tests; candidate changes still require fresh qualification.
 - [ ] Audit bundled licenses/provenance and runtime dependencies.
 - [x] Ensure release artifact collection cannot accidentally include obsolete packages from previous builds. `release.sh` collects only the current version/architecture, rejects the development engine override, and passes disposable collection tests.
