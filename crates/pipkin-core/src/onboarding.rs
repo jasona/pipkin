@@ -1,0 +1,327 @@
+//! First-run policy, independent of rendering, transport and credential values.
+//! This is a foundation for onboarding, not permission to send a prompt or write credentials.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntrySurface {
+    Welcome,
+    Workspace,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntryFacts {
+    pub setup_completed: bool,
+    pub has_saved_work: bool,
+    pub demo: bool,
+    pub explicit_external_server: bool,
+}
+
+impl EntryFacts {
+    pub fn surface(self) -> EntrySurface {
+        if self.setup_completed || self.has_saved_work || self.demo || self.explicit_external_server
+        {
+            EntrySurface::Workspace
+        } else {
+            EntrySurface::Welcome
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineReadiness {
+    #[default]
+    Preparing,
+    Unavailable,
+    Ready,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProviderReadiness {
+    #[default]
+    Unknown,
+    /// Discovery only: never imply consent or successful authentication.
+    ExistingConnectionAvailable,
+    Connecting,
+    Failed,
+    /// The engine acknowledged configuration; not proof of a successful paid request.
+    Configured,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupStage {
+    Welcome,
+    PreparingEngine,
+    EngineUnavailable,
+    ConnectProvider,
+    ConnectingProvider,
+    ProviderFailed,
+    ChooseModel,
+    ChooseProject,
+    Ready,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetupFacts {
+    pub engine: EngineReadiness,
+    pub provider: ProviderReadiness,
+    /// An available model selection acknowledged by the engine, not a local dropdown value.
+    pub model_ready: bool,
+    /// A selected usable project acknowledged by the application, not arbitrary picker text.
+    pub project_ready: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SetupFlow {
+    started: bool,
+    epoch: u64,
+    facts: SetupFacts,
+}
+
+impl SetupFlow {
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn begin(&mut self) {
+        self.started = true;
+    }
+
+    /// A new engine/connection attempt invalidates old observations but preserves project choice.
+    /// Overflow fails rather than reusing an epoch and accepting a previous attempt's result.
+    pub fn retry(&mut self) -> Option<u64> {
+        self.epoch = self.epoch.checked_add(1)?;
+        self.facts.engine = EngineReadiness::Preparing;
+        self.facts.provider = ProviderReadiness::Unknown;
+        self.facts.model_ready = false;
+        Some(self.epoch)
+    }
+
+    /// Apply an authoritative, secret-free snapshot only for the current setup attempt.
+    pub fn reconcile(&mut self, epoch: u64, facts: SetupFacts) -> bool {
+        if epoch != self.epoch {
+            return false;
+        }
+        self.facts = facts;
+        true
+    }
+
+    pub fn stage(&self) -> SetupStage {
+        if !self.started {
+            return SetupStage::Welcome;
+        }
+        match self.facts.engine {
+            EngineReadiness::Preparing => return SetupStage::PreparingEngine,
+            EngineReadiness::Unavailable => return SetupStage::EngineUnavailable,
+            EngineReadiness::Ready => {}
+        }
+        match self.facts.provider {
+            ProviderReadiness::Unknown | ProviderReadiness::ExistingConnectionAvailable => {
+                SetupStage::ConnectProvider
+            }
+            ProviderReadiness::Connecting => SetupStage::ConnectingProvider,
+            ProviderReadiness::Failed => SetupStage::ProviderFailed,
+            ProviderReadiness::Configured if !self.facts.model_ready => SetupStage::ChooseModel,
+            ProviderReadiness::Configured if !self.facts.project_ready => SetupStage::ChooseProject,
+            ProviderReadiness::Configured => SetupStage::Ready,
+        }
+    }
+
+    /// Eligibility only. The controller must persist completion after deliberate workspace entry,
+    /// and acknowledge that write. Exploring/skipping or showing Welcome never implies completion.
+    pub fn can_complete(&self) -> bool {
+        self.stage() == SetupStage::Ready
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_fresh_ordinary_real_launch_enters_welcome() {
+        assert_eq!(EntryFacts::default().surface(), EntrySurface::Welcome);
+        for facts in [
+            EntryFacts {
+                setup_completed: true,
+                ..EntryFacts::default()
+            },
+            EntryFacts {
+                has_saved_work: true,
+                ..EntryFacts::default()
+            },
+            EntryFacts {
+                demo: true,
+                ..EntryFacts::default()
+            },
+            EntryFacts {
+                explicit_external_server: true,
+                ..EntryFacts::default()
+            },
+        ] {
+            assert_eq!(facts.surface(), EntrySurface::Workspace);
+        }
+    }
+
+    #[test]
+    fn preparation_runs_backstage_without_skipping_welcome() {
+        let mut flow = SetupFlow::default();
+        flow.reconcile(
+            0,
+            SetupFacts {
+                engine: EngineReadiness::Ready,
+                ..SetupFacts::default()
+            },
+        );
+        assert_eq!(flow.stage(), SetupStage::Welcome);
+        assert!(!flow.can_complete());
+        flow.begin();
+        assert_eq!(flow.stage(), SetupStage::ConnectProvider);
+    }
+
+    #[test]
+    fn readiness_requires_engine_provider_and_project_acknowledgements() {
+        for engine in [
+            EngineReadiness::Preparing,
+            EngineReadiness::Unavailable,
+            EngineReadiness::Ready,
+        ] {
+            for provider in [
+                ProviderReadiness::Unknown,
+                ProviderReadiness::ExistingConnectionAvailable,
+                ProviderReadiness::Connecting,
+                ProviderReadiness::Failed,
+                ProviderReadiness::Configured,
+            ] {
+                for project_ready in [false, true] {
+                    for model_ready in [false, true] {
+                        let mut flow = SetupFlow::default();
+                        flow.begin();
+                        flow.reconcile(
+                            0,
+                            SetupFacts {
+                                engine,
+                                provider,
+                                model_ready,
+                                project_ready,
+                            },
+                        );
+                        assert_eq!(
+                            flow.can_complete(),
+                            engine == EngineReadiness::Ready
+                                && provider == ProviderReadiness::Configured
+                                && model_ready
+                                && project_ready
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn existing_credentials_are_a_choice_not_implicit_consent() {
+        let mut flow = SetupFlow::default();
+        flow.begin();
+        flow.reconcile(
+            0,
+            SetupFacts {
+                engine: EngineReadiness::Ready,
+                provider: ProviderReadiness::ExistingConnectionAvailable,
+                model_ready: true,
+                project_ready: true,
+            },
+        );
+        assert_eq!(flow.stage(), SetupStage::ConnectProvider);
+        assert!(!flow.can_complete());
+    }
+
+    #[test]
+    fn retry_rejects_late_success_without_losing_project_choice() {
+        let mut flow = SetupFlow::default();
+        flow.begin();
+        let ready = SetupFacts {
+            engine: EngineReadiness::Ready,
+            provider: ProviderReadiness::Configured,
+            model_ready: true,
+            project_ready: true,
+        };
+        flow.reconcile(0, ready);
+        assert!(flow.can_complete());
+        let epoch = flow.retry().unwrap();
+        assert_eq!(epoch, 1);
+        assert!(!flow.reconcile(0, ready));
+        assert_eq!(flow.stage(), SetupStage::PreparingEngine);
+        assert!(flow.facts.project_ready);
+        flow.reconcile(epoch, ready);
+        assert!(flow.can_complete());
+    }
+
+    #[test]
+    fn disconnected_engine_takes_precedence_over_cached_provider_success() {
+        let mut flow = SetupFlow::default();
+        flow.begin();
+        flow.reconcile(
+            0,
+            SetupFacts {
+                engine: EngineReadiness::Unavailable,
+                provider: ProviderReadiness::Configured,
+                model_ready: true,
+                project_ready: true,
+            },
+        );
+        assert_eq!(flow.stage(), SetupStage::EngineUnavailable);
+        assert!(!flow.can_complete());
+    }
+
+    #[test]
+    fn provider_pending_failure_and_project_choice_are_distinct() {
+        let mut flow = SetupFlow::default();
+        flow.begin();
+        for (provider, expected) in [
+            (
+                ProviderReadiness::Connecting,
+                SetupStage::ConnectingProvider,
+            ),
+            (ProviderReadiness::Failed, SetupStage::ProviderFailed),
+            (ProviderReadiness::Configured, SetupStage::ChooseProject),
+        ] {
+            flow.reconcile(
+                0,
+                SetupFacts {
+                    engine: EngineReadiness::Ready,
+                    provider,
+                    model_ready: true,
+                    project_ready: false,
+                },
+            );
+            assert_eq!(flow.stage(), expected);
+        }
+        flow.reconcile(
+            0,
+            SetupFacts {
+                engine: EngineReadiness::Ready,
+                provider: ProviderReadiness::Configured,
+                model_ready: false,
+                project_ready: true,
+            },
+        );
+        assert_eq!(flow.stage(), SetupStage::ChooseModel);
+        assert!(!flow.can_complete());
+    }
+
+    #[test]
+    fn epoch_exhaustion_does_not_wrap_or_reset_acknowledged_facts() {
+        let mut flow = SetupFlow {
+            started: true,
+            epoch: u64::MAX,
+            facts: SetupFacts {
+                engine: EngineReadiness::Ready,
+                provider: ProviderReadiness::Configured,
+                model_ready: true,
+                project_ready: true,
+            },
+        };
+        let before = flow.clone();
+        assert_eq!(flow.retry(), None);
+        assert_eq!(flow, before);
+    }
+}

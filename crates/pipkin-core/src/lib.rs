@@ -6,6 +6,7 @@ pub mod attach;
 pub mod backend;
 pub mod ids;
 pub mod model;
+pub mod onboarding;
 pub mod protocol;
 pub mod state;
 

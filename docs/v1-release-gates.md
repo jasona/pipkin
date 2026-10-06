@@ -698,6 +698,36 @@ still required. The signature is ad-hoc only; Developer ID/notarization remain a
 promise or successful GUI launch is inferred. Preserved the concurrent unrelated redacted-thinking change
 `ef861bd`; only packaging/tests/documentation were modified here.
 
+## Owner Mac launch and first-run implementation foundation (2026-10-06)
+
+The owner reported strict codesign verification succeeded on the corrected bundle, while `spctl` returned
+“rejected.” After app-scoped quarantine removal, the owner reported **“It runs!”** and the UI showed no Pi server
+in `~/.pi/server`. This is owner-observed launch, not normal Gatekeeper acceptance or successful
+provider setup. It confirms the experimental archive's absent engine/runtime produces an unsuitable first-run
+experience; signing trust and onboarding are separate workstreams.
+
+The owner approved a beautiful Pipkin-branded welcome → provider connection → project → productive conversation,
+with self-contained engine/runtime and no manual-server setup as the default, and authorized implementation.
+Development-only contract: `llm-docs/pipkin-onboarding-plan.md`; matching future UI surface brief under
+`.impeccable/surfaces/`. These contracts are not installed as public help or embedded in the app.
+
+Implemented framework-independent `pipkin-core::onboarding`: explicit first-run disposition, secret-free engine/
+provider/model/project readiness, distinct pending/failure states, existing-connection discovery without implicit consent,
+completion eligibility and retry-epoch guards. Returning completed/saved-work, demo and explicit external-server
+launches preserve workspace/recovery behavior. Eight isolated tests exercise the readiness matrix, delayed
+results, project preservation and non-wrapping epoch exhaustion. The policy is **not yet wired to a shipped view,
+provider mutation or persisted completion**; no new-user completion or beautiful rendered surface is claimed.
+
+The pinned experimental service has no provider-login/API-key-write RPC; Pi auth orchestration belongs to its
+ModelRuntime/pi-ai Models and credential store. A typed secret-safe integration is required rather than a fake
+connection button, plaintext credential wizard persistence or silent external credential reuse. Bundle/runtime
+and auth implementation precede final surface wiring; the owner-approved visual direction is recorded now.
+
+Local validation: **554 workspace tests passed (40 ignored)**, eight onboarding policy tests, Clippy/fmt clean.
+Logs: `/tmp/pipkin-onboarding-{policy-tests,workspace,clippy}.log`. No native visual review, new package/engine run,
+new credential storage, owner-profile modification or system/package installation was performed in this foundation
+pass. Prototype-era product-context statements were noted, not silently rewritten as an unrelated side effect.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
