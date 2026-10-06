@@ -285,7 +285,7 @@ impl Builder {
                         .unwrap_or(false);
                     let body = block.get("thinking").and_then(Value::as_str).unwrap_or("");
                     let label = if redacted || body.is_empty() {
-                        "Thinking (not shown)".to_owned()
+                        "Thinking...".to_owned()
                     } else {
                         format!("Thinking\n{body}")
                     };
@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_is_visible_and_redacted_thinking_is_labelled() {
+    fn thinking_is_visible_and_redacted_thinking_is_brief() {
         let m = map_view(&view(vec![assistant(
             2,
             json!([
@@ -705,9 +705,7 @@ mod tests {
         assert!(
             matches!(&m.items[0].kind, ItemKind::Notice { text, level: NoticeLevel::Info } if text == "Thinking\nconsider the cache")
         );
-        assert!(
-            matches!(&m.items[1].kind, ItemKind::Notice { text, .. } if text == "Thinking (not shown)")
-        );
+        assert!(matches!(&m.items[1].kind, ItemKind::Notice { text, .. } if text == "Thinking..."));
         assert!(matches!(&m.items[2].kind, ItemKind::Assistant { text, .. } if text == "Done."));
     }
 

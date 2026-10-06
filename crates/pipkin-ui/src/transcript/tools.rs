@@ -88,13 +88,16 @@ pub fn label(name: &str, input: &str) -> ToolLabel {
     }
 }
 
-/// Whether a notice is the model's thinking (`Thinking\n<text>` or `Thinking (not shown)`).
+/// Whether a notice is the model's thinking (`Thinking\n<text>` or `Thinking...`).
 pub fn is_thinking(text: &str) -> bool {
     text.starts_with("Thinking")
 }
 
 /// The first words of a thinking notice, without Markdown emphasis; empty when it has none.
 pub fn thinking_first_line(text: &str) -> String {
+    if matches!(text, "Thinking..." | "Thinking (not shown)") {
+        return String::new();
+    }
     text.strip_prefix("Thinking")
         .unwrap_or(text)
         .trim()
@@ -310,13 +313,14 @@ mod tests {
     #[test]
     fn thinking_is_recognised_and_its_first_words_found() {
         assert!(is_thinking("Thinking\n**Checking git status**\nmore"));
-        assert!(is_thinking("Thinking (not shown)"));
+        assert!(is_thinking("Thinking..."));
         assert!(!is_thinking("A notice"));
         assert_eq!(
             thinking_first_line("Thinking\n\n**Checking git status**\nmore"),
             "Checking git status"
         );
-        assert_eq!(thinking_first_line("Thinking (not shown)"), "(not shown)");
+        assert_eq!(thinking_first_line("Thinking..."), "");
+        assert_eq!(thinking_first_line("Thinking (not shown)"), "");
         assert_eq!(thinking_first_line("Thinking"), "");
     }
 }

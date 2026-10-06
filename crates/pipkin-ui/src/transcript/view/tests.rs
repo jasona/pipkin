@@ -818,7 +818,7 @@ fn collapsed_work_shows_latest_explanation_then_outcome_not_tool_details() {
         "Working…"
     );
     assert_eq!(
-        activity_caption(&[notice(5, "Thinking (not shown)")], true, false, summary),
+        activity_caption(&[notice(5, "Thinking...")], true, false, summary),
         "Working…"
     );
 }

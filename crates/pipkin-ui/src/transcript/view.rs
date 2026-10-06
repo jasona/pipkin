@@ -206,7 +206,7 @@ fn activity_caption(items: &[TranscriptItem], active: bool, failed: bool, summar
                 text,
             } if super::tools::is_thinking(text) => {
                 let first = super::tools::thinking_first_line(text);
-                (!first.is_empty() && first != "(not shown)").then_some(first)
+                (!first.is_empty()).then_some(first)
             }
             _ => None,
         })
@@ -1237,7 +1237,8 @@ impl TranscriptView {
             }
             let body = rest.trim();
             let first = super::tools::thinking_first_line(text);
-            let can_open = !body.is_empty() && !body.starts_with('(');
+            let hidden = matches!(text, "Thinking..." | "Thinking (not shown)");
+            let can_open = !body.is_empty() && !hidden;
             let (conv, id, expanded) = (ctx.conv, item.id, ctx.expanded && can_open);
             let mut line = div()
                 .id(ElementId::NamedInteger("think".into(), id.0))
@@ -1251,7 +1252,11 @@ impl TranscriptView {
                 .text_size(theme.small_size())
                 .text_color(c.text_faint)
                 .role(Role::Button)
-                .aria_label(format!("Thinking: {}", clip(&first, A11Y_TEXT_LIMIT)))
+                .aria_label(if hidden {
+                    "Thinking...".to_owned()
+                } else {
+                    format!("Thinking: {}", clip(&first, A11Y_TEXT_LIMIT))
+                })
                 .aria_expanded(expanded)
                 .when(can_open, |d| {
                     d.cursor_pointer()
@@ -1267,9 +1272,9 @@ impl TranscriptView {
                         .flex_none()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(c.text_muted)
-                        .child("Thinking"),
+                        .child(if hidden { "Thinking..." } else { "Thinking" }),
                 );
-            if !expanded {
+            if !expanded && !hidden {
                 line = line.child(div().flex_1().min_w_0().truncate().child(first));
             } else {
                 line = line.child(div().flex_1());
@@ -1302,7 +1307,11 @@ impl TranscriptView {
             return div()
                 .id(ElementId::NamedInteger("msg".into(), item.id.0))
                 .role(Role::Article)
-                .aria_label(format!("Thinking: {}", clip(body, A11Y_TEXT_LIMIT)))
+                .aria_label(if hidden {
+                    "Thinking...".to_owned()
+                } else {
+                    format!("Thinking: {}", clip(body, A11Y_TEXT_LIMIT))
+                })
                 .pl(px((28.0 + 10.0) * theme.scale.max(1.0)))
                 .child(col)
                 .into_any_element();
