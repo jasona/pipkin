@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the current native macOS build; no signing, engine bundling or release publication."""
+"""Package/verify an ad-hoc signed macOS bundle; no Developer ID, notarization or engine bundling."""
 import hashlib
 import json
 from pathlib import Path
@@ -7,6 +7,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,15 +55,30 @@ def main():
     dependencies = subprocess.check_output(['otool', '-L', str(executable)], text=True).splitlines()[1:]
     info = {'formatVersion': 1, 'experimental': True,
             'app': {'version': version, 'revision': revision, 'dirty': dirty,
-                    'binarySha256': sha256(executable), 'target': target},
+                    'preBundleSigningBinarySha256': sha256(executable), 'target': target},
             'engine': {'bundled': False, 'requiredRevision': (ROOT / 'packaging/pi-engine-revision').read_text().strip()},
-            'signing': 'No Developer ID signing or notarization; linker ad-hoc signatures are not release authentication.',
+            'signing': 'Ad-hoc signed completed app bundle; no Developer ID or notarization. Not publisher authentication or Gatekeeper acceptance.',
             'directMachODependencies': [line.strip() for line in dependencies],
             'limitations': 'Build artifact, not native acceptance. Dependency notices are evidence, not legal clearance.'}
+    # The embedded report cannot contain the final signed-binary hash: it is itself sealed
+    # into that signature. Embed pre-sign identity, then retain the final hash outside the app.
+    (resources / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
+    bundle = out / 'Pipkin.app'
+    subprocess.run(['codesign', '--force', '--sign', '-', '--identifier', 'org.last-refuge.pipkin', str(bundle)], check=True)
+    verify = ['codesign', '--verify', '--deep', '--strict', '--verbose=4']
+    subprocess.run(verify + [str(bundle)], check=True)
+    info['app']['binarySha256'] = sha256(executable)
     (out / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
-    shutil.copy2(out / 'build-info.json', resources / 'build-info.json')
     archive = out / f'pipkin-{version}-{target}-experimental.zip'
-    subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(out / 'Pipkin.app'), str(archive)], check=True)
+    subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(bundle), str(archive)], check=True)
+    # Validate what a user extracts, not just the pre-archive directory. Never modify the app
+    # after signing, and reject any extraction that changes its executable or resource seal.
+    with tempfile.TemporaryDirectory(prefix='verify-macos-', dir=out) as scratch:
+        subprocess.run(['ditto', '-x', '-k', str(archive), scratch], check=True)
+        restored = Path(scratch) / 'Pipkin.app'
+        subprocess.run(verify + [str(restored)], check=True)
+        if sha256(restored / 'Contents/MacOS/pipkin') != info['app']['binarySha256']:
+            raise RuntimeError('extracted signed executable checksum mismatch')
     # Avoid uploading the app twice; the zip retains executable permissions and bundle layout.
     shutil.rmtree(out / 'Pipkin.app')
     (out / 'SHA256SUMS').write_text(f'{sha256(archive)}  {archive.name}\n')

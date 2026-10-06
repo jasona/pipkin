@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import subprocess
+import zipfile
 import tempfile
 import sys
 from unittest.mock import patch
@@ -40,23 +42,60 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             return '/private/fixture/executable:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n'
         raise AssertionError(args)
 
-    def archive(args, **kwargs):
-        assert args[:5] == ['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent']
-        contents = Path(args[-2]) / 'Contents'
-        assert (contents / 'MacOS/pipkin').stat().st_mode & 0o111
-        assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'pipkin'
-        assert (contents / 'Resources/third-party/sources/mpl/src/lib.rs').read_text() == 'exact source'
-        assert (contents / 'Resources/font-notices/example-OFL.txt').exists()
-        Path(args[-1]).write_bytes(b'fixture zip')
+    calls = []
+    corrupt_extraction = False
 
-    with patch.object(module, 'ROOT', root), patch.object(module.sys, 'platform', 'darwin'), patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin']), patch.object(module.subprocess, 'check_output', side_effect=output), patch.object(module.subprocess, 'run', side_effect=archive):
+    def seal(contents):
+        return {str(p.relative_to(contents)): module.sha256(p) for p in contents.rglob('*')
+                if p.is_file() and '_CodeSignature' not in p.parts}
+
+    def command(args, **kwargs):
+        assert kwargs['check'] is True
+        calls.append(args)
+        if args[:2] == ['codesign', '--force']:
+            assert args[2:6] == ['--sign', '-', '--identifier', 'org.last-refuge.pipkin']
+            contents = Path(args[-1]) / 'Contents'
+            executable = contents / 'MacOS/pipkin'
+            executable.write_bytes(executable.read_bytes() + b' fixture signature')
+            signature = contents / '_CodeSignature/CodeResources'
+            signature.parent.mkdir()
+            signature.write_text(json.dumps(seal(contents)))
+        elif args[:2] == ['codesign', '--verify']:
+            assert args[2:5] == ['--deep', '--strict', '--verbose=4']
+            contents = Path(args[-1]) / 'Contents'
+            if json.loads((contents / '_CodeSignature/CodeResources').read_text()) != seal(contents):
+                raise subprocess.CalledProcessError(1, args)
+        elif args[:5] == ['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent']:
+            bundle = Path(args[-2]); contents = bundle / 'Contents'
+            assert (contents / 'MacOS/pipkin').stat().st_mode & 0o111
+            assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'pipkin'
+            assert (contents / 'Resources/third-party/sources/mpl/src/lib.rs').read_text() == 'exact source'
+            assert (contents / 'Resources/font-notices/example-OFL.txt').exists()
+            embedded = json.loads((contents / 'Resources/build-info.json').read_text())
+            assert 'binarySha256' not in embedded['app']  # No self-referential signature hash.
+            assert embedded['app']['preBundleSigningBinarySha256'] == module.sha256(root / 'target/release/pipkin')
+            with zipfile.ZipFile(args[-1], 'w') as archive:
+                for path in bundle.rglob('*'):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(bundle.parent))
+        elif args[:3] == ['ditto', '-x', '-k']:
+            with zipfile.ZipFile(args[3]) as archive:
+                archive.extractall(args[4])
+            if corrupt_extraction:
+                (Path(args[4]) / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered resource')
+        else:
+            raise AssertionError(args)
+
+    with patch.object(module, 'ROOT', root), patch.object(module.sys, 'platform', 'darwin'), patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin']), patch.object(module.subprocess, 'check_output', side_effect=output), patch.object(module.subprocess, 'run', side_effect=command):
         module.main()
         out = root / 'dist/macos'
         info = json.loads((out / 'build-info.json').read_text())
         assert info['experimental'] and not info['engine']['bundled']
         assert info['app']['target'] == 'aarch64-apple-darwin'
         assert info['app']['revision'] == 'b' * 40 and info['app']['dirty'] is False
-        assert info['app']['binarySha256'] == module.sha256(root / 'target/release/pipkin')
+        assert info['app']['preBundleSigningBinarySha256'] == module.sha256(root / 'target/release/pipkin')
+        assert info['app']['binarySha256'] != info['app']['preBundleSigningBinarySha256']
+        assert sum(args[:2] == ['codesign', '--verify'] for args in calls) == 2
         assert 'Developer ID' in info['signing']
         assert temporary not in (out / 'build-info.json').read_text()
         assert '/private/fixture' not in (out / 'build-info.json').read_text()
@@ -64,6 +103,12 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         package = next(out.glob('*.zip'))
         assert (out / 'SHA256SUMS').read_text() == f'{module.sha256(package)}  {package.name}\n'
         module.main()  # An identified prior output can be replaced.
+        corrupt_extraction = True
+        try:
+            module.main()
+            raise AssertionError('tampered extracted resources were accepted')
+        except subprocess.CalledProcessError:
+            assert not (out / 'SHA256SUMS').exists()  # Do not publish a failed bundle.
     with patch.object(module.sys, 'platform', 'linux'):
         try:
             module.main()

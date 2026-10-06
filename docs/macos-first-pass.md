@@ -5,8 +5,30 @@ runner. First observed green run: [37482847877](https://github.com/last-refuge/p
 clean app `f52e8c254488c4524c4cb986530eee7048b4f138`, **Apple Silicon/aarch64**. Intel/universal builds
 have not been produced or qualified. Download the artifact identified by its app revision and runner architecture, unzip its
 experimental app archive, and retain `build-info.json` and `SHA256SUMS`. This is a native single-
-architecture build, **not** a universal binary, signed/notarized distribution or supported 1.0 release.
+architecture build, **not** a universal binary, Developer ID-signed/notarized distribution or supported 1.0 release.
 Do not treat a checksum as publisher authentication.
+
+## Downloaded-bundle signature qualification
+
+The first f52e8c2/ba836a7 artifacts compiled and passed engine tests but did **not** sign/verify the completed
+app bundle. The owner reported “damaged and can't be opened”; `codesign --verify` reported “code has no
+resources but signature indicates they must be present.” Do not use those artifacts as launch-qualified builds.
+
+Packaging now ad-hoc signs the completed `.app` and requires strict signature verification both before
+archiving and after extraction. The embedded build report records the pre-bundle-signing binary hash; the
+external `build-info.json` records the final signed executable hash, avoiding a self-referential resource seal.
+An actual green run is required for this correction. Ad-hoc signatures verify integrity, **not publisher
+identity or Gatekeeper acceptance**; Developer ID signing and notarization remain absent.
+
+Read-only checks on your extracted copy (use straight quotes, not smart quotes):
+
+```sh
+codesign --verify --deep --strict --verbose=4 "/absolute/path/Pipkin.app"
+spctl --assess --type execute --verbose=4 "/absolute/path/Pipkin.app"
+```
+
+Do not disable Gatekeeper globally. A correct ad-hoc bundle may still be refused as unnotarized; that is a
+separate trust/distribution gate, not something compilation or signature-integrity checks close.
 
 ## What is included
 

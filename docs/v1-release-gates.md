@@ -653,6 +653,28 @@ clipboard and real interactive lifecycle checks remain Mac evaluation topics. Wi
 No version/tag/publication change was made. First-pass instructions and platform scope now link the actual green
 run rather than treating workflow existence as evidence.
 
+## Owner Mac launch failure: seal the completed bundle (2026-10-06)
+
+Owner-reported first downloaded Mac launch was rejected as “damaged and can't be opened.” After correcting
+smart-quote shell syntax, the owner reported `codesign --verify --deep --strict` output: **“code has no resources
+but signature indicates they must be present.”** This is failed downloaded-bundle signature evidence, not a GUI
+crash or a completed Gatekeeper assessment. Prior native compilation/engine smoke passes remain valid, but
+f52e8c2/ba836a7 archives are **not launch-qualified**. Static archive/hash checks did not establish bundle validity.
+
+The packager previously relied on the linker's bare-executable signature and never sealed the completed app.
+It now signs the complete `.app` with an explicit **ad-hoc** identity, requires strict/deep codesign verification,
+archives it, extracts into a disposable directory and repeats verification plus final executable-hash matching.
+Nothing inside the app changes after signing. Embedded metadata retains pre-sign binary identity; final signed
+binary identity stays in the external report to avoid hashing a signature that seals its own hash. This is not
+Developer ID signing, notarization, publisher authentication or proof of Gatekeeper acceptance.
+
+Local bundle-policy fixture checks passed, including signature-induced executable changes and rejection of
+resource tampering after archive extraction before checksums/publication. **546 workspace tests passed (40
+ignored)**, Clippy/fmt clean. No new real-engine run is claimed for this packaging-only delta; Mac CI must repeat
+its engine/build checks and perform the new actual codesign/archive verification. Logs:
+`/tmp/pipkin-macos-bundle-signature-{workspace,clippy}.log`. Native signature correction remains unverified until
+that new runner succeeds; normal quarantined download trust still requires a separate acceptance decision.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
