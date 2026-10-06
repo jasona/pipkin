@@ -1,6 +1,7 @@
 //! Small platform boundaries. Clipboard and dialogs belong to GPUI; only filesystem
-//! locations live here.
+//! locations and local server identity live here.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const DATA_DIR_ENV: &str = "PIPKIN_DATA";
@@ -38,6 +39,24 @@ pub fn resolve_data_dir(
         .unwrap_or_else(|| PathBuf::from(".pipkin"))
 }
 
+/// A canonical UUIDv4 using OS entropy on our current Unix targets, without Linux /proc.
+/// Do not substitute timestamps if entropy is unavailable: a unique server identity is required.
+pub fn fresh_server_id() -> std::io::Result<String> {
+    let mut bytes = [0_u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
+}
+
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join(DB_FILE)
 }
@@ -45,6 +64,15 @@ pub fn db_path(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_ids_are_distinct_canonical_protocol_uuid_v4() {
+        let first = fresh_server_id().unwrap();
+        let second = fresh_server_id().unwrap();
+        assert!(pi_client::protocol::is_server_id(&first));
+        assert!(pi_client::protocol::is_server_id(&second));
+        assert_ne!(first, second);
+    }
 
     #[test]
     fn precedence_is_cli_env_xdg_home() {

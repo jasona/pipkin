@@ -590,6 +590,29 @@ binary SHA-256: `b4ffb7ae66919353656cbf0770570f0d80666f99842b66ea3d1cf4b5d817200
 `/tmp/pipkin-extended-soak-{development,package,docs,packaged,packaged-metrics,installer,workspace,clippy}.log`.
 This is a fresh baseline, not final-RC soak acceptance and not Mac resource instrumentation.
 
+## macOS runner feedback: portable server identity (2026-10-06)
+
+First native run [37478670155](https://github.com/last-refuge/pipkin/actions/runs/37478670155) on clean
+`f5fee65e4d12f219e68af852642bb103d7319c2b`: **native macOS release compilation passed**, core/Unix transport
+checks passed, and all three owned-process tests passed, including actual kernel discovery of a disposable child
+and exclusion of an unrelated identity. The run nevertheless **failed before engine startup** because the test
+fixture required `/proc/sys/kernel/random/uuid`. No app archive was produced; no smoke/native UI pass is claimed.
+Linux qualification run 37478670080 on the same clean source passed.
+
+Inspection found the same Linux-only UUID dependency in real CLI-managed startup and diagnostics probing (the
+previous platform-doc "fallback" claim was incorrect). Replaced all three paths with one UUIDv4 helper using OS
+entropy from `/dev/urandom`, setting version/variant bits and failing rather than substituting timestamps when
+entropy is unavailable. Disposable tests check canonical/distinct ids, remembered profile identity and explicit
+identity without overwriting the stored default; these are now included in Mac CI. The test project root is
+canonicalized so macOS `/tmp` aliases cannot disagree with engine-recorded cwd/history paths.
+
+Local working-delta verification: **546 workspace tests passed (40 ignored)**, Clippy/fmt clean, **37 development
+and 37 unpacked packaged-engine tests**, installer and 26 guide/input checks passed. Logs:
+`/tmp/pipkin-macos-uuid-{workspace,clippy,engine,package,verify,installer}.log`. Unsigned working-delta Linux
+archive SHA-256 `371910604f838c60f39178557b160354cd04c997067b5ac4c81f74b40474dc26` (before this journal entry).
+A fresh native run is still required for the corrected engine smoke checks and actual Mac artifact production.
+Failure details retained locally in `/tmp/pipkin-macos-ci-{failure,full}.log` and remotely as build evidence.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

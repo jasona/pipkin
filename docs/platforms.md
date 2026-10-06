@@ -28,8 +28,8 @@ recorded in [native gates](native-gate-testing.md); do not read that historical 
 - **Engine lifecycle** (`engine.rs`, `macos_processes.rs`): Linux retains `/proc` discovery; macOS uses
   kernel uid/argument-environment inspection with exact environment identity. This must pass actual
   runner tests before being considered working. Windows ownership remains unimplemented.
-- **Small `/proc` reads**: UUID reads have existing fallbacks, but RSS/performance instrumentation remains
-  Linux-oriented. Zero/missing readings on macOS are not memory-soak evidence.
+- **Small `/proc` reads**: server UUIDs now use OS entropy (`/dev/urandom`) on both Unix targets, but
+  RSS/performance instrumentation remains Linux-oriented. Zero/missing readings on macOS are not memory-soak evidence.
 - **Paths and launching** (`launch.rs`, `platform.rs`): XDG directories and editor/terminal discovery still
   assume Linux conventions. Explicit launch arguments and terminal startup are evaluation workarounds.
 - **Packaging, signing and updates**: the first macOS archive contains an experimental native `.app`,

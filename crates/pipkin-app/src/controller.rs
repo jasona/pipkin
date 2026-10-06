@@ -271,10 +271,8 @@ fn managed_engine(options: &Options, pi_repo: &Path) -> Result<EngineConfig, Str
         None => match std::fs::read_to_string(&id_file) {
             Ok(text) if pi_client::protocol::is_server_id(text.trim()) => text.trim().to_owned(),
             _ => {
-                let id = std::fs::read_to_string("/proc/sys/kernel/random/uuid")
-                    .map_err(|e| format!("cannot create a server id: {e}"))?
-                    .trim()
-                    .to_owned();
+                let id = platform::fresh_server_id()
+                    .map_err(|e| format!("cannot create a server id: {e}"))?;
                 std::fs::create_dir_all(&server_dir)
                     .and_then(|_| std::fs::write(&id_file, &id))
                     .map_err(|e| {
@@ -1023,6 +1021,35 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Options, String> {
         Options::parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn managed_engine_remembers_a_portable_id_and_honors_explicit_identity() {
+        let profile = tempfile::tempdir().unwrap();
+        let options = Options {
+            pi_dir: Some(profile.path().join("server")),
+            data_dir: Some(profile.path().join("app")),
+            ..Options::default()
+        };
+        let first = managed_engine(&options, profile.path()).unwrap();
+        assert!(pi_client::protocol::is_server_id(&first.server_id));
+        assert_eq!(
+            managed_engine(&options, profile.path()).unwrap().server_id,
+            first.server_id
+        );
+        let explicit = platform::fresh_server_id().unwrap();
+        let options = Options {
+            pi_server_id: Some(explicit.clone()),
+            ..options
+        };
+        assert_eq!(
+            managed_engine(&options, profile.path()).unwrap().server_id,
+            explicit
+        );
+        assert_eq!(
+            std::fs::read_to_string(first.server_dir.join("default-server-id")).unwrap(),
+            first.server_id
+        );
     }
 
     #[test]

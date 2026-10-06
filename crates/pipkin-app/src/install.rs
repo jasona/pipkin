@@ -331,10 +331,7 @@ fn probe_engine(dir: &Path) -> Result<String, String> {
     let server_dir = root.join("server");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
-    let server_id = std::fs::read_to_string("/proc/sys/kernel/random/uuid")
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_owned();
+    let server_id = crate::platform::fresh_server_id().map_err(|e| e.to_string())?;
     let config = EngineConfig {
         pi_repo: dir.to_path_buf(),
         server_dir,

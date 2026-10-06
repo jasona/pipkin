@@ -282,12 +282,9 @@ pub fn is_tool_result_turn(request: &Value) -> bool {
         .is_some_and(|m| m["role"] == "tool")
 }
 
-/// A fresh canonical UUIDv4 from the kernel.
+/// A fresh canonical UUIDv4 from OS entropy on Linux and macOS.
 fn uuid() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/random/uuid")
-        .expect("kernel uuid")
-        .trim()
-        .to_owned()
+    crate::platform::fresh_server_id().expect("OS entropy for server identity")
 }
 
 /// A throwaway profile and a scripted provider, with the engine described but not yet started.
@@ -317,7 +314,9 @@ pub fn prepare(script: impl Fn(&Value, usize) -> Reply + Send + Sync + 'static) 
         .prefix("pk")
         .tempdir_in("/tmp")
         .expect("temp root");
-    let root = root_dir.path().to_path_buf();
+    // macOS /tmp is an alias of /private/tmp; compare projects using the same canonical cwd
+    // the engine records, while keeping TempDir's handle responsible for cleanup.
+    let root = root_dir.path().canonicalize().expect("canonical temp root");
     let (project, server_dir, agent_dir) = (
         root.join("project"),
         root.join("server"),
