@@ -48,11 +48,15 @@ else
   "$here/scripts/stage-model-data.sh" "$out"
 fi
 model_data_hash=$(sha256sum "$out/packages/ai/src/providers/data/.manifest.json" | cut -d' ' -f1)
+pruned=false
 if [ "${PIPKIN_ENGINE_KEEP_DEV:-0}" != 1 ]; then
-  (cd "$out" && npm prune --omit=dev --offline --no-audit --no-fund >/dev/null 2>&1) \
-    || echo "warning: could not prune dev dependencies; the engine is larger than needed" >&2
+  if (cd "$out" && npm prune --omit=dev --offline --no-audit --no-fund >/dev/null 2>&1); then
+    pruned=true
+  else
+    echo "warning: could not prune dev dependencies; the engine is larger than needed" >&2
+  fi
 fi
 cat > "$out/engine.json" <<JSON
-{"name":"pi","version":"$commit","sourceRevision":"$commit","modelDataManifestSha256":"$model_data_hash","development":$([ "${PIPKIN_ENGINE_DEV:-0}" = 1 ] && echo true || echo false),"protocol":$protocol,"minClient":"0.0.1","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"name":"pi","version":"$commit","sourceRevision":"$commit","modelDataManifestSha256":"$model_data_hash","productionPruneSucceeded":$pruned,"development":$([ "${PIPKIN_ENGINE_DEV:-0}" = 1 ] && echo true || echo false),"protocol":$protocol,"minClient":"0.0.1","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 JSON
 echo "staged engine $commit at $out ($(du -sh "$out" | cut -f1))"

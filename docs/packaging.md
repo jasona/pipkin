@@ -7,6 +7,7 @@
 /usr/lib/pipkin/engine/                 a self-contained Pi engine (sources, production node_modules, engine.json)
 /usr/share/applications/pipkin.desktop  launcher entry (StartupWMClass=pipkin)
 /usr/share/licenses/pipkin/             MIT licence for Pipkin, plus the font and icon licences
+/usr/share/doc/pipkin/build-info.json   source/binary identity, compatibility and public build inputs
 /usr/share/icons/hicolor/{128,256,512}x…/apps/pipkin.png
 ```
 
@@ -40,6 +41,13 @@ output. It separately restores/validates pinned generated provider JSON and copi
 then prunes dev dependencies offline. The manifest records the full source revision, generated-data manifest hash,
 protocol, minimum client and whether the development override was used. It does not yet identify every build input
 or certify third-party dependency provenance; those audits and CI qualification remain release gates.
+
+`pipkin --version` and `--diagnose` report the compiled full app revision and explicit dirty/unknown state.
+`build-info.json` records app version/revision/dirty state and binary hash, protocol/schema, full engine revision,
+generated-data fingerprint, source/staged dependency lock hashes, Cargo lock/toolchain hashes, Rust/Cargo/Node/npm
+versions, platform/architecture and whether custom Rust flags were present. Raw flag values and arbitrary environment
+variables are not included. This identifies inputs and the actual binary; it is not a claim of bit-reproducible builds
+or an authenticity signature. `release.sh` rejects dirty/unidentified app sources as well as development engines.
 
 `.github/workflows/qualification.yml` runs locked Rust checks, disposable packaging policy tests, a clean pinned
 engine with scripted-provider tests, and bundled-engine/installer tests. Actions and Node are pinned; the Rust

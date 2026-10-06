@@ -23,6 +23,22 @@ if PATH="$root/bin:$PATH" PIPKIN_ENGINE_DEV=1 PIPKIN_SIGN_KEY= "$root/scripts/re
 fi
 grep -q 'release cannot use' "$root/output"
 [ ! -e "$root/dist" ]
+if PATH="$root/bin:$PATH" PIPKIN_ENGINE_DEV=0 PIPKIN_SIGN_KEY= "$root/scripts/release.sh" > "$root/output" 2>&1; then
+  echo 'unidentified app release accepted' >&2; exit 1
+fi
+grep -q 'identified app sources' "$root/output"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
+printf 'dist/\noutput\n' > "$root/.gitignore"
+git -C "$root" init -q
+git -C "$root" add .
+git -C "$root" commit -qm fixture
+printf 'dirty\n' > "$root/untracked"
+if PATH="$root/bin:$PATH" PIPKIN_ENGINE_DEV=0 PIPKIN_SIGN_KEY= "$root/scripts/release.sh" > "$root/output" 2>&1; then
+  echo 'dirty app release accepted' >&2; exit 1
+fi
+grep -q 'clean app checkout' "$root/output"
+rm "$root/untracked"
 PATH="$root/bin:$PATH" PIPKIN_ENGINE_DEV=0 PIPKIN_SIGN_KEY= "$root/scripts/release.sh"
 [ -f "$root/dist/release/pipkin-0.0.1-$(uname -m).tar.zst" ]
 [ ! -e "$root/dist/release/pipkin-0.0.0-obsolete.tar.zst" ]

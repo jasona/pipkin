@@ -9,6 +9,10 @@ cd "$here"
 [ "${PIPKIN_ENGINE_DEV:-0}" != 1 ] || {
   echo "release cannot use PIPKIN_ENGINE_DEV=1; package development engines separately" >&2; exit 1;
 }
+revision=$(git rev-parse --verify HEAD 2>/dev/null) || { echo 'release requires identified app sources' >&2; exit 1; }
+[[ "$revision" =~ ^[0-9a-f]{40}$ ]] && [ -z "$(git status --porcelain --untracked-files=normal)" ] || {
+  echo 'release requires a clean app checkout' >&2; exit 1;
+}
 version=$(cargo pkgid -p pipkin-app | sed 's/.*[#@]//')
 arch=$(uname -m)
 "$here/scripts/package.sh" "$@"

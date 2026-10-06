@@ -30,6 +30,7 @@ done
 install -Dm644 assets/PROVENANCE.md "$stage/usr/share/doc/pipkin/PROVENANCE.md"
 install -Dm644 README.md "$stage/usr/share/doc/pipkin/README.md"
 install -Dm644 docs/native-gate-testing.md "$stage/usr/share/doc/pipkin/native-gate-testing.md"
+node "$here/scripts/write-build-info.mjs" "$stage" "$pi"
 # The tarball also carries the installer at its root; the Arch package (which uses the stage tree
 # directly) does not, since a package must not put files in /.
 tar --zstd -cf "dist/pipkin-$version-$arch.tar.zst" -C "$stage" . -C "$here/packaging" install.sh

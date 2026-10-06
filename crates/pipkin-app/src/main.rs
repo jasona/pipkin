@@ -24,7 +24,14 @@ fn main() {
     match options.action {
         controller::Action::Run => {}
         controller::Action::Version => {
-            println!("pipkin {}", install::VERSION);
+            println!(
+                "pipkin {} (source {}, dirty: {}, protocol {}, schema {})",
+                install::VERSION,
+                install::APP_REVISION,
+                install::APP_DIRTY,
+                install::PROTOCOL,
+                storage::SCHEMA_VERSION
+            );
             return;
         }
         controller::Action::Diagnose { probe } => {

@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 use serde::Deserialize;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const APP_REVISION: &str = env!("PIPKIN_APP_REVISION");
+pub const APP_DIRTY: &str = env!("PIPKIN_APP_DIRTY");
 pub const ENGINE_DIR_ENV: &str = "PIPKIN_ENGINE_DIR";
 pub const MANIFEST_FILE: &str = "engine.json";
 /// The oldest Node the engine runs on (it loads TypeScript directly).
@@ -213,6 +215,7 @@ pub fn report(input: &ReportInput) -> String {
         "Pipkin {VERSION} (protocol {PROTOCOL}, schema {})",
         input.schema_version
     ));
+    line(format!("app source: {APP_REVISION} (dirty: {APP_DIRTY})"));
     line(format!(
         "binary: {}",
         input

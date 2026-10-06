@@ -234,6 +234,36 @@ reproducible app build. Complete app/build-input identification, bundled provena
 CI, native gates, signing and release acceptance remain open. Logs:
 `/tmp/pipkin-clean-engine-{fetch,npm,hydrate}.log` and `/tmp/pipkin-ci-{package,verify,installer,workspace,clippy,guard}.log`.
 
+## Phase 2: app/build identification and first CI failure (2026-10-06)
+
+The first remote run, [37417402906](https://github.com/last-refuge/pipkin/actions/runs/37417402906), **failed** during
+Rust test linking: Ubuntu lacked `libxkbcommon-x11`. Toolchain/Node installation passed. Added the missing runner
+development library; the Arch package already declares its runtime equivalent. A passing remote retry is still
+required. CI-generated logs are explicitly ignored so they do not falsely mark app sources dirty.
+
+Implemented against app base `b4e478ef3f753eb6127cabd149d893cc844a1e42`:
+
+- A compiled full app revision and explicit dirty/unknown state in `--version` and `--diagnose`; build-stamp watches
+  follow source files and Git ref/index changes, including worktrees.
+- Packaged `usr/share/doc/pipkin/build-info.json` records the binary hash, app/engine identities, protocol/schema,
+  model-data fingerprint, source/staged npm lock hashes, Cargo lock/toolchain hashes, tool versions, platform and
+  custom-Rust-flag presence. It excludes raw flags and arbitrary environment values. Engine metadata now records
+  whether offline production pruning succeeded rather than assuming success.
+- Release creation rejects unidentified/dirty app checkouts. Disposable tests verify these refusals, manifest field
+  mapping, separate source/staged lock fingerprints and omission of a test secret supplied through Rust flags.
+  Build-stamp tests separately exercise clean/dirty sources, a new commit, worktrees and unidentified sources.
+
+**531 workspace tests passed (40 ignored)**, Clippy/fmt clean; packaging policy tests passed. A package built from
+the fresh pinned Pi checkout passed **37 packaged-engine suite tests** plus scratch-prefix installer checks.
+This local package truthfully reports app base `b4e478e…`, **dirty: true** (the tested implementation delta), engine
+`d2a311097…`, protocol **8**, schema **7**, and successful production pruning. It is not a clean candidate.
+Its unsigned 0.0.1 SHA-256 is `83372e61c2d3bf67755491ce2e5c6d5e7f681fe60f6208d0b57bc2fb638b3730`.
+
+A report is identification evidence, not an authenticity signature or a bit-reproducibility guarantee. Runtime/
+dependency provenance, complete diagnostics privacy auditing, native acceptance, signing, and final candidate
+qualification remain open. Logs: `/tmp/pipkin-first-ci-failed.log` and
+`/tmp/pipkin-identify-{workspace,clippy,package,verify,installer}.log`.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
