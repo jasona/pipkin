@@ -67,6 +67,7 @@ impl Harness {
                     conversation, rev, ..
                 } => self.state.draft_saved(conversation, rev, Ok(())),
                 Effect::SavePrefs(_)
+                | Effect::SaveGoal { .. }
                 | Effect::SaveConversation { .. }
                 | Effect::SaveProject { .. }
                 | Effect::SaveCache { .. }

@@ -18,6 +18,13 @@ pub struct ConversationState {
     /// Attachment generation. Events carrying another generation are dropped.
     pub generation: u64,
     pub run: RunState,
+    /// User-owned continuous goal. A paused goal never schedules another prompt.
+    pub goal: Option<Goal>,
+    goal_op: Option<OperationId>,
+    pub recovery_notice: bool,
+    pub stop_error: Option<String>,
+    pub status_error: Option<String>,
+    pub status_check_pending: bool,
     pub queue: Vec<QueuedPrompt>,
     /// Steers and follow-ups sent to the engine and not yet confirmed (real mode).
     pub pending_queue: Vec<PendingQueued>,
@@ -76,6 +83,12 @@ impl ConversationState {
             opened: false,
             generation: 0,
             run: RunState::Idle,
+            goal: None,
+            goal_op: None,
+            recovery_notice: false,
+            stop_error: None,
+            status_error: None,
+            status_check_pending: false,
             queue: Vec::new(),
             pending_queue: Vec::new(),
             cached_only: false,
@@ -111,6 +124,14 @@ impl ConversationState {
             ref r => Some(r.label()),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Goal {
+    pub text: String,
+    pub paused: Option<String>,
+    /// Number of goal turns admitted to the submission journal in this process.
+    pub turns: u64,
 }
 
 pub struct AppState {
@@ -354,6 +375,16 @@ impl AppState {
                 for c in &mut self.conversations {
                     c.ui_requests.clear();
                     c.ui_answering.clear();
+                    if self.mode == Mode::Real && was_ready && c.run.op().is_some() {
+                        c.recovery_notice = true;
+                    }
+                    if c.status_check_pending {
+                        c.status_check_pending = false;
+                        c.status_error = Some(
+                            "The connection was interrupted before the status check finished."
+                                .into(),
+                        );
+                    }
                     if c.changes_state == ChangesState::Loading {
                         c.changes_state = ChangesState::Unavailable(
                             "The engine connection was interrupted. Refresh when it reconnects."
@@ -375,17 +406,11 @@ impl AppState {
     /// Ask about the submission in doubt in the open conversation, if there is one.
     fn check_unknown(&mut self) -> Outcome {
         let mut out = Outcome::default();
-        let Some(c) = self.current() else { return out };
-        if c.opened
-            && let RunState::OutcomeUnknown { op } = c.run
+        if self
+            .current()
+            .is_some_and(|c| c.opened && matches!(c.run, RunState::OutcomeUnknown { .. }))
         {
-            out.effects
-                .push(Effect::Backend(BackendRequest::CheckStatus {
-                    conversation: c.id,
-                    generation: c.generation,
-                    op,
-                    request: c.current_request.clone(),
-                }));
+            out.merge(self.dispatch(Command::CheckStatus));
         }
         out
     }
@@ -448,7 +473,15 @@ impl AppState {
                 c.run,
                 RunState::Running { .. } | RunState::Submitting { .. }
             ),
-            check_status: matches!(c.run, RunState::OutcomeUnknown { .. }),
+            check_status: !c.status_check_pending
+                && (matches!(c.run, RunState::OutcomeUnknown { .. })
+                    || (self.mode == Mode::Real
+                        && c.opened
+                        && matches!(c.run, RunState::Running { .. } | RunState::Stopping { .. }))),
+            retry_stop: self.mode == Mode::Real
+                && c.opened
+                && matches!(c.run, RunState::Stopping { .. })
+                && c.stop_error.is_some(),
             retry: can_send
                 && c.last_submission.is_some()
                 && c.pending_intent.is_none()
@@ -577,6 +610,7 @@ impl AppState {
                     c.generation += 1;
                     if real {
                         c.changes_state = ChangesState::Unscanned;
+                        c.status_check_pending = false;
                     }
                     let generation = c.generation;
                     // Until the engine answers, a saved copy is better than an empty screen.
@@ -835,6 +869,49 @@ impl AppState {
                     out.merge(self.submit_from_draft(IntentOrigin::Draft));
                 }
             }
+            Command::SetGoal(text) => {
+                let text = text.trim().to_string();
+                if !text.is_empty()
+                    && let Some(id) = self.selected
+                {
+                    if let Some(c) = self.conv_mut(id) {
+                        c.goal = Some(Goal {
+                            text: text.clone(),
+                            paused: None,
+                            turns: 0,
+                        });
+                        out.effects.push(Effect::SaveGoal {
+                            conversation: id,
+                            text: Some(text),
+                            paused: None,
+                        });
+                        out.notes.push(Note::Other);
+                    }
+                    out.merge(self.start_goal_if_idle(id));
+                }
+            }
+            Command::ClearGoal => {
+                if let Some(id) = self.selected {
+                    let (was_active, was_running_goal) = self
+                        .conv_mut(id)
+                        .map(|c| {
+                            let running = c.goal_op.is_some() && c.run.op() == c.goal_op;
+                            (c.goal.take().is_some(), running)
+                        })
+                        .unwrap_or((false, false));
+                    if was_active {
+                        out.notes.push(Note::Other);
+                        out.effects.push(Effect::SaveGoal {
+                            conversation: id,
+                            text: None,
+                            paused: None,
+                        });
+                        if was_running_goal && self.availability().cancel {
+                            out.merge(self.dispatch(Command::Cancel));
+                        }
+                    }
+                }
+            }
             Command::Steer => {
                 if self.availability().steer {
                     if self.mode == Mode::Real {
@@ -919,12 +996,22 @@ impl AppState {
                     out.merge(self.flush_draft(id));
                 }
             }
-            Command::Cancel => {
-                if self.availability().cancel {
+            Command::DismissRecoveryNotice => {
+                if let Some(id) = self.selected {
+                    self.conv_mut(id).unwrap().recovery_notice = false;
+                    out.notes.push(Note::Other);
+                }
+            }
+            Command::Cancel | Command::RetryStop => {
+                let availability = self.availability();
+                if (matches!(cmd, Command::Cancel) && availability.cancel)
+                    || (matches!(cmd, Command::RetryStop) && availability.retry_stop)
+                {
                     let id = self.selected.unwrap();
                     let c = self.conv_mut(id).unwrap();
                     let op = c.run.op().unwrap();
                     c.run = RunState::Stopping { op };
+                    c.stop_error = None;
                     let generation = c.generation;
                     out.effects.push(Effect::Backend(BackendRequest::Cancel {
                         conversation: id,
@@ -937,7 +1024,9 @@ impl AppState {
             Command::CheckStatus => {
                 if self.availability().check_status {
                     let id = self.selected.unwrap();
-                    let c = self.conv(id);
+                    let c = self.conv_mut(id).unwrap();
+                    c.status_check_pending = true;
+                    c.status_error = None;
                     out.effects
                         .push(Effect::Backend(BackendRequest::CheckStatus {
                             conversation: id,
@@ -945,6 +1034,7 @@ impl AppState {
                             op: c.run.op().unwrap(),
                             request: c.current_request.clone(),
                         }));
+                    out.notes.push(Note::Other);
                 }
             }
             Command::Retry => {
@@ -1283,6 +1373,16 @@ impl AppState {
             c.intent_error = Some(format!(
                 "Could not save the prompt before sending, so it was not sent: {e}"
             ));
+            if intent.origin == IntentOrigin::Goal
+                && let Some(goal) = &mut self.conv_mut(id).unwrap().goal
+            {
+                goal.paused = Some(format!("Could not save goal turn: {e}"));
+                out.effects.push(Effect::SaveGoal {
+                    conversation: id,
+                    text: Some(goal.text.clone()),
+                    paused: goal.paused.clone(),
+                });
+            }
             if intent.origin == IntentOrigin::Queue {
                 let qid = QueueId(self.next_queue);
                 self.next_queue += 1;
@@ -1297,6 +1397,25 @@ impl AppState {
             }
             out.notes.push(Note::Other);
             return out;
+        }
+        if intent.origin == IntentOrigin::Goal {
+            let still_current = self
+                .conversation(id)
+                .and_then(|c| c.goal.as_ref())
+                .is_some_and(|goal| {
+                    intent
+                        .text
+                        .starts_with(&format!("Pursue this ongoing goal: {}\n\n", goal.text))
+                });
+            if !still_current {
+                out.effects.push(Effect::JournalState {
+                    conversation: id,
+                    request: intent.request,
+                    state: JournalState::Cancelled,
+                });
+                out.merge(self.start_goal_if_idle(id));
+                return out;
+            }
         }
         out.merge(self.dispatch_intent(id, intent));
         out
@@ -1336,6 +1455,11 @@ impl AppState {
                 c.run = RunState::Idle;
             }
             IntentOrigin::Queue => {}
+            IntentOrigin::Goal => {
+                if let Some(goal) = &mut c.goal {
+                    goal.turns += 1;
+                }
+            }
             IntentOrigin::Steer | IntentOrigin::FollowUp => {
                 // The run is untouched: the engine owns this input from here, and shows it in
                 // its queue and, once placed, in the transcript.
@@ -1378,15 +1502,24 @@ impl AppState {
             }
         }
         c.run = RunState::Submitting { op };
+        c.goal_op = (intent.origin == IntentOrigin::Goal).then_some(op);
         c.last_submission = Some((intent.text.clone(), intent.attachments.clone()));
         c.current_request = Some(intent.request.clone());
         c.updated_at = now;
         c.streaming_item = None;
         let generation = c.generation;
+        let visible_text = if intent.origin == IntentOrigin::Goal {
+            self.conversation(id)
+                .and_then(|c| c.goal.as_ref())
+                .map(|g| g.text.clone())
+                .unwrap_or_else(|| intent.text.clone())
+        } else {
+            intent.text.clone()
+        };
         self.push_item(
             id,
             ItemKind::User {
-                text: intent.text.clone(),
+                text: visible_text,
                 attachments: intent.attachments.clone(),
                 delivery: Delivery::Pending,
                 steer: false,
@@ -1465,6 +1598,7 @@ impl AppState {
                     | EventKind::Failed { .. }
                     | EventKind::Cancelled
             );
+        let opened_event = matches!(ev.kind, EventKind::Opened { .. });
         let reached_target = matches!(
             ev.kind,
             EventKind::Opened { .. } | EventKind::OlderPage { .. }
@@ -1543,7 +1677,11 @@ impl AppState {
                 out.notes.push(Note::ItemsReset(id));
                 // A submission in doubt (restored from the journal, or cut off by a reconnect)
                 // is resolved by asking the engine about its key; that never sends anything.
-                if let RunState::OutcomeUnknown { op } = c.run {
+                if let RunState::OutcomeUnknown { op } = c.run
+                    && !c.status_check_pending
+                {
+                    c.status_check_pending = true;
+                    c.status_error = None;
                     out.effects
                         .push(Effect::Backend(BackendRequest::CheckStatus {
                             conversation: id,
@@ -1703,12 +1841,27 @@ impl AppState {
             EventKind::AckLost => {
                 if let RunState::Submitting { op } = c.run {
                     c.run = RunState::OutcomeUnknown { op };
+                    c.recovery_notice |= real;
                     journal(c, id, JournalState::Unknown, &mut out);
                     mark_last_user(c, Delivery::Unknown, &mut out, id);
                     out.notes.push(Note::Other);
                 }
             }
+            EventKind::StopFailed { message } => {
+                if matches!(c.run, RunState::Stopping { .. }) {
+                    c.stop_error = Some(message);
+                    out.notes.push(Note::Other);
+                }
+            }
+            EventKind::StatusCheckFailed { message } => {
+                c.status_check_pending = false;
+                c.status_error = Some(message);
+                out.notes.push(Note::Other);
+            }
             EventKind::StatusResolved { accepted } => {
+                c.status_check_pending = false;
+                c.status_error = None;
+                out.notes.push(Note::Other);
                 if let RunState::OutcomeUnknown { op } = c.run {
                     if accepted {
                         c.run = RunState::Running { op };
@@ -1718,7 +1871,7 @@ impl AppState {
                         journal(c, id, JournalState::Rejected, &mut out);
                         mark_last_user(c, Delivery::Rejected, &mut out, id);
                         c.run = RunState::Failed {
-                            message: "The engine never received the prompt.".into(),
+                            message: "Pi has no record of this prompt. Inspect tool output and project Changes before deciding whether to retry.".into(),
                         };
                     }
                     out.notes.push(Note::Other);
@@ -1895,6 +2048,10 @@ impl AppState {
             }
             EventKind::EngineState { busy, queue } => {
                 if real {
+                    if c.current_request.is_none() {
+                        c.status_check_pending = false;
+                        c.status_error = None;
+                    }
                     c.queue = queue;
                     match (busy, c.run.clone()) {
                         // Work this window did not start: show it and let the engine end it.
@@ -1909,6 +2066,9 @@ impl AppState {
                         {
                             c.run = RunState::Idle;
                             c.adopted = None;
+                            c.stop_error = None;
+                            c.status_error = None;
+                            c.status_check_pending = false;
                         }
                         _ => {}
                     }
@@ -1916,12 +2076,27 @@ impl AppState {
                 }
             }
             EventKind::Completed => {
+                c.stop_error = None;
+                c.status_error = None;
+                c.status_check_pending = false;
                 c.run = RunState::Idle;
                 journal(c, id, JournalState::Completed, &mut out);
                 self.finish_streaming(id, &mut out);
                 out.merge(self.after_settled(id));
+                out.merge(self.advance_goal(id, ev.op));
             }
             EventKind::Failed { message } => {
+                if let Some(goal) = &mut c.goal {
+                    goal.paused = Some(format!("Run failed: {message}"));
+                    out.effects.push(Effect::SaveGoal {
+                        conversation: id,
+                        text: Some(goal.text.clone()),
+                        paused: goal.paused.clone(),
+                    });
+                }
+                c.stop_error = None;
+                c.status_error = None;
+                c.status_check_pending = false;
                 c.run = RunState::Failed {
                     message: message.clone(),
                 };
@@ -1938,6 +2113,14 @@ impl AppState {
                 out.notes.push(Note::Other);
             }
             EventKind::Cancelled => {
+                if let Some(goal) = &mut c.goal {
+                    goal.paused = Some("Run stopped.".into());
+                    out.effects.push(Effect::SaveGoal {
+                        conversation: id,
+                        text: Some(goal.text.clone()),
+                        paused: goal.paused.clone(),
+                    });
+                }
                 if matches!(
                     c.run,
                     RunState::Stopping { .. }
@@ -1945,6 +2128,9 @@ impl AppState {
                         | RunState::Submitting { .. }
                 ) {
                     c.run = RunState::Idle;
+                    c.stop_error = None;
+                    c.status_error = None;
+                    c.status_check_pending = false;
                     journal(c, id, JournalState::Cancelled, &mut out);
                     self.finish_streaming(id, &mut out);
                     self.push_item(
@@ -1966,6 +2152,14 @@ impl AppState {
         if reached_target {
             out.merge(self.continue_to_target(id));
         }
+        if opened_event
+            && self
+                .conversation(id)
+                .and_then(|c| c.goal.as_ref())
+                .is_some_and(|g| g.turns == 0)
+        {
+            out.merge(self.start_goal_if_idle(id));
+        }
         out
     }
 
@@ -1977,6 +2171,138 @@ impl AppState {
             }
             out.notes.push(Note::ItemChanged(id, i));
         }
+    }
+
+    /// Schedule a goal turn only when no other input is already waiting. An ambiguous model
+    /// reply pauses the runner; it must not blindly issue an unbounded series of prompts.
+    fn advance_goal(&mut self, id: ConversationId, settled_op: Option<OperationId>) -> Outcome {
+        let Some(c) = self.conversation(id) else {
+            return Outcome::default();
+        };
+        let Some(goal) = &c.goal else {
+            return Outcome::default();
+        };
+        if goal.paused.is_some()
+            || c.goal_op.is_some_and(|op| Some(op) != settled_op)
+            || c.pending_intent.is_some()
+            || !c.queue.is_empty()
+            || !c.pending_queue.is_empty()
+        {
+            return Outcome::default();
+        }
+        // The last assistant message of this turn must explicitly authorize continuation.
+        // A model that ignores the protocol cannot keep the runner spinning.
+        if goal.turns == 0 || c.goal_op.is_none() {
+            return self.start_goal_if_idle(id);
+        }
+        let verdict = c
+            .items
+            .iter()
+            .rev()
+            .take_while(|item| !matches!(item.kind, ItemKind::User { .. }))
+            .find_map(|item| match &item.kind {
+                ItemKind::Assistant { text, .. } => Some(text.trim_end().to_string()),
+                _ => None,
+            });
+        let Some(goal) = &mut self.conv_mut(id).unwrap().goal else {
+            return Outcome::default();
+        };
+        let marker = verdict.as_deref().and_then(|s| s.lines().last());
+        let mut result = match marker {
+            Some("[PIPKIN_GOAL_CONTINUE]") => self.start_goal_if_idle(id),
+            Some("[PIPKIN_GOAL_MET]") => {
+                goal.paused = Some("Goal met.".into());
+                Self::goal_paused_outcome(id, goal)
+            }
+            Some("[PIPKIN_GOAL_BLOCKED]") => {
+                goal.paused = Some("Blocked; input needed.".into());
+                Self::goal_paused_outcome(id, goal)
+            }
+            Some("[PIPKIN_GOAL_UNREACHABLE]") => {
+                goal.paused = Some("Goal unreachable.".into());
+                Self::goal_paused_outcome(id, goal)
+            }
+            _ => {
+                goal.paused = Some("Paused: Pi did not give a clear goal status.".into());
+                Self::goal_paused_outcome(id, goal)
+            }
+        };
+        if matches!(
+            marker,
+            Some(
+                "[PIPKIN_GOAL_CONTINUE]"
+                    | "[PIPKIN_GOAL_MET]"
+                    | "[PIPKIN_GOAL_BLOCKED]"
+                    | "[PIPKIN_GOAL_UNREACHABLE]"
+            )
+        ) {
+            let c = self.conv_mut(id).unwrap();
+            if let Some(i) = c
+                .items
+                .iter()
+                .rposition(|item| matches!(item.kind, ItemKind::Assistant { .. }))
+                && let ItemKind::Assistant { text, .. } = &mut c.items[i].kind
+            {
+                if let Some(line_start) = text.trim_end().rfind('\n') {
+                    text.truncate(line_start);
+                } else {
+                    text.clear();
+                }
+                result.notes.push(Note::ItemChanged(id, i));
+            }
+        }
+        result
+    }
+
+    /// Restore a saved goal without issuing any input. A crash or relaunch cannot prove the
+    /// previous turn settled, so continuing requires an explicit /goal update.
+    pub fn restore_goal(&mut self, id: ConversationId, text: String, paused: Option<String>) {
+        if let Some(c) = self.conv_mut(id) {
+            c.goal =
+                Some(Goal {
+                    text,
+                    paused: Some(paused.unwrap_or_else(|| {
+                        "Paused after restart; use /goal <goal> to resume.".into()
+                    })),
+                    turns: 0,
+                });
+        }
+    }
+
+    fn goal_paused_outcome(id: ConversationId, goal: &Goal) -> Outcome {
+        Outcome {
+            notes: vec![Note::Other],
+            effects: vec![Effect::SaveGoal {
+                conversation: id,
+                text: Some(goal.text.clone()),
+                paused: goal.paused.clone(),
+            }],
+        }
+    }
+
+    fn start_goal_if_idle(&mut self, id: ConversationId) -> Outcome {
+        let Some(c) = self.conversation(id) else {
+            return Outcome::default();
+        };
+        let Some(goal) = &c.goal else {
+            return Outcome::default();
+        };
+        if goal.paused.is_some()
+            || !matches!(c.run, RunState::Idle | RunState::Failed { .. })
+            || c.pending_intent.is_some()
+            || !c.queue.is_empty()
+            || !c.pending_queue.is_empty()
+            || !c.opened && self.mode == Mode::Real
+            || self.read_only.is_some()
+            || !self.connection.is_ready()
+        {
+            return Outcome::default();
+        }
+        let text = format!(
+            "Pursue this ongoing goal: {}\n\nKeep working until it is met, blocked, or unreachable. At the end of your response, put exactly one status marker on its own final line: [PIPKIN_GOAL_CONTINUE] if there is more work you can do now; [PIPKIN_GOAL_MET] if done; [PIPKIN_GOAL_BLOCKED] if you need the user's input; [PIPKIN_GOAL_UNREACHABLE] if it cannot be done. Explain the result or blocker before that marker. Never claim work was done unless it was.",
+            goal.text
+        );
+        self.submit(id, text, vec![], IntentOrigin::Goal)
     }
 
     /// After a run completes normally, start the next queued prompt. Only the demo keeps its own
@@ -2050,6 +2376,7 @@ impl AppState {
             });
         }
         c.run = RunState::OutcomeUnknown { op };
+        c.recovery_notice = true;
         c.last_submission = Some((text, attachments));
         out.notes.push(Note::Other);
         out

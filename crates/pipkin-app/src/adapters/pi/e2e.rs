@@ -203,6 +203,11 @@ impl Harness {
                     self.state.draft_saved(conversation, rev, result);
                 }
                 Effect::SavePrefs(prefs) => self.storage.save_prefs(&prefs),
+                Effect::SaveGoal {
+                    conversation,
+                    text,
+                    paused,
+                } => self.storage.save_goal(conversation, text, paused),
                 Effect::SaveProject { path } => self.storage.save_project(path),
                 Effect::SaveConversation { .. } => {}
                 Effect::SaveCache { conversation } => {
@@ -392,6 +397,8 @@ enum Fault {
     DropNextQueueReply,
     /// Sever the connection instead of delivering the next steer or follow-up.
     DropNextQueueRequest,
+    /// Lose a stop request before it reaches Pi; the run must not appear settled.
+    DropNextStopRequest,
 }
 
 type Sever = Arc<dyn Fn() + Send + Sync>;
@@ -520,6 +527,14 @@ impl FaultProxy {
                                     return sever();
                                 }
                                 s.queue_ids.insert(id);
+                            } else if parse_service_call(&call).is_ok_and(|c| {
+                                c.service_id == "pi.agent-controller" && c.member == "abort"
+                            }) && s.fault == Fault::DropNextStopRequest
+                            {
+                                s.fault = Fault::None;
+                                s.fired += 1;
+                                drop(s);
+                                return sever();
                             }
                         }
                         let frame = encode_frame(&payload).unwrap();
@@ -1194,6 +1209,67 @@ fn stopping_a_run_waits_for_the_engine_and_the_conversation_takes_the_next_promp
         "{:?}",
         loaded.open_requests
     );
+    gate.open();
+    h.backend.shutdown();
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn a_lost_stop_request_remains_unsettled_and_can_be_checked_then_retried_without_a_prompt() {
+    let gate = Gate::new();
+    let fx = Fixture::start(held_first(
+        &gate,
+        Reply::Text("not delivered".into()),
+        vec![],
+    ));
+    init_project(&fx.project);
+    let proxy = FaultProxy::start(
+        fx.server_dir.join(format!("{}.sock", fx.server_id)),
+        fx.root.join("proxy"),
+        &fx.server_id,
+    );
+    let db = fx.root.join("app.sqlite3");
+    let mut h = Harness::start(direct_config(&proxy.dir, &fx.server_id), &db);
+    h.open_new_conversation(&fx.project);
+    h.send("one long task");
+    h.until_asked(&fx.provider, 1);
+    h.until("the run is active", is_running);
+    proxy.arm(Fault::DropNextStopRequest);
+    h.dispatch(Command::Cancel);
+    h.until("lost stop is reported after reconnect", |s| {
+        proxy.fired() == 1
+            && s.connection.is_ready()
+            && s.current()
+                .is_some_and(|c| c.stop_error.is_some() && c.recovery_notice)
+    });
+    assert!(matches!(
+        h.state.current().unwrap().run,
+        RunState::Stopping { .. }
+    ));
+    assert!(!h.state.availability().submit);
+    assert!(h.state.availability().check_status && h.state.availability().retry_stop);
+    h.dispatch(Command::CheckStatus);
+    h.until("Pi confirms the existing run is still open", |s| {
+        !s.current().unwrap().status_check_pending
+    });
+    assert!(matches!(
+        h.state.current().unwrap().run,
+        RunState::Stopping { .. }
+    ));
+    assert!(h.state.current().unwrap().status_error.is_none());
+    assert_eq!(fx.provider.requests().len(), 1);
+    h.dispatch(Command::RetryStop);
+    h.until("Pi confirms the retried stop", is_idle);
+    assert_eq!(h.user_messages(), ["one long task"]);
+    assert_eq!(
+        fx.provider.requests().len(),
+        1,
+        "neither check nor retry stop resends the prompt"
+    );
+    assert!(h.state.current().unwrap().stop_error.is_none());
+    assert!(h.state.current().unwrap().recovery_notice);
+    h.storage.shutdown();
+    journal_is_clean(&db);
     gate.open();
     h.backend.shutdown();
 }
@@ -1877,6 +1953,10 @@ fn an_engine_crash_mid_run_is_recovered_by_the_engine_and_the_prompt_is_not_dupl
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
     }
     h.until("the app sees the loss", |s| !s.connection.is_ready());
+    assert!(
+        h.state.current().unwrap().recovery_notice,
+        "interrupted work needs the tool-recovery caveat"
+    );
     assert!(
         !h.state.availability().submit,
         "nothing can be sent while the engine is down"

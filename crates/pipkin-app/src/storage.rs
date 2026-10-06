@@ -187,6 +187,8 @@ pub struct Loaded {
     pub conversations: Vec<DemoConversation>,
     /// Oldest first, so a later request for a conversation supersedes an earlier one.
     pub open_requests: Vec<OpenRequest>,
+    /// A restart never automatically resumes a goal: the last turn may be unresolved.
+    pub goals: Vec<(ConversationId, String, Option<String>)>,
     /// Project folders the user opened, oldest first.
     pub projects: Vec<String>,
 }
@@ -200,6 +202,11 @@ enum Msg {
         ack: Ack,
     },
     Prefs(Prefs),
+    Goal {
+        conversation: ConversationId,
+        text: Option<String>,
+        paused: Option<String>,
+    },
     Conversation(DemoConversation),
     Project(String),
     Intent {
@@ -543,6 +550,29 @@ impl Storage {
                 })
             })
             .collect();
+        let goals = conn
+            .prepare(
+                "SELECT key, value FROM session_prefs WHERE namespace = ?1 AND key LIKE 'goal:%'",
+            )
+            .map_err(sql_err)?
+            .query_map([&self.namespace], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(sql_err)?
+            .filter_map(|row| {
+                let (key, value) = row.ok()?;
+                let id = key.strip_prefix("goal:")?.parse::<u64>().ok()?;
+                let value: Value = serde_json::from_str(&value).ok()?;
+                Some((
+                    ConversationId(id),
+                    value.get("text")?.as_str()?.to_string(),
+                    value
+                        .get("paused")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                ))
+            })
+            .collect();
         let projects = conn
             .prepare("SELECT path FROM projects WHERE namespace = ?1 ORDER BY rowid")
             .map_err(sql_err)?
@@ -555,6 +585,7 @@ impl Storage {
             drafts,
             conversations,
             open_requests,
+            goals,
             projects,
         })
     }
@@ -618,6 +649,24 @@ impl Storage {
     pub fn journal_state(&self, request: RequestId, state: JournalState) {
         if self.send(Msg::JournalState { request, state }).is_err() {
             log::warn!("journal update dropped: storage busy or closed");
+        }
+    }
+
+    pub fn save_goal(
+        &self,
+        conversation: ConversationId,
+        text: Option<String>,
+        paused: Option<String>,
+    ) {
+        if self
+            .send(Msg::Goal {
+                conversation,
+                text,
+                paused,
+            })
+            .is_err()
+        {
+            log::warn!("goal write dropped: storage busy or closed");
         }
     }
 
@@ -835,6 +884,34 @@ fn write(
         Msg::Prefs(prefs) => {
             let result = injected().unwrap_or_else(|| write_prefs(conn, ns, &prefs));
             reporter.settle("preferences", result, "your preferences");
+        }
+        Msg::Goal {
+            conversation,
+            text,
+            paused,
+        } => {
+            let result = injected().unwrap_or_else(|| {
+                let key = format!("goal:{}", conversation.0);
+                if let Some(text) = text {
+                    conn.execute(
+                        "INSERT INTO session_prefs (namespace, key, value) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value",
+                        params![
+                            ns,
+                            key,
+                            json!({ "text": text, "paused": paused }).to_string()
+                        ],
+                    )
+                } else {
+                    conn.execute(
+                        "DELETE FROM session_prefs WHERE namespace = ?1 AND key = ?2",
+                        params![ns, key],
+                    )
+                }
+                .map(|_| ())
+                .map_err(sql_err)
+            });
+            reporter.settle("goal", result, "the goal");
         }
         Msg::Conversation(c) => {
             let result = injected().unwrap_or_else(|| write_conversation(conn, &c));
@@ -1290,6 +1367,39 @@ mod tests {
             },
         );
         rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
+    #[test]
+    fn goals_are_namespaced_and_clear_survives_restart() {
+        let (_dir, path) = tmp_db();
+        {
+            let s = Storage::open(&path, "real-a").unwrap();
+            s.save_goal(ConversationId(7), Some("ship v1".into()), None);
+            s.shutdown();
+        }
+        let s = Storage::open(&path, "real-a").unwrap();
+        assert_eq!(
+            s.load_all().unwrap().goals,
+            vec![(ConversationId(7), "ship v1".into(), None)]
+        );
+        s.save_goal(ConversationId(7), None, None);
+        s.shutdown();
+        assert!(
+            Storage::open(&path, "real-a")
+                .unwrap()
+                .load_all()
+                .unwrap()
+                .goals
+                .is_empty()
+        );
+        assert!(
+            Storage::open(&path, "real-b")
+                .unwrap()
+                .load_all()
+                .unwrap()
+                .goals
+                .is_empty()
+        );
     }
 
     #[test]

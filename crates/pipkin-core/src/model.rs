@@ -359,6 +359,8 @@ pub enum IntentOrigin {
     Retry,
     /// The next client-side queued prompt (demo only; the engine owns the queue in real mode).
     Queue,
+    /// Automatically scheduled turn for the active goal.
+    Goal,
     /// Steering input for the active run (real mode).
     Steer,
     /// Input queued after the active run (real mode).

@@ -131,6 +131,12 @@ without `--pi-dir` / `--pi-server-id`), Pipkin looks for an installed engine, th
 | Use your own editor / terminal | `--editor CMD`, `--terminal CMD` (else `$VISUAL`/`$EDITOR`, `$TERMINAL`) |
 | Keep data elsewhere | `--data-dir DIR` |
 
+### Continuous goals
+
+Type `/goal <what to accomplish>` in the composer and press Enter. While Pipkin is open, it keeps the goal attached to that conversation and asks Pi to continue after each completed turn until Pi explicitly reports it met, blocked, or unreachable. `/goal <new goal>` replaces it; `/goal clear` removes it and stops an active goal turn. The goal strip above the composer shows its status and has a clear button.
+
+If Pi does not give an unambiguous status, or a turn fails, Pipkin pauses instead of blindly continuing. Saved goals return paused after a restart so an uncertain turn is never resent automatically; re-enter `/goal <goal>` to resume. In demo mode, replies are simulated and do not execute the goal.
+
 ### Keyboard
 
 | | | | |

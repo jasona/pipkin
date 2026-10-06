@@ -115,6 +115,13 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(CancelRun)),
         ),
         cmd(
+            "Retry stop request",
+            "Run",
+            None,
+            a.retry_stop,
+            Run::Dispatch(Command::RetryStop),
+        ),
+        cmd(
             "Refresh workspace changes",
             "Changes",
             None,

@@ -26,7 +26,7 @@ pub mod session;
 pub mod transcript;
 pub mod workspace;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
@@ -170,7 +170,6 @@ impl Backend for PiBackend {
             last_open: None,
             ever_connected: false,
             runs: HashMap::new(),
-            cancelling: HashSet::new(),
             queue_unknown: Vec::new(),
             last_refresh_warning: None,
         };
@@ -236,8 +235,6 @@ struct Worker {
     /// Accepted prompts awaiting an outcome. Kept across reconnects: they are reconciled by
     /// asking the engine, never by resending.
     runs: HashMap<OperationId, Run>,
-    /// Runs the user asked to stop, so their `aborted` outcome reads as a stop, not a failure.
-    cancelling: HashSet<OperationId>,
     /// Queue requests whose acknowledgment was lost, resolved when the conversation is attached.
     queue_unknown: Vec<QueueReq>,
     /// The last model-refresh warning shown, so it is said once.
@@ -398,12 +395,35 @@ impl Worker {
             | BackendRequest::SetModel { .. }
             | BackendRequest::SetThinkingLevel { .. } => self.notice(OFFLINE.into()),
             // These need the engine; the user can try again.
-            BackendRequest::Cancel { .. }
-            | BackendRequest::CheckStatus { .. }
-            | BackendRequest::CancelQueued { .. }
+            BackendRequest::CancelQueued { .. }
             | BackendRequest::RefreshModels { .. }
             | BackendRequest::UiRespond { .. }
             | BackendRequest::UiCancel { .. } => self.notice(OFFLINE.into()),
+            BackendRequest::Cancel {
+                conversation,
+                generation,
+                op,
+            } => self.emit_op(
+                conversation,
+                generation,
+                op,
+                EventKind::StopFailed {
+                    message: format!("Could not ask Pi to stop: {OFFLINE}"),
+                },
+            ),
+            BackendRequest::CheckStatus {
+                conversation,
+                generation,
+                op,
+                ..
+            } => self.emit_op(
+                conversation,
+                generation,
+                op,
+                EventKind::StatusCheckFailed {
+                    message: format!("Could not check the run: {OFFLINE}"),
+                },
+            ),
             BackendRequest::RefreshChanges {
                 conversation,
                 generation,
@@ -634,11 +654,10 @@ fn server_target(route: &ServerRoute) -> RpcTarget {
 }
 
 /// A completed engine outcome for a submission, as the core should see it.
-fn outcome_event(reason: Option<&str>, detail: Option<&str>, cancelled: bool) -> EventKind {
+fn outcome_event(reason: Option<&str>, detail: Option<&str>) -> EventKind {
     match reason {
         None => EventKind::Completed,
         Some("aborted") => EventKind::Cancelled,
-        Some(_) if cancelled => EventKind::Cancelled,
         Some("model_error") => EventKind::Failed {
             message: detail
                 .filter(|d| !d.is_empty())
@@ -853,8 +872,10 @@ impl Live {
                 }
             }
             BackendRequest::Cancel {
-                conversation, op, ..
-            } => self.cancel(worker, conversation, op),
+                conversation,
+                generation,
+                op,
+            } => self.cancel(worker, conversation, generation, op),
             BackendRequest::CheckStatus {
                 conversation,
                 generation,
@@ -1153,14 +1174,31 @@ impl Live {
         }
     }
 
-    fn cancel(&mut self, worker: &mut Worker, conversation: ConversationId, op: OperationId) {
-        let Some(target) = self.target_for(conversation) else {
-            return worker.notice("The session is not open, so the run cannot be stopped.".into());
+    fn cancel(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        generation: u64,
+        op: OperationId,
+    ) {
+        let failed = |worker: &Worker, message| {
+            worker.emit_op(
+                conversation,
+                generation,
+                op,
+                EventKind::StopFailed { message },
+            )
         };
-        worker.cancelling.insert(op);
+        let Some(target) = self.target_for(conversation) else {
+            return failed(
+                worker,
+                "The session is not open, so the run cannot be asked to stop.".into(),
+            );
+        };
         if let Err(error) = self.call(&target, "pi.agent-controller", "abort", vec![]) {
-            // Stay in "stopping" until the engine settles it, but tell the user.
-            worker.notice(format!("Could not ask Pi to stop: {error}"));
+            // A failed or lost stop request is not settlement. Let the person check/retry the
+            // stop, and preserve the engine's actual outcome even if it finishes with an error.
+            failed(worker, format!("Could not ask Pi to stop: {error}"));
         }
     }
 
@@ -1172,11 +1210,41 @@ impl Live {
         op: OperationId,
         request: Option<RequestId>,
     ) {
+        let failed = |worker: &Worker, message| {
+            worker.emit_op(
+                conversation,
+                generation,
+                op,
+                EventKind::StatusCheckFailed { message },
+            )
+        };
         let Some(request) = request else {
-            return worker.notice("There is no record of this message to check.".into());
+            // An adopted run has no local request key. Read the live engine replica rather
+            // than inventing a key or a terminal outcome. Busy=false settles adopted runs only.
+            if self.current.as_ref().is_some_and(|c| {
+                c.conversation == conversation
+                    && c.generation == generation
+                    && c.transcript
+                        .read(|r| r.state("state").is_some())
+                        .unwrap_or(false)
+            }) {
+                self.flush(
+                    worker,
+                    Dirty {
+                        transcript: true,
+                        ..Dirty::default()
+                    },
+                );
+            } else {
+                failed(worker, "The live conversation is not available. Wait for it to reconnect, then check again.".into());
+            }
+            return;
         };
         let Some(target) = self.target_for(conversation) else {
-            return worker.notice("Open the conversation first, then check again.".into());
+            return failed(
+                worker,
+                "Open the conversation first, then check again.".into(),
+            );
         };
         let answer = self
             .call(
@@ -1188,13 +1256,14 @@ impl Live {
             .map(|v| v.as_ref().and_then(parse_lookup));
         match answer {
             Ok(Some(Lookup::Unknown)) => {
-                // The engine has no submission under this key, so it never admitted it.
-                worker.emit_op(
-                    conversation,
-                    generation,
-                    op,
-                    EventKind::StatusResolved { accepted: false },
-                );
+                // A previously accepted run losing its record is not an unadmitted prompt.
+                // Never tell the person it had no side effects merely because lookup is empty.
+                let kind = if worker.runs.remove(&op).is_some() {
+                    EventKind::Failed { message: "Pi no longer has a record of this run. Its tool effects cannot be confirmed; inspect the project before sending more work.".into() }
+                } else {
+                    EventKind::StatusResolved { accepted: false }
+                };
+                worker.emit_op(conversation, generation, op, kind);
             }
             Ok(Some(Lookup::Known {
                 open,
@@ -1218,14 +1287,21 @@ impl Live {
                         },
                     );
                 } else {
-                    let kind = outcome_event(reason.as_deref(), detail.as_deref(), false);
+                    worker.runs.remove(&op);
+                    let kind = outcome_event(reason.as_deref(), detail.as_deref());
                     worker.emit_op(conversation, generation, op, kind);
                     self.schedule_changes(worker);
                 }
             }
-            Ok(None) | Err(_) => {
-                worker.notice("Could not check with Pi; try again in a moment.".into())
-            }
+            Ok(None) => failed(
+                worker,
+                "Pi gave no usable status. The outcome is still unresolved; try checking again."
+                    .into(),
+            ),
+            Err(error) => failed(
+                worker,
+                format!("Could not check with Pi: {error}. The outcome is still unresolved."),
+            ),
         }
     }
 
@@ -1251,17 +1327,14 @@ impl Live {
             let event = match answer {
                 // Still running, or we could not ask: look again next time.
                 Ok(Some(Lookup::Known { open: true, .. })) | Err(_) | Ok(None) => continue,
-                Ok(Some(Lookup::Known { reason, detail, .. })) => outcome_event(
-                    reason.as_deref(),
-                    detail.as_deref(),
-                    worker.cancelling.contains(&op),
-                ),
+                Ok(Some(Lookup::Known { reason, detail, .. })) => {
+                    outcome_event(reason.as_deref(), detail.as_deref())
+                }
                 Ok(Some(Lookup::Unknown)) => EventKind::Failed {
-                    message: "The Pi engine no longer has a record of this run.".into(),
+                    message: "Pi no longer has a record of this run. Its tool effects cannot be confirmed; inspect the project before sending more work.".into(),
                 },
             };
             worker.runs.remove(&op);
-            worker.cancelling.remove(&op);
             worker.emit_op(run.conversation, run.generation, op, event);
             if let Some(current) = self.current.as_mut() {
                 current.workspace_ready = true;

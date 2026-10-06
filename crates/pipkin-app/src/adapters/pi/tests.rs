@@ -1272,14 +1272,114 @@ fn check_status_resolves_through_the_engine_by_request_key() {
         EventKind::StatusResolved { accepted: true }
     );
     assert_eq!(env.next_for(12).kind, EventKind::Completed);
-    // No key to ask with: say so, resolve nothing.
+    // No local request key (an adopted run): read the live engine replica, not a made-up key.
     env.backend.request(BackendRequest::CheckStatus {
         conversation: conv,
         generation: 1,
         op: OperationId(13),
         request: None,
     });
-    env.wait_notice("no record");
+    let mut refreshed = false;
+    wait_until("the live replica is re-read", || {
+        while let Ok(event) = env.events.try_recv() {
+            if let EventKind::EngineState { busy, .. } = event.kind {
+                assert!(!busy);
+                refreshed = true;
+            }
+        }
+        refreshed
+    });
+}
+
+#[test]
+fn failed_stop_and_status_requests_are_scoped_and_do_not_hide_the_engine_outcome() {
+    let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
+    let env = start(pi, true);
+    let conv = env.open_first();
+    submit(&env, conv, 1, 30, "req-stop-error", "long job");
+    assert_eq!(env.next_for(30).kind, EventKind::Accepted);
+    let a = agent.clone();
+    env.pi
+        .set_handler("pi.agent-controller", "abort", move |_, _, _| {
+            a.lock().unwrap().aborts += 1;
+            Err(pi_client::protocol::ProtocolError {
+                code: "busy".into(),
+                message: "stop service unavailable".into(),
+            })
+        });
+    let stop = || {
+        env.backend.request(BackendRequest::Cancel {
+            conversation: conv,
+            generation: 1,
+            op: OperationId(30),
+        })
+    };
+    stop();
+    let failure = env.next_for(30);
+    assert_eq!((failure.conversation, failure.generation), (conv, 1));
+    let EventKind::StopFailed { message } = failure.kind else {
+        panic!("wrong stop result")
+    };
+    assert!(message.contains("stop service unavailable"));
+    env.backend.request(BackendRequest::CheckStatus {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(30),
+        request: Some(RequestId("req-stop-error".into())),
+    });
+    assert_eq!(
+        env.next_for(30).kind,
+        EventKind::StatusResolved { accepted: true }
+    );
+    let a = agent.clone();
+    env.pi
+        .set_handler("pi.agent-controller", "abort", move |_, _, _| {
+            a.lock().unwrap().aborts += 1;
+            Ok(None) // Stop request acknowledged, but the run has not settled yet.
+        });
+    stop();
+    wait_until("the retried stop request arrives", || {
+        agent.lock().unwrap().aborts == 2
+    });
+    agent.lock().unwrap().statuses.insert(
+        "req-stop-error".into(),
+        settled(
+            "1",
+            "unanswered",
+            Some("model_error"),
+            Some("provider failed while stopping"),
+        ),
+    );
+    assert_eq!(
+        env.next_for(30).kind,
+        EventKind::Failed {
+            message: "provider failed while stopping".into()
+        }
+    );
+    assert_eq!(
+        agent.lock().unwrap().prompts.len(),
+        1,
+        "retrying stop must not resend a prompt"
+    );
+
+    env.pi
+        .set_handler("pi.agent-controller", "lookup", |_, _, _| {
+            Err(pi_client::protocol::ProtocolError {
+                code: "internal_error".into(),
+                message: "status service unavailable".into(),
+            })
+        });
+    env.backend.request(BackendRequest::CheckStatus {
+        conversation: conv,
+        generation: 1,
+        op: OperationId(31),
+        request: Some(RequestId("unknown".into())),
+    });
+    let EventKind::StatusCheckFailed { message } = env.next_for(31).kind else {
+        panic!("wrong check result")
+    };
+    assert!(message.contains("status service unavailable"));
+    assert!(message.contains("still unresolved"));
 }
 
 #[test]

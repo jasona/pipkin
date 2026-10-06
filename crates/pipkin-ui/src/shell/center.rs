@@ -129,6 +129,26 @@ impl Workspace {
                 ));
             }
         }
+        if !demo
+            && self
+                .state(cx)
+                .current()
+                .is_some_and(|cv| cv.recovery_notice)
+        {
+            let this = this.clone();
+            strips.push(strip(
+                cx, "triangle-alert", c.warning, "Recovery notice",
+                "Pipkin does not resend the prompt. If Pi restarts, its recovery may resume the run and repeat a partially executed tool. Review tool output and project Changes before sending more work. If recovery stays unresolved, run `pipkin --diagnose` for support details.",
+                vec![Btn::new("dismiss-recovery-notice")
+                    .icon("x")
+                    .aria("Dismiss recovery notice")
+                    .compact()
+                    .on_click(move |_, cx| {
+                        this.update(cx, |t, cx| t.dispatch(Command::DismissRecoveryNotice, cx))
+                    })
+                    .into_any_element()],
+            ));
+        }
         if let Some((at, reason)) = saved_copy {
             strips.push(strip(
                 cx,
@@ -446,6 +466,28 @@ impl Workspace {
             )
         };
         let _ = retry_hint;
+        let stop_error = self
+            .state(cx)
+            .current()
+            .and_then(|cv| cv.stop_error.clone());
+        let status_error = self
+            .state(cx)
+            .current()
+            .and_then(|cv| cv.status_error.clone());
+        let check_status = || {
+            Btn::new("check-status")
+                .icon("refresh-cw")
+                .label("Check status")
+                .kind(BtnKind::Subtle)
+                .compact()
+                .disabled(!avail.check_status)
+                .on_click({
+                    let this = cx.entity();
+                    move |_, cx| this.update(cx, |t, cx| t.dispatch(Command::CheckStatus, cx))
+                })
+                .into_any_element()
+        };
+        let goal = self.state(cx).current().and_then(|cv| cv.goal.clone());
         let no_models = models.is_empty();
         let read_only = self.state(cx).read_only.clone();
         let model_name = models
@@ -555,34 +597,47 @@ impl Workspace {
                         .into_any_element(),
                 ],
             )),
-            RunState::Stopping { .. } => Some(strip(
-                cx,
-                "loader-circle",
-                c.warning,
-                "Stopping…",
-                "Waiting for confirmation that the run has stopped.",
-                vec![],
-            )),
+            RunState::Stopping { .. } => {
+                let detail = if real {
+                    stopping_detail(stop_error.as_deref())
+                } else {
+                    "Waiting for the simulated run to stop.".into()
+                };
+                let mut actions = vec![];
+                if real {
+                    actions.push(check_status());
+                    if stop_error.is_some() {
+                        let this = this.clone();
+                        actions.push(
+                            Btn::new("retry-stop")
+                                .icon("square")
+                                .label("Retry stop")
+                                .kind(BtnKind::Subtle)
+                                .compact()
+                                .disabled(!avail.retry_stop)
+                                .on_click(move |_, cx| {
+                                    this.update(cx, |t, cx| t.dispatch(Command::RetryStop, cx))
+                                })
+                                .into_any_element(),
+                        );
+                    }
+                }
+                Some(strip(
+                    cx,
+                    "loader-circle",
+                    c.warning,
+                    "Stopping…",
+                    &detail,
+                    actions,
+                ))
+            }
             RunState::OutcomeUnknown { .. } => Some(strip(
                 cx,
                 "circle-help",
                 c.warning,
                 "Outcome unknown",
                 "The app or connection stopped before the prompt was acknowledged. Pipkin is asking the engine what happened; the prompt is never resent automatically.",
-                vec![
-                    Btn::new("check-status")
-                        .icon("refresh-cw")
-                        .label("Check status")
-                        .kind(BtnKind::Subtle)
-                        .compact()
-                        .on_click({
-                            let this = this.clone();
-                            move |_, cx| {
-                                this.update(cx, |t, cx| t.dispatch(Command::CheckStatus, cx))
-                            }
-                        })
-                        .into_any_element(),
-                ],
+                vec![check_status()],
             )),
             RunState::Failed { message } => Some(strip(
                 cx,
@@ -893,7 +948,46 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .children(not_sent)
+                    .children(goal.map(|goal| {
+                        let state = goal
+                            .paused
+                            .as_deref()
+                            .unwrap_or("Working until met, blocked, or unreachable");
+                        let detail = format!("{} · {}", goal.text, state);
+                        strip(
+                            cx,
+                            "zap",
+                            c.text_muted,
+                            "Goal",
+                            &detail,
+                            vec![
+                                Btn::new("clear-goal")
+                                    .icon("x")
+                                    .aria("Clear goal and stop")
+                                    .compact()
+                                    .on_click({
+                                        let this = this.clone();
+                                        move |_, cx| {
+                                            this.update(cx, |t, cx| {
+                                                t.dispatch(Command::ClearGoal, cx)
+                                            })
+                                        }
+                                    })
+                                    .into_any_element(),
+                            ],
+                        )
+                    }))
                     .children(status)
+                    .children(status_error.as_deref().map(|message| {
+                        strip(
+                            cx,
+                            "circle-alert",
+                            c.warning,
+                            "Status check failed",
+                            message,
+                            vec![],
+                        )
+                    }))
                     .children(queue_el)
                     .child(
                         div()
@@ -921,6 +1015,14 @@ impl Workspace {
     }
 }
 
+fn stopping_detail(error: Option<&str>) -> String {
+    let waiting = "Pi has not confirmed that the run stopped; tools may still be running. If this takes longer than expected, Check status reads the engine state without resending the prompt.";
+    match error {
+        Some(error) => format!("{error} {waiting} Retry stop repeats only the stop request."),
+        None => waiting.into(),
+    }
+}
+
 pub(super) fn strip(
     cx: &gpui::App,
     icon_name: &'static str,
@@ -931,7 +1033,7 @@ pub(super) fn strip(
 ) -> gpui::AnyElement {
     let t = cx.theme();
     div()
-        .id("run-status")
+        .id(gpui::SharedString::from(format!("run-status-{title}")))
         .role(Role::Status)
         .aria_label(format!("{title}. {detail}"))
         .flex()
@@ -964,4 +1066,20 @@ pub(super) fn strip(
         )
         .children(actions)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod recovery_copy_tests {
+    use super::*;
+
+    #[test]
+    fn stopping_never_claims_settlement_and_failed_stop_explains_safe_retry() {
+        let waiting = stopping_detail(None);
+        assert!(waiting.contains("not confirmed"));
+        assert!(waiting.contains("tools may still be running"));
+        assert!(waiting.contains("without resending the prompt"));
+        let failed = stopping_detail(Some("connection lost"));
+        assert!(failed.contains("connection lost"));
+        assert!(failed.contains("only the stop request"));
+    }
 }

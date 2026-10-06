@@ -427,6 +427,30 @@ impl Workspace {
 
     /// Enter: send when idle, steer when a run is active.
     pub(super) fn submit_primary(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).text();
+        if text.trim() == "/goal" {
+            self.show_toast("Usage: /goal <goal> or /goal clear", cx);
+            return;
+        }
+        if let Some(value) = text.trim().strip_prefix("/goal ") {
+            if self.state(cx).selected.is_none() {
+                self.show_toast("Open a conversation before setting a goal", cx);
+                return;
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                self.show_toast("Usage: /goal <goal> or /goal clear", cx);
+                return;
+            }
+            let command = if value == "clear" {
+                Command::ClearGoal
+            } else {
+                Command::SetGoal(value.to_string())
+            };
+            self.dispatch(Command::EditDraft(String::new()), cx);
+            self.dispatch(command, cx);
+            return;
+        }
         let a = self.state(cx).availability();
         if a.submit {
             self.dispatch(Command::Submit, cx);

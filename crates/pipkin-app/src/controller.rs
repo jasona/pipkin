@@ -345,6 +345,7 @@ pub(crate) struct Restore {
     conversations: Vec<DemoConversation>,
     drafts: Vec<StoredDraft>,
     requests: Vec<OpenRequest>,
+    goals: Vec<(ConversationId, String, Option<String>)>,
 }
 
 impl Restore {
@@ -357,6 +358,7 @@ impl Restore {
             },
             drafts: loaded.drafts,
             requests: loaded.open_requests,
+            goals: loaded.goals,
         }
     }
 
@@ -372,6 +374,13 @@ impl Restore {
             // The files may have moved or changed since the draft was saved.
             let attachments = d.attachments.iter().map(revalidate_attachment).collect();
             state.restore_draft(d.conversation, d.text.clone(), attachments);
+            false
+        });
+        self.goals.retain(|(id, text, paused)| {
+            if state.conversation(*id).is_none() {
+                return true;
+            }
+            state.restore_goal(*id, text.clone(), paused.clone());
             false
         });
         // Never resend: an unresolved request becomes "outcome unknown" for the user to resolve.
@@ -529,6 +538,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
             drafts: vec![],
             conversations: vec![],
             open_requests: vec![],
+            goals: vec![],
             projects: vec![],
         }
     });
@@ -759,6 +769,11 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                     .detach();
                 }
                 Effect::SavePrefs(prefs) => storage.save_prefs(&prefs),
+                Effect::SaveGoal {
+                    conversation,
+                    text,
+                    paused,
+                } => storage.save_goal(conversation, text, paused),
                 Effect::SaveProject { path } => storage.save_project(path),
                 Effect::SaveConversation { conversation } => {
                     // The model is mid-update here; read the conversation once it settles.

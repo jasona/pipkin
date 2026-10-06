@@ -54,12 +54,19 @@ pub enum Command {
     OpenTerminal,
 
     Submit,
+    /// Set or replace the active goal for the selected conversation.
+    SetGoal(String),
+    /// Remove the active goal and stop scheduling continuations.
+    ClearGoal,
     Steer,
     QueueFollowUp,
     RemoveQueued(QueueId),
     Cancel,
     /// Ask the backend what happened to an acknowledgment-less submission.
     CheckStatus,
+    /// Repeat a stop request that failed, never a prompt.
+    RetryStop,
+    DismissRecoveryNotice,
     /// Resubmit after a rejection or failure. Explicit user action only.
     Retry,
     DismissFailure,
@@ -91,6 +98,7 @@ pub struct Availability {
     pub open_in_editor: bool,
     pub open_terminal: bool,
     pub check_status: bool,
+    pub retry_stop: bool,
     pub retry: bool,
     pub load_older: bool,
 }
@@ -236,6 +244,14 @@ pub enum EventKind {
     },
     /// The connection dropped before acknowledgment.
     AckLost,
+    /// A stop request failed; this is not proof that the run has stopped.
+    StopFailed {
+        message: String,
+    },
+    /// A read-only status check failed; the existing outcome remains unresolved.
+    StatusCheckFailed {
+        message: String,
+    },
     /// Answer to `CheckStatus`.
     StatusResolved {
         accepted: bool,
@@ -337,6 +353,11 @@ pub enum Effect {
         rev: u64,
     },
     SavePrefs(Prefs),
+    SaveGoal {
+        conversation: ConversationId,
+        text: Option<String>,
+        paused: Option<String>,
+    },
     SaveConversation {
         conversation: ConversationId,
     },

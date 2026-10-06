@@ -252,6 +252,173 @@ fn cancel_waits_for_settlement() {
 }
 
 #[test]
+fn failed_stop_can_be_retried_but_clock_and_status_checks_never_settle_it() {
+    let mut s = state();
+    s.apply_event(ev(
+        &s,
+        EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    ));
+    s.mode = Mode::Real;
+    run_started(&mut s, "work");
+    s.dispatch(Command::Cancel);
+    assert!(!s.availability().cancel && !s.availability().retry_stop);
+    s.apply_event(ev(
+        &s,
+        EventKind::StopFailed {
+            message: "abort unavailable".into(),
+        },
+    ));
+    assert!(s.availability().retry_stop);
+    assert_eq!(
+        s.current().unwrap().stop_error.as_deref(),
+        Some("abort unavailable")
+    );
+    let retried = s.dispatch(Command::RetryStop);
+    assert!(matches!(
+        retried.effects.as_slice(),
+        [Effect::Backend(BackendRequest::Cancel { .. })]
+    ));
+    assert!(!s.availability().retry_stop);
+    assert!(s.dispatch(Command::RetryStop).effects.is_empty());
+    s.set_now(100_000);
+    assert!(matches!(
+        s.current().unwrap().run,
+        RunState::Stopping { .. }
+    ));
+    let check = s.dispatch(Command::CheckStatus);
+    assert!(matches!(
+        check.effects.as_slice(),
+        [Effect::Backend(BackendRequest::CheckStatus { .. })]
+    ));
+    assert!(!s.availability().check_status);
+    assert!(s.dispatch(Command::CheckStatus).effects.is_empty());
+    s.apply_event(ev(
+        &s,
+        EventKind::StatusCheckFailed {
+            message: "lookup failed".into(),
+        },
+    ));
+    assert!(s.availability().check_status);
+    assert!(matches!(
+        s.current().unwrap().run,
+        RunState::Stopping { .. }
+    ));
+    assert!(s.dispatch(Command::Submit).effects.is_empty());
+    assert!(s.dispatch(Command::Retry).effects.is_empty());
+    s.dispatch(Command::CheckStatus);
+    s.apply_event(ev(&s, EventKind::StatusResolved { accepted: true }));
+    assert!(matches!(
+        s.current().unwrap().run,
+        RunState::Stopping { .. }
+    ));
+    assert!(s.current().unwrap().status_error.is_none());
+    let late_error = ev(
+        &s,
+        EventKind::StopFailed {
+            message: "late failure".into(),
+        },
+    );
+    let settled = s.apply_event(ev(&s, EventKind::Completed));
+    assert_eq!(journal_states(&settled), vec![JournalState::Completed]);
+    assert_eq!(
+        s.current().unwrap().run,
+        RunState::Idle,
+        "completion wins on the engine's word, not stop intent"
+    );
+    s.apply_event(late_error);
+    assert!(s.current().unwrap().stop_error.is_none());
+}
+
+#[test]
+fn recovery_notice_and_check_failure_are_per_conversation_and_do_not_replay_work() {
+    let mut s = state();
+    s.apply_event(ev(
+        &s,
+        EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    ));
+    s.mode = Mode::Real;
+    run_started(&mut s, "work");
+    s.dispatch(Command::Cancel);
+    s.dispatch(Command::CheckStatus);
+    let settled = ev(&s, EventKind::Cancelled);
+    s.set_connection(Connection::Reconnecting);
+    assert!(s.current().unwrap().recovery_notice);
+    assert!(!s.current().unwrap().status_check_pending);
+    assert!(!s.availability().check_status && !s.availability().retry_stop);
+    assert!(matches!(
+        s.current().unwrap().run,
+        RunState::Stopping { .. }
+    ));
+    let restored = s.set_connection(Connection::Ready);
+    assert_eq!(backend_submits(&restored), 0);
+    assert!(s.availability().check_status);
+    s.dispatch(Command::SelectConversation(ConversationId(2)));
+    assert!(!s.current().unwrap().recovery_notice);
+    let out = s.apply_event(settled);
+    assert_eq!(backend_submits(&out), 0);
+    assert_eq!(
+        s.conversation(ConversationId(1)).unwrap().run,
+        RunState::Idle
+    );
+    s.dispatch(Command::SelectConversation(ConversationId(1)));
+    assert!(
+        s.current().unwrap().recovery_notice,
+        "settlement does not erase the recovery caveat"
+    );
+    let dismissed = s.dispatch(Command::DismissRecoveryNotice);
+    assert!(dismissed.effects.is_empty());
+    assert!(!s.current().unwrap().recovery_notice);
+}
+
+#[test]
+fn failed_unknown_status_checks_remain_unknown_and_disable_prompt_retry() {
+    let mut s = state();
+    s.mode = Mode::Real;
+    s.restore_unresolved(
+        ConversationId(1),
+        RequestId("lost".into()),
+        "work".into(),
+        vec![],
+    );
+    s.dispatch(Command::CheckStatus);
+    assert!(s.current().unwrap().status_check_pending);
+    let out = s.apply_event(ev(
+        &s,
+        EventKind::StatusCheckFailed {
+            message: "engine unavailable".into(),
+        },
+    ));
+    assert!(out.effects.is_empty());
+    assert!(matches!(
+        s.current().unwrap().run,
+        RunState::OutcomeUnknown { .. }
+    ));
+    assert!(s.availability().check_status && !s.availability().retry && !s.availability().submit);
+    assert!(s.current().unwrap().recovery_notice);
+    assert_eq!(
+        s.current().unwrap().status_error.as_deref(),
+        Some("engine unavailable")
+    );
+    s.dispatch(Command::CheckStatus);
+    assert!(s.current().unwrap().status_error.is_none());
+    s.apply_event(ev(&s, EventKind::StatusResolved { accepted: false }));
+    let RunState::Failed { message } = &s.current().unwrap().run else {
+        panic!()
+    };
+    assert!(message.contains("no record"));
+    assert!(message.contains("before deciding whether to retry"));
+    assert!(!message.contains("never received"));
+}
+
+#[test]
 fn unknown_outcome_never_resends() {
     let mut s = state();
     s.dispatch(Command::EditDraft("risky".into()));
