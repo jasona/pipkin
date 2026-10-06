@@ -16,6 +16,11 @@ reviewed. The intended next release is 1.0; no final version/tag/publication has
 below remains the risk/evidence record, not a claim that waived or unobserved checks passed. See
 `docs/macos-first-pass.md` for experimental artifact boundaries and the live gate record for actual CI outcomes.
 
+- [x] First macOS CI build/artifact: Apple Silicon native build, core/transport/ownership checks and two scripted engine smoke checks passed in run 37482847877 on clean f52e8c2. Downloaded bundle hashes/permissions/notices were verified without executing it on Linux.
+- [ ] Owner evaluates the Mac artifact; decide next Mac packaging/native changes before expanding scope.
+- [ ] Windows CI/port after Mac review.
+- [ ] Final 1.0 version, approval, tag and artifact publication. No experimental 0.0.1 artifact is relabelled as 1.0.
+
 ## Evidence and working rules
 
 Reference these documents and implementations, but verify their current state before changing code:

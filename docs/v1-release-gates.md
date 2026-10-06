@@ -627,6 +627,32 @@ operation. This supplies checksum-locked audit inputs without dropping notices, 
 mutating the lockfile. First-pass help links now point to readable source guides when viewed outside the source
 checkout. Failure log: `/tmp/pipkin-macos-uuid-ci-failure.log`. Fresh artifact-producing CI remains required.
 
+## First downloadable macOS artifact: observed green (2026-10-06)
+
+[Native run 37482847877](https://github.com/last-refuge/pipkin/actions/runs/37482847877) passed on clean full
+app `f52e8c254488c4524c4cb986530eee7048b4f138`: macOS 15 **Apple Silicon/aarch64**, pinned engine d2a3110,
+core/Unix peer transport, native owned-process identification, portable/remembered identity tests, release
+compilation, owned engine startup/shutdown, scripted file-edit/diff/history reopening and artifact creation.
+Intel/universal and interactive GUI acceptance are not claimed. Separate Linux run 37481551428 on clean
+11a7496 also passed; f52e8c2 Linux qualification was in progress at the last check.
+
+Download Actions artifact **`pipkin-macos-ARM64-f52e8c254488c4524c4cb986530eee7048b4f138`**, then extract the
+contained `pipkin-0.0.1-aarch64-apple-darwin-experimental.zip`. Archive SHA-256:
+`f1e17d1f85153ac70642f14344ec8eae97d080f1eea153691e5ae2f8f8d296f3`.
+Binary SHA-256: `cf80029d9876e1bd2df479037126b349be31ad768ef004a5efa77d0a625dfdf4`.
+
+Downloaded artifact inspection on Linux verified SHA256SUMS, binary/build-info identity, Mach-O magic,
+executable permissions, bundle plist and all retained notice hashes **without executing the binary**. It contains
+460 target-reachable Rust entries with 53 review flags, retained source/notices and direct system Mach-O library
+references. That inventory is not legal clearance or a full native/static-component audit. Local artifact review
+root is recorded in `/tmp/pipkin-macos-artifact-review-root`.
+
+This closes the owner's requested **first Mac CI/build pass**, not the 1.0 release. Pi/Node are not bundled;
+Developer ID/notarization, Finder startup, provider authentication, Cmd conventions/native input, accessibility,
+clipboard and real interactive lifecycle checks remain Mac evaluation topics. Windows follows owner Mac review.
+No version/tag/publication change was made. First-pass instructions and platform scope now link the actual green
+run rather than treating workflow existence as evidence.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

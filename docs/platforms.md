@@ -14,7 +14,7 @@ recorded in [native gates](native-gate-testing.md); do not read that historical 
 | Arch/other Linux, X11 (also Xwayland) | **Builds and starts; checked under Xwayland only** | The `x11` GPUI feature is enabled alongside `wayland` (one binary; the display server picks at run time). Launched with `WAYLAND_DISPLAY` unset on Xwayland: it renders correctly. A pure X11 session, other window managers, and IME/screen reader on X11 were not tried |
 | Other Wayland compositors (GNOME, KDE) | **Unverified** | Same Wayland code path as Hyprland, but portals (file picker), decorations, clipboard and IME were not tried on them |
 | Other Linux distributions | **Experimental; native install/runtime unqualified** | Generic installer mechanics passed in scratch prefixes, not a distribution desktop matrix. Native ABI and external libraries vary by artifact; the local app references GLIBC_2.44. Ubuntu 24.04 headless CI builds its own artifact and is not proof that the local binary runs there |
-| macOS | **Experimental native build/port in progress; not supported** | `macos-build.yml` now targets a macOS 15 runner, with core/Unix transport/ownership tests, two scripted engine smoke checks and an experimental app archive. See [first-pass limits](macos-first-pass.md); an actual green run/native observation is required |
+| macOS | **Experimental native build/port in progress; not supported** | Observed green Apple Silicon native build and two scripted engine smoke checks in run 37482847877 on f52e8c2, with an experimental app archive. See [first-pass limits](macos-first-pass.md); actual interactive native acceptance and Intel/universal builds remain unverified |
 | Windows | **Not supported** | See the blockers below |
 
 ## Cross-platform implementation and remaining boundaries
@@ -26,8 +26,8 @@ recorded in [native gates](native-gate-testing.md); do not read that historical 
   `getpeereid`, retaining owner-only directory/socket and server-id checks. Windows still needs an
   authenticated transport on both the Rust client and pinned Pi server sides.
 - **Engine lifecycle** (`engine.rs`, `macos_processes.rs`): Linux retains `/proc` discovery; macOS uses
-  kernel uid/argument-environment inspection with exact environment identity. This must pass actual
-  runner tests before being considered working. Windows ownership remains unimplemented.
+  kernel uid/argument-environment inspection with exact environment identity. Native runner ownership
+  and engine startup/shutdown tests passed; interactive application cleanup remains unobserved. Windows ownership remains unimplemented.
 - **Small `/proc` reads**: server UUIDs now use OS entropy (`/dev/urandom`) on both Unix targets, but
   RSS/performance instrumentation remains Linux-oriented. Zero/missing readings on macOS are not memory-soak evidence.
 - **Paths and launching** (`launch.rs`, `platform.rs`): XDG directories and editor/terminal discovery still
