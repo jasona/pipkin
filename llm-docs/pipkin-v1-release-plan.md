@@ -91,7 +91,7 @@ Current finding: `Command::RenameConversation` is a no-op in real mode in `crate
 - [x] Verify the current Pi metadata/rename contract: no rename operation is available in the current experimental session service.
 - [x] Either implement authoritative rename with pending/error/reopen behavior, or remove/disable the real-mode action with a clear explanation. Real-mode palette entry disabled; F2 explains the limitation; demo behavior preserved.
 - [x] Ensure buttons, shortcuts, and palette availability agree: real-mode rename cannot open the no-op dialog.
-- [ ] Test failure, restart, and conversation switching. Do not present a local-only title as an engine-confirmed rename.
+- [x] Test failure, restart, and conversation switching. The unsupported real-mode command emits no backend/persistence effects across failed/disconnected states and selected/background/missing targets; core initialization from the catalog preserves the original labels. Existing demo naming and real/demo palette tests pass. This is automated core reopen evidence, not an installed native shortcut walkthrough. Real names are prompt-derived display labels, not engine-confirmed renames.
 
 ### 1.2 Changes-pane scan failures
 

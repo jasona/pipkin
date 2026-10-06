@@ -656,6 +656,57 @@ fn search_filters_and_new_conversation_selects() {
 }
 
 #[test]
+fn unsupported_real_rename_never_saves_a_local_title_across_failure_switch_and_reopen() {
+    let mut s = state();
+    s.mode = Mode::Real;
+    for connection in [
+        Connection::Ready,
+        Connection::Reconnecting,
+        Connection::Offline("engine unavailable".into()),
+        Connection::Failed("engine failed".into()),
+        Connection::Incompatible("protocol mismatch".into()),
+    ] {
+        s.set_connection(connection);
+        for selected in [ConversationId(1), ConversationId(2)] {
+            s.dispatch(Command::SelectConversation(selected));
+            for target in [ConversationId(1), ConversationId(2), ConversationId(999)] {
+                let out = s.dispatch(Command::RenameConversation(
+                    target,
+                    "local-only title".into(),
+                ));
+                assert!(
+                    out.effects.is_empty(),
+                    "must not save metadata or request a rename"
+                );
+                assert!(
+                    out.notes.is_empty(),
+                    "must not announce a successful rename"
+                );
+                assert_eq!(s.conversation(ConversationId(1)).unwrap().title, "one");
+                assert_eq!(s.conversation(ConversationId(2)).unwrap().title, "two");
+                assert_eq!(s.selected, Some(selected));
+            }
+        }
+    }
+    s.set_connection(Connection::Ready);
+    s.apply_catalog(catalog());
+    // Fresh core initialization from the engine catalog models restart/reopen. There was no
+    // SaveConversation effect that could persist the rejected local title in the app cache.
+    let mut reopened = AppState::new(catalog(), s.prefs.clone());
+    reopened.mode = Mode::Real;
+    reopened.select_initial();
+    assert_eq!(reopened.selected, Some(ConversationId(2)));
+    assert_eq!(
+        reopened.conversation(ConversationId(1)).unwrap().title,
+        "one"
+    );
+    assert_eq!(reopened.current().unwrap().title, "two");
+
+    // These bootstrap labels are not evidence of a server rename contract. Real display titles
+    // are derived from replicated prompts; the server currently has no session-title operation.
+}
+
+#[test]
 fn nothing_reaches_the_backend_until_connected() {
     let mut s = state();
     s.dispatch(Command::EditDraft("hello".into()));

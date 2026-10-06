@@ -441,6 +441,22 @@ passed against that final working-delta artifact too.
 Logs: `/tmp/pipkin-runtime-audit-{workspace,clippy,package,verify,full-verify,installer}.log`,
 `/tmp/pipkin-diag-ci-failed.log`. No owner profile/configuration/clipboard changes or paid requests.
 
+## Phase 1: unsupported rename lifecycle regression (2026-10-06)
+
+Added `unsupported_real_rename_never_saves_a_local_title_across_failure_switch_and_reopen`. For ready,
+reconnecting, offline, failed and incompatible connections, it attempts rename against selected/background/missing
+conversation IDs and verifies unchanged labels/selection, no backend or persistence effects, and no success notes.
+Fresh core initialization from the catalog/preferences models reopen; no rejected local title can enter a save
+through this command. This is not an actual installed process restart or native F2/menu observation. Existing demo
+rename and real/demo palette regressions remain green. Real titles are prompt-derived display names; the current
+engine has no title/rename contract. An initial test assertion incorrectly expected catalog title updates and was
+removed after checking that actual contract; it was a test assumption, not a diagnosed product regression.
+
+On app base `a849ec3`: **538 workspace tests passed (40 ignored)**, Clippy/fmt clean, and **37 development-engine
+suite tests passed** against the clean pinned engine. Only a core test was added; no fresh packaged artifact is
+claimed here. Candidate CI still requalifies packaging. Logs:
+`/tmp/pipkin-rename-regression-{workspace,clippy,engine}.log`.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -450,7 +466,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Release scope and final acceptance policy | 0 | Working scope recorded; final sign-off open | Owner confirms advertised support and any acceptance exceptions |
 | Test/package baseline | 0 | Passed (automated), identified above | Engineering reruns after code/candidate changes |
 | Daily-use beta | 0 | Owner-reported | Owner supplies dates/incidents if available; do not invent metrics |
-| Real-mode rename | 1 | Addressed in working tree: palette disabled, F2 explains; automated regression passed | Native installed walkthrough remains; authoritative rename is not advertised |
+| Real-mode rename | 1 | Addressed: palette disabled, F2 explains; automated lifecycle/no-save regression passed | Native installed walkthrough remains; authoritative rename is not advertised |
 | Changes scan failure | 1 | Addressed in working tree: automated/core/real-engine/package checks passed; native AT-SPI failure/stale/recovery observed | Broader native visual/Orca/mouse checks remain open; repeat on the final candidate |
 | Interrupted tools/unresolved operations | 1 | Passed (automated) behavior; recovery/status/stop-only retry and metadata support guidance present | Native installed walkthrough/final-candidate qualification remain; never infer settlement from timeout |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
