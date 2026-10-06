@@ -538,6 +538,58 @@ app `9dda58fefed4853a3cc7502e13f7af65ed550258`. Run 37454852910 on 6296cf2 remai
 Remaining roadmap references, screenshot/version labels, final support acceptance and native/new-user gates are
 not silently closed by these documentation corrections.
 
+## Owner scope change and first macOS CI/port pass (2026-10-06)
+
+The owner accepted the remaining layout/menu regression work without more checks, asked for platform builds
+before calling the next release 1.0, and then prioritized **macOS first, Windows after Mac review**. This is an
+acceptance/priority change, not invented native evidence. No final 1.0 version, tag or publication was made.
+
+Added `.github/workflows/macos-build.yml`: macOS 15 runner, pinned Rust/actions/Node, short private temporary
+paths, core/Unix transport tests, native ownership tests, two scripted-provider engine smoke checks, actual
+native release compilation and an experimental `.app` archive with checksum/build identity and target-specific
+Rust notices/MPL source. It records the actual runner architecture rather than pretending to be universal.
+The app archive does **not** bundle Pi or Node, and has no Developer ID signing/notarization. Engine checkout
+and immutable snapshot provisioning are separate for CI/evaluation. `docs/macos-first-pass.md` explains the limits.
+
+Transport now uses kernel `getpeereid` on macOS, retaining filesystem ownership/privacy and server-id checks;
+Linux `SO_PEERCRED` is unchanged. macOS owned-process discovery uses kernel uid plus exact NUL-delimited
+environment identity, excluding argv/prefix impostors and unrelated identities. A native disposable-child test
+must pass on the runner; local tests cover parser truncation and malformed/argument-only inputs. No environment
+buffer is logged. macOS does not apply Linux's forced stale-launcher-lock cleanup optimization. Corrected the
+old platform-doc claim that GPUI native backends were disabled: `gpui_platform::application()` already selects them.
+
+Local Linux working-delta validation: **544 workspace tests passed (40 ignored)**, Clippy/fmt clean, license
+inventory policy tests (including unbundled Darwin target), macOS bundle fixture policy checks, **37 development
+and 37 unpacked packaged-engine tests**, installer and **26 installed-guide/input checks** passed. Bundle fixtures
+are not a native Mac build/launch claim. Working-delta Linux package SHA-256:
+`d85b919eb583a6dbba8a051c5c484a6d80cefcb9b8decaa39ccdba830039e11d` (before final platform/plan/journal notes).
+Logs: `/tmp/pipkin-macos-pass-{workspace,clippy,engine,package,verify,installer}.log`.
+
+Observed green CI for clean `6296cf212f5c12077ab03435a3710207db9efe8b` (37454852910) and clean
+`44b3a507ff0c744c4b7fafa1e3e5288191fb457d` (37456363171). The new macOS workflow has not yet run at this entry;
+its existence is not green compilation or support acceptance. Finder/PATH, native clipboard/IME/accessibility,
+editor/terminal defaults, sleep/wake, notarization and full engine packaging remain Mac follow-up work.
+
+### Fresh extended automated soak before the Mac delta
+
+Clean app `44b3a507ff0c744c4b7fafa1e3e5288191fb457d` and pinned engine d2a3110 completed **1500 sequential
+prompts**, 40 repeated words per scripted response, one conversation, 375-prompt warm-up. The isolated harness
+sampled `/proc` RSS (confirmed 4096-byte pages) and app file descriptors; this is not a real GPUI window/day-long
+session or an engine-fd measurement. Subsequent peaks:
+
+| Engine | Baseline → peak engine KiB | Baseline → peak app KiB | App fd baseline → peak | Duration |
+| --- | --- | --- | --- | --- |
+| Development | 640972 → 719244 | 21932 → 52708 | 14 → 19 | 87.97 s |
+| Unpacked package | 640200 → 716900 | 22060 → 50572 | 15 → 19 | 95.63 s |
+
+Passed the existing generous per-prompt resource-growth tripwire, not proof of flat memory or no leaks. The full
+packaged suite also passed 37 tests with the 1500-round override, and installer checks passed. Clean unsigned
+Linux archive SHA-256: `d3e827cb7c40246acaf4f00a973e00ece114564586cd6b7caf29e82d4ba0e95e`;
+binary SHA-256: `b4ffb7ae66919353656cbf0770570f0d80666f99842b66ea3d1cf4b5d8172000`. Build identity recorded
+44b3a50 with dirty=false, protocol 8/schema 7 and Node 26.8.1/npm 11.19.0. Logs:
+`/tmp/pipkin-extended-soak-{development,package,docs,packaged,packaged-metrics,installer,workspace,clippy}.log`.
+This is a fresh baseline, not final-RC soak acceptance and not Mac resource instrumentation.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

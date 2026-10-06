@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 use pi_client::client::ClientOptions;
 use pi_client::unix;
 
+#[cfg(any(target_os = "macos", test))]
+#[path = "macos_processes.rs"]
+mod macos_processes;
+
 /// Restarts allowed within `RESTART_WINDOW` before giving up.
 const MAX_RESTARTS: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
@@ -211,7 +215,8 @@ impl Drop for Engine {
 }
 
 /// Pids of this user's processes carrying exactly this profile's `PI_SERVER_DIR` and
-/// `PI_SERVER_ID`. Reads `/proc`; processes we cannot inspect cannot be ours.
+/// `PI_SERVER_ID`. Reads `/proc`; processes we cannot inspect are not signal targets.
+#[cfg(target_os = "linux")]
 pub fn profile_pids(server_dir: &Path, server_id: &str) -> Vec<u32> {
     let want_dir = format!("PI_SERVER_DIR={}", server_dir.display());
     let want_id = format!("PI_SERVER_ID={server_id}");
@@ -247,6 +252,11 @@ pub fn profile_pids(server_dir: &Path, server_id: &str) -> Vec<u32> {
     pids
 }
 
+#[cfg(target_os = "macos")]
+pub fn profile_pids(server_dir: &Path, server_id: &str) -> Vec<u32> {
+    macos_processes::profile_pids(server_dir, server_id)
+}
+
 fn signal(pid: u32, sig: libc::c_int) {
     // SAFETY: kill(2) with a pid we just matched by environment identity; failure is ignored.
     unsafe {
@@ -276,6 +286,7 @@ fn stop_profile(config: &EngineConfig, grace: Duration) {
 /// and a new engine would wait 30 seconds for it to go stale. When no process of this profile
 /// exists nobody can be holding it, so removing it is safe and makes a restart immediate. If any
 /// process of the profile is alive the lock is left strictly alone.
+#[cfg(target_os = "linux")]
 fn clear_stale_launcher_lock(config: &EngineConfig) {
     if !profile_pids(&config.server_dir, &config.server_id).is_empty() {
         return;
@@ -333,6 +344,9 @@ impl EngineHost {
                 log_tail(&self.config.log_path)
             )));
         }
+        // macOS: leave stale-lock arbitration to Pi. A failed kernel inspection is not proof
+        // that no process owns a lock, so do not apply the Linux /proc optimization there.
+        #[cfg(target_os = "linux")]
         clear_stale_launcher_lock(&self.config);
         self.starts.push(Instant::now());
         let mut engine = Engine::spawn(&self.config)?;

@@ -78,6 +78,7 @@ pub fn check_endpoint(path: &Path) -> Result<()> {
 }
 
 /// The uid the kernel reports for the process at the other end of `stream`.
+#[cfg(target_os = "linux")]
 pub fn peer_uid(stream: &UnixStream) -> Result<u32> {
     use std::os::fd::AsRawFd;
     let mut cred = libc::ucred {
@@ -103,6 +104,22 @@ pub fn peer_uid(stream: &UnixStream) -> Result<u32> {
         )));
     }
     Ok(cred.uid)
+}
+
+/// macOS exposes the authenticated effective peer uid through getpeereid, not SO_PEERCRED.
+#[cfg(target_os = "macos")]
+pub fn peer_uid(stream: &UnixStream) -> Result<u32> {
+    use std::os::fd::AsRawFd;
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: the connected socket fd and both output pointers are valid for this call.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(untrusted(format!(
+            "cannot read peer credentials: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(uid)
 }
 
 /// Connect to a trusted endpoint and complete the handshake for `options.server_id`.

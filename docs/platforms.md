@@ -14,24 +14,27 @@ recorded in [native gates](native-gate-testing.md); do not read that historical 
 | Arch/other Linux, X11 (also Xwayland) | **Builds and starts; checked under Xwayland only** | The `x11` GPUI feature is enabled alongside `wayland` (one binary; the display server picks at run time). Launched with `WAYLAND_DISPLAY` unset on Xwayland: it renders correctly. A pure X11 session, other window managers, and IME/screen reader on X11 were not tried |
 | Other Wayland compositors (GNOME, KDE) | **Unverified** | Same Wayland code path as Hyprland, but portals (file picker), decorations, clipboard and IME were not tried on them |
 | Other Linux distributions | **Experimental; native install/runtime unqualified** | Generic installer mechanics passed in scratch prefixes, not a distribution desktop matrix. Native ABI and external libraries vary by artifact; the local app references GLIBC_2.44. Ubuntu 24.04 headless CI builds its own artifact and is not proof that the local binary runs there |
-| macOS | **Not supported** | See the blockers below |
+| macOS | **Experimental native build/port in progress; not supported** | `macos-build.yml` now targets a macOS 15 runner, with core/Unix transport/ownership tests, two scripted engine smoke checks and an experimental app archive. See [first-pass limits](macos-first-pass.md); an actual green run/native observation is required |
 | Windows | **Not supported** | See the blockers below |
 
-## What blocks macOS and Windows (from a read of the code; no cross build was attempted)
+## Cross-platform implementation and remaining boundaries
 
-- **Engine transport** (`crates/pi-client/src/unix.rs`): Unix-domain sockets with `SO_PEERCRED` peer
-  checks and owner-only directory modes. macOS has a close equivalent (`LOCAL_PEERCRED`); Windows needs a
-  named-pipe transport with an equivalent access check, which the plan requires before shipping.
-- **Engine lifecycle** (`crates/pipkin-app/src/adapters/pi/engine.rs`): finds the engine's processes by reading
-  `/proc` and signals them with `libc::kill` and process groups. Needs a per-OS process-ownership layer
-  (job objects on Windows, `proc_pidinfo` on macOS).
-- **Small `/proc` reads**: random UUIDs (`/proc/sys/kernel/random/uuid`) and RSS (`/proc/self/status`).
-- **Paths and launching** (`launch.rs`, `platform.rs`): XDG directories, `xdg-terminal-exec`, terminal and
-  editor discovery assume Linux conventions.
-- **GPUI platform features** are `wayland`/`x11` only; macOS and Windows backends exist in GPUI but were not
-  enabled or qualified.
-- **Packaging, signing and updates**: none for these systems (no signed/notarized app, no signed installer).
-- **Accessibility and IME** would need VoiceOver and Narrator/NVDA passes; none were done.
+- **GPUI already selects native backends** through `gpui_platform::application()` and target-specific
+  dependencies. Enabling Wayland/X11 features does not itself disable the macOS/Windows backends; the
+  previous claim here that these native backends were not enabled was incorrect.
+- **Engine transport** (`crates/pi-client/src/unix.rs`): Linux uses `SO_PEERCRED`; macOS now uses kernel
+  `getpeereid`, retaining owner-only directory/socket and server-id checks. Windows still needs an
+  authenticated transport on both the Rust client and pinned Pi server sides.
+- **Engine lifecycle** (`engine.rs`, `macos_processes.rs`): Linux retains `/proc` discovery; macOS uses
+  kernel uid/argument-environment inspection with exact environment identity. This must pass actual
+  runner tests before being considered working. Windows ownership remains unimplemented.
+- **Small `/proc` reads**: UUID reads have existing fallbacks, but RSS/performance instrumentation remains
+  Linux-oriented. Zero/missing readings on macOS are not memory-soak evidence.
+- **Paths and launching** (`launch.rs`, `platform.rs`): XDG directories and editor/terminal discovery still
+  assume Linux conventions. Explicit launch arguments and terminal startup are evaluation workarounds.
+- **Packaging, signing and updates**: the first macOS archive contains an experimental native `.app`,
+  notices and identity, but no engine, Developer ID signing or notarization. Windows has no artifact yet.
+- **Accessibility and IME** need actual VoiceOver and Narrator/NVDA checks; none are claimed.
 
 ## Engine compatibility and runtime requirements
 
@@ -39,7 +42,7 @@ Packages pair the app with the exact Pi revision in `packaging/pi-engine-revisio
 app database schema is **7**. An external server must satisfy the app's compatibility checks; arbitrary/latest
 Pi revisions are not promised compatible. Requalify any changed pair, and do not bypass a protocol/schema refusal.
 
-Runtime requirements include **Node >=22.19**, Git, a working Vulkan-capable graphics setup and desktop libraries
+For Linux packages, runtime requirements include **Node >=22.19**, Git, a working Vulkan-capable graphics setup and desktop libraries
 listed in [PKGBUILD](../packaging/PKGBUILD). The bundled engine is not a bundled system Node or GPU driver.
 Inspect the artifact's [native/runtime inventory](bundled-licenses.md#native-runtime-inspection) for direct ELF
 library/ABI references. It is not a complete static/dlopen dependency audit or portability guarantee. Optional

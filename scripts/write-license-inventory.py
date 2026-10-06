@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conservative Linux Rust graph + actual staged-engine notices. No legal-clearance claim."""
+"""Conservative target Rust graph + actual staged-engine notices. No legal-clearance claim."""
 import hashlib
 import json
 import os
@@ -11,6 +11,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 STAGE = Path(sys.argv[1]).resolve()
+RUST_TARGET = sys.argv[2] if len(sys.argv) > 2 else 'x86_64-unknown-linux-gnu'
+if not re.fullmatch(r'[a-zA-Z0-9_-]+', RUST_TARGET):
+    raise RuntimeError('invalid Rust target triple')
 ENGINE = STAGE / 'usr/lib/pipkin/engine'
 OUT = STAGE / 'usr/share/doc/pipkin/third-party'
 if OUT.exists():
@@ -80,7 +83,7 @@ def collect(ecosystem, name, version, declared, source, directory, inherited=Non
 
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--locked', '--offline', '--format-version', '1',
-     '--filter-platform', 'x86_64-unknown-linux-gnu'], cwd=ROOT))
+     '--filter-platform', RUST_TARGET], cwd=ROOT))
 packages = {p['id']: p for p in metadata['packages']}
 nodes = {n['id']: n for n in metadata['resolve']['nodes']}
 app = next(p['id'] for p in metadata['packages'] if p['name'] == 'pipkin-app')
@@ -150,12 +153,12 @@ def npm_modules(directory):
 
 
 npm_modules(ENGINE / 'node_modules')
-for workspace in sorted((ENGINE / 'packages').iterdir()):
+for workspace in sorted((ENGINE / 'packages').iterdir()) if (ENGINE / 'packages').is_dir() else []:
     if workspace.is_dir():
         npm_package(workspace, True)
 records.sort(key=lambda r: (r['ecosystem'], r['name'], r['version']))
 report = {'formatVersion': 1,
-          'scope': 'Linux normal/build reachable Rust graph (workspace feature unification may overinclude); actual staged npm/workspace roots',
+          'scope': f'{RUST_TARGET} normal/build reachable Rust graph (workspace feature unification may overinclude); actual staged npm/workspace roots',
           'limitations': 'Declared licenses and copied notices are evidence, not legal clearance. Ancestor notices and missing declarations need review; data/assets and external runtime libraries are separate.',
           'packages': records}
 (OUT / 'inventory.json').write_text(json.dumps(report, indent=2) + '\n')

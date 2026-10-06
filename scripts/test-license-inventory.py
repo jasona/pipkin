@@ -57,6 +57,15 @@ with tempfile.TemporaryDirectory() as temporary:
     with patch.object(sys, 'argv', [str(script), str(stage)]), patch('subprocess.check_output', return_value=json.dumps(metadata).encode()):
         runpy.run_path(str(script), run_name='__main__')
     assert not (output / 'stale.txt').exists()
+    # An unbundled macOS app still needs its target's Rust notices, without a fake npm tree.
+    mac_stage = root / 'mac-stage'
+    with patch.object(sys, 'argv', [str(script), str(mac_stage), 'aarch64-apple-darwin']), patch('subprocess.check_output', return_value=json.dumps(metadata).encode()) as cargo:
+        runpy.run_path(str(script), run_name='__main__')
+        assert cargo.call_args.args[0][-1] == 'aarch64-apple-darwin'
+    mac_report = json.loads((mac_stage / 'usr/share/doc/pipkin/third-party/inventory.json').read_text())
+    assert len(mac_report['packages']) == 1
+    assert mac_report['scope'].startswith('aarch64-apple-darwin ')
+    assert (mac_stage / 'usr/share/doc/pipkin/third-party/sources/pipkin-app-1/src/lib.rs').exists()
     (modules / 'escape').symlink_to(rust)
     with patch.object(sys, 'argv', [str(script), str(stage)]), patch('subprocess.check_output', return_value=json.dumps(metadata).encode()):
         try:

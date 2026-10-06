@@ -1,0 +1,92 @@
+name: Experimental macOS build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "3"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_BACKTRACE: "1"
+      # Short, non-symlinked paths stay within Darwin's Unix socket path limit.
+      TMPDIR: /private/tmp/pipkin-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare runner and pinned toolchain
+        run: |
+          mkdir -p "$TMPDIR" qualification-logs
+          chmod 700 "$TMPDIR"
+          toolchain=$(awk -F '"' '/^channel =/ {print $2}' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
+          uname -a > qualification-logs/runner.txt
+          rustc -vV > qualification-logs/rustc.txt
+          xcodebuild -version > qualification-logs/xcode.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.19.0"
+      - name: Provision a separate pinned engine on the disposable runner
+        run: |
+          brew install coreutils gnu-tar zstd
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          revision=$(<packaging/pi-engine-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          engine="$TMPDIR/pi-engine"
+          git init "$engine"
+          git -C "$engine" fetch --depth=1 https://github.com/jasona/pi.git "$revision"
+          git -C "$engine" checkout --detach FETCH_HEAD
+          (cd "$engine" && npm ci)
+          echo "PIPKIN_PI_REPO=$engine" >> "$GITHUB_ENV"
+      - name: Restore pinned model data
+        run: |
+          scripts/stage-model-data.sh "$PIPKIN_PI_REPO"
+          scripts/check-engine-source.sh "$PIPKIN_PI_REPO"
+      - name: Core, Unix transport and native ownership tests
+        run: |
+          set -o pipefail
+          cargo test -p pipkin-core -p pi-client --locked 2>&1 | tee qualification-logs/core-transport.log
+          cargo test -p pipkin-app --locked macos_processes -- --test-threads=1 2>&1 | tee qualification-logs/ownership.log
+          cargo fmt --all --check
+      - name: Build actual native app and retain dependency notices
+        run: |
+          set -o pipefail
+          cargo build -p pipkin-app --release --locked 2>&1 | tee qualification-logs/build.log
+          cargo test -p pipkin-app --release --locked the_engine_starts_serves_and_stops_without_leaving_processes -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/engine-lifecycle.log
+          cargo test -p pipkin-app --release --locked a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/engine-edit-history.log
+          target=$(rustc -vV | awk '/^host:/ {print $2}')
+          python3 scripts/write-license-inventory.py dist/macos-notices "$target" 2>&1 | tee qualification-logs/notices.log
+          python3 scripts/package-macos.py "$target" 2>&1 | tee qualification-logs/package.log
+          cp dist/macos/build-info.json qualification-logs/
+          cp dist/macos/SHA256SUMS qualification-logs/
+      - name: Retain experimental app (not signed/notarized or a release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipkin-macos-${{ runner.arch }}-${{ github.sha }}
+          path: dist/macos/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain build evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-build-evidence-${{ github.sha }}
+          path: qualification-logs/
+          if-no-files-found: warn
+          retention-days: 30

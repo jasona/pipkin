@@ -8,6 +8,14 @@ The owner reports heavy beta use, including building Pipkin itself and working o
 
 **Recommended initial release scope:** x86_64 Arch/Omarchy, Hyprland, Wayland. Confirm this scope before implementation. Other environments remain experimental or unsupported until separately qualified.
 
+## Owner-directed execution change (2026-10-06)
+
+The owner accepted the remaining layout/menu regression item without further qualification and changed the
+immediate priority to **a first macOS native CI build/port**, with Windows to follow only after the Mac build is
+reviewed. The intended next release is 1.0; no final version/tag/publication has occurred. The original checklist
+below remains the risk/evidence record, not a claim that waived or unobserved checks passed. See
+`docs/macos-first-pass.md` for experimental artifact boundaries and the live gate record for actual CI outcomes.
+
 ## Evidence and working rules
 
 Reference these documents and implementations, but verify their current state before changing code:
@@ -50,7 +58,8 @@ A v1.0 candidate must have:
 - Accurate support, compatibility, and limitation documentation.
 - Closed supported-platform native gates, or an explicit scope/acceptance decision for any unresolved gate. Documentation alone does not make a failed gate pass.
 
-Do not require Windows/macOS, automatic updates, an embedded editor/terminal, or additional agent features for this release.
+Original scope did not require Windows/macOS. The owner now prioritizes macOS CI/build work before the 1.0 cut;
+Windows follows Mac review. Automatic updates, an embedded editor/terminal and additional agent features remain out of scope.
 
 ---
 
@@ -114,7 +123,7 @@ working tree on 2026-10-06; see `docs/v1-release-gates.md` for identified code/a
 ### 1.4 Recent feature regression pass
 
 - [x] Verify fresh-conversation Changes state and restoration of older conversations. Automated real-engine and socket tests cover untouched-session behavior and reopen/switch restoration; manual visual verification on the final candidate remains part of Phase 4.
-- [ ] Verify pane resizing after window/display changes and menu placement in narrow/tall/short layouts.
+- [x] Pane/menu regression item accepted by the owner without further checks (2026-10-06). Existing automated geometry tests remain evidence; no new native window/display/layout observation is claimed.
 - [x] Verify effort selection remains engine-authoritative and conversation-specific. Core/adapter tests and `choosing_effort_is_confirmed_by_pi_and_restored_per_conversation` passed with development and packaged engines; native menu walkthrough remains in Phase 4.
 - [x] Verify project-scoped `@` completion: headless GPUI mouse/Tab, Ctrl-click URL dispatch, spaces/Unicode, undo/redo, project/scan-epoch guards, new/deleted paths and IME suppression/unmark tests pass; filesystem tests cover missing/permission-denied roots and excluded symlink traversal. Query-open rescans replace the stale one-time index. This closes automated behavior, not installed native mouse/IME/URI-handler qualification in Phase 4.
 - [x] Confirm `@` mention semantics are transparent: the first-run guide explicitly distinguishes inserted path references from file-content attachments. Native completion/IME qualification remains separate.
