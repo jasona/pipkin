@@ -42,6 +42,9 @@ pub struct ConversationState {
     pub pending_output: Option<(String, OutputUse)>,
     pub draft: Draft,
     pub changes: Vec<FileChange>,
+    pub changes_state: ChangesState,
+    /// Invalidates cached diff rows even when paths and addition/removal counts are unchanged.
+    pub changes_revision: u64,
     pub selected_change: Option<usize>,
     /// Reported by Pi for this conversation, not a global preference.
     pub thinking_level: Option<String>,
@@ -87,6 +90,8 @@ impl ConversationState {
             pending_output: None,
             draft: Draft::default(),
             changes: Vec::new(),
+            changes_state: ChangesState::Unscanned,
+            changes_revision: 0,
             selected_change: None,
             thinking_level: None,
             thinking_levels: Vec::new(),
@@ -349,6 +354,12 @@ impl AppState {
                 for c in &mut self.conversations {
                     c.ui_requests.clear();
                     c.ui_answering.clear();
+                    if c.changes_state == ChangesState::Loading {
+                        c.changes_state = ChangesState::Unavailable(
+                            "The engine connection was interrupted. Refresh when it reconnects."
+                                .into(),
+                        );
+                    }
                 }
             }
             out.notes.push(Note::Other);
@@ -425,6 +436,9 @@ impl AppState {
                 )
                 && ready,
             refresh_models: self.mode == Mode::Real && c.opened,
+            refresh_changes: self.mode == Mode::Real
+                && c.opened
+                && c.changes_state != ChangesState::Loading,
             retry_save: matches!(c.draft.save, SaveState::Failed(_)),
             open_in_editor: self.mode == Mode::Real
                 && self.current_project().is_some()
@@ -561,6 +575,9 @@ impl AppState {
                 // conversation attaches it again; the demo keeps what it already loaded.
                 if !c.opened || (real && prev != Some(id)) {
                     c.generation += 1;
+                    if real {
+                        c.changes_state = ChangesState::Unscanned;
+                    }
                     let generation = c.generation;
                     // Until the engine answers, a saved copy is better than an empty screen.
                     if real && !c.opened && c.items.is_empty() {
@@ -868,6 +885,18 @@ impl AppState {
             }
             Command::DismissStorageIssue => {
                 if self.storage_issue.take().is_some() {
+                    out.notes.push(Note::Other);
+                }
+            }
+            Command::RefreshChanges => {
+                if self.availability().refresh_changes {
+                    let c = self.conv_mut(self.selected.unwrap()).unwrap();
+                    c.changes_state = ChangesState::Loading;
+                    out.effects
+                        .push(Effect::Backend(BackendRequest::RefreshChanges {
+                            conversation: c.id,
+                            generation: c.generation,
+                        }));
                     out.notes.push(Note::Other);
                 }
             }
@@ -1474,6 +1503,7 @@ impl AppState {
                 | EventKind::Synced { .. }
                 | EventKind::OpenFailed { .. }
                 | EventKind::ChangesSynced(_)
+                | EventKind::ChangesScanState(_)
                 | EventKind::ThinkingState { .. }
                 | EventKind::QueueAdmitted { .. }
                 | EventKind::QueueRefused { .. }
@@ -1502,8 +1532,14 @@ impl AppState {
                 c.opened = true;
                 c.cached_at = None;
                 c.stale_reason = None;
-                c.selected_change = (!changes.is_empty()).then_some(0);
-                c.changes = changes;
+                // Pi attaches with an empty diff, then scans separately. Reattachment must
+                // not erase this conversation's last successful result if that scan fails.
+                if !real || !changes.is_empty() {
+                    c.selected_change = (!changes.is_empty()).then_some(0);
+                    c.changes = changes;
+                    c.changes_state = ChangesState::Ready;
+                    c.changes_revision += 1;
+                }
                 out.notes.push(Note::ItemsReset(id));
                 // A submission in doubt (restored from the journal, or cut off by a reconnect)
                 // is resolved by asking the engine about its key; that never sends anything.
@@ -1760,17 +1796,33 @@ impl AppState {
                     out.notes.push(Note::Other);
                 }
             }
+            EventKind::ChangesScanState(state) => {
+                if c.opened {
+                    if state == ChangesState::NotARepository {
+                        c.changes.clear();
+                        c.selected_change = None;
+                        c.changes_revision += 1;
+                    }
+                    c.changes_state = state;
+                    out.notes.push(Note::Other);
+                }
+            }
             EventKind::ChangesSynced(changes) => {
                 if c.opened {
+                    c.changes_state = ChangesState::Ready;
+                    c.changes_revision += 1;
                     c.selected_change = c
                         .selected_change
-                        .filter(|i| *i < changes.len())
+                        .and_then(|i| c.changes.get(i))
+                        .and_then(|previous| changes.iter().position(|f| f.path == previous.path))
                         .or((!changes.is_empty()).then_some(0));
                     c.changes = changes;
                     out.notes.push(Note::Other);
                 }
             }
             EventKind::ChangesReported(changes) => {
+                c.changes_state = ChangesState::Ready;
+                c.changes_revision += 1;
                 c.selected_change = c
                     .selected_change
                     .filter(|i| *i < changes.len())

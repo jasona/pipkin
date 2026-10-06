@@ -16,7 +16,7 @@ impl Workspace {
             let s = self.state(cx);
             s.current().and_then(|c| {
                 c.selected_change
-                    .and_then(|i| c.changes.get(i).map(|f| (c.id, i, f.added, f.removed)))
+                    .and_then(|i| c.changes.get(i).map(|_| (c.id, i, c.changes_revision)))
             })
         };
         if self.diff_rows.key == key {
@@ -60,7 +60,7 @@ impl Workspace {
         let t = cx.theme().clone();
         let c = &t.colors;
         let demo = self.state(cx).mode == Mode::Demo;
-        let (changes, selected) = {
+        let (changes, selected, scan_state) = {
             let s = self.state(cx);
             match s.current() {
                 Some(cv) => (
@@ -69,19 +69,30 @@ impl Workspace {
                         .map(|f| (f.path.clone(), f.added, f.removed, change_letter(f)))
                         .collect::<Vec<_>>(),
                     cv.selected_change,
+                    cv.changes_state.clone(),
                 ),
-                None => (vec![], None),
+                None => (vec![], None, ChangesState::Unscanned),
             }
         };
         let this = cx.entity();
         let temp = self.temp_panel == Some(Panel::Inspector);
         let avail = self.state(cx).availability();
         let launch_buttons = (!demo).then(|| {
-            let (editor_this, terminal_this) = (this.clone(), this.clone());
+            let (editor_this, terminal_this, refresh_this) =
+                (this.clone(), this.clone(), this.clone());
             div()
                 .flex()
                 .items_center()
                 .gap(px(2.0))
+                .child(
+                    Btn::new("refresh-changes")
+                        .icon("refresh-cw")
+                        .aria("Refresh workspace changes")
+                        .disabled(!avail.refresh_changes)
+                        .on_click(move |_, cx| {
+                            refresh_this.update(cx, |t, cx| t.dispatch(Command::RefreshChanges, cx))
+                        }),
+                )
                 .child(
                     Btn::new("open-in-editor")
                         .icon("file-text")
@@ -145,7 +156,55 @@ impl Workspace {
                 )
             });
 
-        let body: gpui::AnyElement = if changes.is_empty() {
+        let status = changes_status(&scan_state, !changes.is_empty());
+        let banner = (!demo)
+            .then_some(status.as_ref())
+            .flatten()
+            .map(|(title, detail)| {
+                let this = this.clone();
+                let failed = matches!(scan_state, ChangesState::Unavailable(_));
+                div()
+                    .id("changes-scan-status")
+                    .role(if failed { Role::Alert } else { Role::Status })
+                    .aria_label(format!("{title}. {detail}"))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .p(px(12.0))
+                    .border_b_1()
+                    .border_color(c.border)
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(if failed { c.warning } else { c.text_muted })
+                            .child(*title),
+                    )
+                    .child(
+                        div()
+                            .id("changes-scan-detail")
+                            .text_size(t.small_size())
+                            .text_color(c.text_muted)
+                            .max_h(px(100.0 * t.scale))
+                            .overflow_y_scroll()
+                            .child(detail.clone()),
+                    )
+                    .when(failed, |d| {
+                        d.child(
+                            Btn::new("retry-changes")
+                                .label("Retry scan")
+                                .aria("Retry workspace changes scan")
+                                .disabled(!avail.refresh_changes)
+                                .on_click(move |_, cx| {
+                                    this.update(cx, |t, cx| t.dispatch(Command::RefreshChanges, cx))
+                                }),
+                        )
+                    })
+            });
+        let body: gpui::AnyElement = if changes.is_empty() && !demo && status.is_some() {
+            // Progress, failure and a non-Git folder are not a successful empty scan.
+            div().flex_1().into_any_element()
+        } else if changes.is_empty() {
             div()
                 .flex_1()
                 .flex()
@@ -165,7 +224,11 @@ impl Workspace {
                     div()
                         .text_size(t.small_size())
                         .text_color(c.text_faint)
-                        .child("Files Pi edits in this conversation appear here with their diffs."),
+                        .child(if demo {
+                            "Simulated file edits appear here with their diffs."
+                        } else {
+                            "Changes in this project appear here after Pi starts working, or when you refresh."
+                        }),
                 )
                 .into_any_element()
         } else {
@@ -291,6 +354,7 @@ impl Workspace {
             .size_full()
             .bg(c.bg_changes)
             .child(header)
+            .children(banner)
             .child(body)
     }
 
@@ -425,6 +489,30 @@ impl Workspace {
 
 /// The one-letter kind shown beside a changed file: A for a new file, D for a removed one,
 /// M for anything else. Inferred from the diff, which carries no explicit status.
+fn changes_status(state: &ChangesState, has_changes: bool) -> Option<(&'static str, String)> {
+    let previous = if has_changes {
+        "Showing the last successful scan. These changes may be out of date."
+    } else {
+        "No current diff is available."
+    };
+    match state {
+        ChangesState::Unavailable(reason) => Some((
+            "Changes unavailable",
+            format!("{reason}\n{previous} Fix the problem, then retry the scan."),
+        )),
+        ChangesState::Loading => Some(("Refreshing changes…", previous.into())),
+        ChangesState::NotARepository => Some((
+            "Not a Git repository",
+            "Workspace diffs require a Git repository. You can still work with Pi in this folder."
+                .into(),
+        )),
+        ChangesState::Unscanned if has_changes => {
+            Some(("Changes awaiting refresh", previous.into()))
+        }
+        ChangesState::Unscanned | ChangesState::Ready => None,
+    }
+}
+
 fn change_letter(f: &FileChange) -> char {
     let lines = || f.hunks.iter().flat_map(|h| h.lines.iter());
     let any = lines().next().is_some();
@@ -460,6 +548,35 @@ mod tests {
                 lines: kinds.iter().map(|k| line(*k)).collect(),
             }],
         }
+    }
+
+    #[test]
+    fn scan_copy_distinguishes_failure_progress_non_git_and_empty_success() {
+        assert!(changes_status(&ChangesState::Ready, false).is_none());
+        assert!(changes_status(&ChangesState::Unscanned, false).is_none());
+        let (title, detail) =
+            changes_status(&ChangesState::Unavailable("git missing".into()), true).unwrap();
+        assert_eq!(title, "Changes unavailable");
+        assert!(detail.contains("git missing"));
+        assert!(detail.contains("out of date"));
+        assert!(detail.contains("retry"));
+        let (_, detail) = changes_status(
+            &ChangesState::Unavailable("permission denied".into()),
+            false,
+        )
+        .unwrap();
+        assert!(detail.contains("No current diff"));
+        assert!(!detail.contains("Showing the last"));
+        assert_eq!(
+            changes_status(&ChangesState::Loading, false).unwrap().0,
+            "Refreshing changes…"
+        );
+        assert_eq!(
+            changes_status(&ChangesState::NotARepository, false)
+                .unwrap()
+                .0,
+            "Not a Git repository"
+        );
     }
 
     #[test]

@@ -95,13 +95,14 @@ Current finding: `Command::RenameConversation` is a no-op in real mode in `crate
 
 ### 1.2 Changes-pane scan failures
 
-Current finding: the Pi adapter maps `Workspace::Unavailable` to an empty changes list.
+Initial finding: the Pi adapter mapped `Workspace::Unavailable` to an empty changes list. Addressed in the
+working tree on 2026-10-06; see `docs/v1-release-gates.md` for identified code/artifact and evidence boundaries.
 
-- [ ] Represent loading, stale, unavailable, and genuinely empty states distinctly.
-- [ ] Preserve the previous successful diff as stale when a refresh fails.
-- [ ] Surface the failure reason and provide a bounded retry/refresh path.
-- [ ] Clear previous-project data on project/conversation changes; never preserve another project's diff as the new project's state.
-- [ ] Test Git failure, missing project directory, non-Git project, and recovery.
+- [x] Represent loading, stale, unavailable, and genuinely empty states distinctly.
+- [x] Preserve the previous successful diff as stale when a refresh fails.
+- [x] Surface the failure reason and provide a bounded retry/refresh path.
+- [x] Clear previous-project data from the selected inspector on project/conversation changes; never preserve another project's diff as the new project's state. Snapshots remain per conversation, with generation/current-session guards.
+- [x] Test Git failure, missing project directory, non-Git project, and recovery. Core/mock-engine tests, real-engine regression, packaged-engine suite, and native AT-SPI failure/stale/recovery observation passed.
 
 ### 1.3 Interrupted work and unresolved operations
 
@@ -112,7 +113,7 @@ Current finding: the Pi adapter maps `Workspace::Unavailable` to an empty change
 
 ### 1.4 Recent feature regression pass
 
-- [ ] Verify fresh-conversation Changes state and restoration of older conversations.
+- [x] Verify fresh-conversation Changes state and restoration of older conversations. Automated real-engine and socket tests cover untouched-session behavior and reopen/switch restoration; manual visual verification on the final candidate remains part of Phase 4.
 - [ ] Verify pane resizing after window/display changes and menu placement in narrow/tall/short layouts.
 - [ ] Verify effort selection remains engine-authoritative and conversation-specific.
 - [ ] Verify project-scoped `@` completion: mouse/Tab selection, linked paths, spaces/Unicode, undo/redo, project switches, inaccessible/deleted/new files, and no completion during IME composition.

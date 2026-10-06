@@ -61,6 +61,73 @@ Post-fix validation: **506 workspace tests passed (36 ignored)**, Clippy and for
 working-tree change on top of the identified baseline above, not a rebuilt/requalified release artifact.
 The toast/disabled palette state has not yet been walked in the native installed UI.
 
+## Changes scan hardening (2026-10-06)
+
+Implemented on top of **`4a6e633ad82a00d1225ff3dc4dede33cc830fed9`**, as an uncommitted working-tree delta.
+Engine remains **`d4c871ef75bea57f43518e5e554c5a4765173a0b`**, tracked working tree clean at recheck.
+Database schema remains 7. Source delta identifier (`git diff --binary -- crates/ | sha256sum`):
+`93e1662b58fa90d35813f530a9fa78a4771467113ce05ba68ee016b7b72b56ce`.
+This identifies the tested delta, not a clean release revision.
+
+Behavior:
+
+- Fresh untouched conversations still begin with the calm empty inspector; automatic scanning waits for work.
+- Loading, a successful empty scan, unavailable scans, stale retained diffs, and non-Git folders are distinct.
+- Failed scans expose the reason and retain only that conversation's last successful diff, explicitly marked out of date.
+- Inspector refresh, failure-state Retry scan, and the palette's Refresh workspace changes share core availability.
+  Explicit refresh can scan an untouched session, is read-only, and cannot stack duplicate client requests.
+- Backend scanning remains off the UI thread, single-flight with one coalesced follow-up; generation/current-session
+  guards prevent an old attachment's result from appearing as another project's state.
+- Reattachment does not erase the previous diff before a successful scan. Refresh preserves selected paths rather
+  than an obsolete row index. A scan revision invalidates cached diff text even when line counts stay the same.
+- Missing Git/failed process launch is no longer classified as a non-Git folder.
+
+### Automated evidence
+
+- **511 workspace tests passed, 37 ignored**; Clippy/fmt clean.
+- **34 e2e suite tests passed** against the development engine, serial; the new regression confirms that a
+  missing project does not erase its diff, retry updates it, a non-Git folder is explicit, and scans send no prompt.
+- Rebuilt package; `verify-install.sh --full` passed with **34 e2e suite tests against the unpacked engine**.
+  `test-install.sh` passed all 12 scratch-prefix checks again.
+- Targeted socket/mock-engine tests also cover malformed Git config, missing directory, non-Git folders,
+  untouched-session behavior, repair/retry, routing, and no submit/steer/stop side effects.
+- Core/UI-copy tests cover generation and project isolation, stale snapshot preservation, offline/interrupted
+  refresh, duplicate retry suppression, equal-count diff cache invalidation, selected-path preservation, and
+  distinct empty/progress/failure/non-Git wording.
+
+Suite counts include the opt-in profile-seeding helper, which returns without seeding when `PIPKIN_SEED_ROOT`
+is unset; they are not claims of 34 distinct engine scenarios. Seeding was separately executed for the native check.
+
+Rebuilt `pipkin-0.0.1-x86_64.tar.zst`: **89,133,924 bytes**; SHA-256:
+
+```text
+0bcf98585fb27d9d805cc0fea100a089519c97a86daa43902dcfb41f711a35d0  pipkin-0.0.1-x86_64.tar.zst
+```
+
+This replaced the local `dist` baseline tarball. Both recorded checksums describe their respective builds;
+this artifact is still unsigned, version 0.0.1, and not a release candidate or a clean-system desktop pass.
+
+### Observed native evidence (not a screen-reader speech or visual-matrix pass)
+
+Launched the current release binary with a disposable seeded profile/project on the existing Hyprland/Wayland
+session. All keyboard input used `scripts/guard.sh` pinned to that launched PID, with an isolated guard-state file.
+Read the launched process's AT-SPI tree and recorded:
+
+1. Malformed project Git config: “Changes unavailable,” the actual Git error, “No current diff is available,”
+   and an accessible Retry workspace changes scan button.
+2. Restored config and guarded palette refresh: `notes.txt, 1 added, 0 removed`, with the failure banner absent.
+3. Failed another scan: explicit “Showing the last successful scan … out of date” plus the same selected diff/file.
+4. Restored config, requested refresh, and quit; the launched application and owned engine exited.
+
+No prompt was sent in this native walkthrough. The user's profile/configuration was not modified. AT-SPI initially
+showed an unnamed status container; the same bounded check found and corrected its accessible label before the
+final observation above. Actual Orca speech, visual contrast/layout, mouse activation of Retry, and the broader
+native gates remain unverified here.
+
+Temporary logs: `/tmp/pipkin-changes-{workspace,clippy,e2e,package,verify-install,installer,seed}.log`.
+Native tree captures remain under the disposable `/tmp/pk-changes-JzYiFq/` profile. They are local/temporary;
+this summary is the durable gate evidence. Future CI/candidate runs must retain fresh evidence.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -71,7 +138,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Test/package baseline | 0 | Passed (automated), identified above | Engineering reruns after code/candidate changes |
 | Daily-use beta | 0 | Owner-reported | Owner supplies dates/incidents if available; do not invent metrics |
 | Real-mode rename | 1 | Addressed in working tree: palette disabled, F2 explains; automated regression passed | Native installed walkthrough remains; authoritative rename is not advertised |
-| Changes scan failure | 1 | Open: unavailable result becomes empty changes | Engineering retain stale result and expose failure/retry |
+| Changes scan failure | 1 | Addressed in working tree: automated/core/real-engine/package checks passed; native AT-SPI failure/stale/recovery observed | Broader native visual/Orca/mouse checks remain open; repeat on the final candidate |
 | Interrupted tools/unresolved operations | 1 | Open | Engineering audit recovery messaging and safe reconciliation actions; no blind replay |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
 | Pinned clean engine build and manifest | 2 | Open: baseline identified, build still uses adjacent checkout | Engineering pin full revision, verify clean/generated inputs, and reject unidentified release sources |
@@ -95,9 +162,8 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 
 ## Immediate execution queue
 
-1. Make unavailable Changes scans explicit and preserve the correct project's stale result.
-2. Audit interrupted-tool and unresolved-stop messaging/recovery.
-3. Establish the pinned clean release engine and CI so subsequent fixes are qualified against a repeatable build.
-4. Schedule owner-run clean-install and native gates while onboarding/support work proceeds.
+1. Audit interrupted-tool and unresolved-stop messaging/recovery.
+2. Establish the pinned clean release engine and CI so subsequent fixes are qualified against a repeatable build.
+3. Schedule owner-run clean-install and native gates while onboarding/support work proceeds.
 
 For step details and exit criteria, use the sequenced plan. `docs/native-gate-testing.md` remains the manual procedure reference; unrecorded owner use must not be assumed to have passed a particular gate.

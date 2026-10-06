@@ -28,9 +28,9 @@ use pi_client::protocol::{
     ClientMessage, ServerMessage, parse_client_message, parse_server_message,
 };
 use pipkin_core::{
-    AppState, Backend, BackendEvent, Bootstrap, Command, Connection, ConversationId, Delivery,
-    Effect, ItemKind, LifecycleEvent, Mode, Outcome, QueueMode, RequestId, RunState, ToolStatus,
-    describe_attachment,
+    AppState, Backend, BackendEvent, Bootstrap, ChangesState, Command, Connection, ConversationId,
+    Delivery, Effect, ItemKind, LifecycleEvent, Mode, Outcome, QueueMode, RequestId, RunState,
+    ToolStatus, describe_attachment,
 };
 use serde_json::{Value, json};
 
@@ -602,6 +602,60 @@ fn the_engine_starts_serves_and_stops_without_leaving_processes() {
     );
     assert!(!handshake(&dir, &id), "nothing should answer after stop");
     fx.host.stop(); // stopping twice is harmless
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn workspace_scan_failure_keeps_the_last_diff_and_retry_recovers_without_a_prompt() {
+    let fx = Fixture::start(nothing);
+    init_project(&fx.project);
+    let mut h = Harness::start(
+        direct_config(&fx.server_dir, &fx.server_id),
+        &fx.root.join("app.sqlite3"),
+    );
+    h.open_new_conversation(&fx.project);
+    assert!(h.state.current().unwrap().changes.is_empty());
+    std::fs::write(fx.project.join("notes.txt"), "one\ntwo\n").unwrap();
+    h.dispatch(Command::RefreshChanges);
+    h.until("a successful project scan", |s| {
+        s.current()
+            .is_some_and(|c| c.changes_state == ChangesState::Ready && c.changes.len() == 1)
+    });
+    let snapshot = h.state.current().unwrap().changes.clone();
+    let selection = h.state.current().unwrap().selected_change;
+    let moved = fx.root.join("moved-project");
+    std::fs::rename(&fx.project, &moved).unwrap();
+    h.dispatch(Command::RefreshChanges);
+    h.until("the scan reports the missing project", |s| {
+        s.current()
+            .is_some_and(|c| matches!(c.changes_state, ChangesState::Unavailable(_)))
+    });
+    assert_eq!(h.state.current().unwrap().changes, snapshot);
+    assert_eq!(h.state.current().unwrap().selected_change, selection);
+    assert!(h.state.availability().refresh_changes);
+
+    std::fs::rename(&moved, &fx.project).unwrap();
+    std::fs::write(fx.project.join("notes.txt"), "one\nnew\n").unwrap();
+    h.dispatch(Command::RefreshChanges);
+    h.until("retry refreshes the diff", |s| {
+        s.current()
+            .is_some_and(|c| c.changes_state == ChangesState::Ready && c.changes != snapshot)
+    });
+    assert_eq!(
+        h.state.current().unwrap().changes[0].added,
+        snapshot[0].added
+    );
+    std::fs::rename(fx.project.join(".git"), fx.root.join("saved-git")).unwrap();
+    h.dispatch(Command::RefreshChanges);
+    h.until("the non-Git folder is explicit", |s| {
+        s.current()
+            .is_some_and(|c| c.changes_state == ChangesState::NotARepository)
+    });
+    assert!(h.state.current().unwrap().changes.is_empty());
+    assert!(
+        fx.provider.requests().is_empty(),
+        "scanning must not send a prompt"
+    );
 }
 
 /// M2's exit criterion, first half: in a temporary project a real engine with a scripted

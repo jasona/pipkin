@@ -442,6 +442,7 @@ impl Worker {
             BackendRequest::Queue { .. }
             | BackendRequest::CancelQueued { .. }
             | BackendRequest::RefreshModels { .. }
+            | BackendRequest::RefreshChanges { .. }
             | BackendRequest::FetchToolOutput { .. }
             | BackendRequest::UiRespond { .. }
             | BackendRequest::UiCancel { .. } => {}

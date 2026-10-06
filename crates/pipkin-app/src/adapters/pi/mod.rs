@@ -39,9 +39,9 @@ use pi_client::client::{Client, ClientEvent, ClientOptions, Subscription};
 use pi_client::protocol::RpcTarget;
 use pi_client::unix::{self, ServerRoute};
 use pipkin_core::{
-    Attachment, Backend, BackendEvent, BackendRequest, CancelOutcome, Connection, ConversationId,
-    EventKind, ItemId, LifecycleEvent, LifecycleSink, ModelInfo, OperationId, QueueId, QueueMode,
-    RequestId, UiAnswer,
+    Attachment, Backend, BackendEvent, BackendRequest, CancelOutcome, ChangesState, Connection,
+    ConversationId, EventKind, ItemId, LifecycleEvent, LifecycleSink, ModelInfo, OperationId,
+    QueueId, QueueMode, RequestId, UiAnswer,
 };
 use serde_json::{Value, json};
 
@@ -404,6 +404,14 @@ impl Worker {
             | BackendRequest::RefreshModels { .. }
             | BackendRequest::UiRespond { .. }
             | BackendRequest::UiCancel { .. } => self.notice(OFFLINE.into()),
+            BackendRequest::RefreshChanges {
+                conversation,
+                generation,
+            } => self.emit(
+                conversation,
+                generation,
+                EventKind::ChangesScanState(ChangesState::Unavailable(OFFLINE.into())),
+            ),
             BackendRequest::FetchToolOutput {
                 conversation,
                 generation,
@@ -821,6 +829,28 @@ impl Live {
             } => self.cancel_queued(worker, conversation, generation, entry),
             BackendRequest::RefreshModels { conversation, .. } => {
                 self.refresh_models(worker, conversation)
+            }
+            BackendRequest::RefreshChanges {
+                conversation,
+                generation,
+            } => {
+                if let Some(current) = self.current.as_mut()
+                    && current.conversation == conversation
+                    && current.generation == generation
+                {
+                    // An explicit refresh may scan even an untouched session. Automatic scans
+                    // still wait until work starts so a fresh conversation keeps its calm state.
+                    current.workspace_ready = true;
+                    self.schedule_changes(worker);
+                } else {
+                    worker.emit(
+                        conversation,
+                        generation,
+                        EventKind::ChangesScanState(ChangesState::Unavailable(
+                            "The conversation is no longer attached.".into(),
+                        )),
+                    );
+                }
             }
             BackendRequest::Cancel {
                 conversation, op, ..
@@ -1526,6 +1556,13 @@ impl Live {
             return;
         }
         let Some(cwd) = current.cwd.clone() else {
+            worker.emit(
+                current.conversation,
+                current.generation,
+                EventKind::ChangesScanState(ChangesState::Unavailable(
+                    "The engine did not report a project folder.".into(),
+                )),
+            );
             return;
         };
         if self.scanning {
@@ -1534,6 +1571,11 @@ impl Live {
         }
         self.scanning = true;
         let (conversation, generation) = (current.conversation, current.generation);
+        worker.emit(
+            conversation,
+            generation,
+            EventKind::ChangesScanState(ChangesState::Loading),
+        );
         let tx = worker.tx.clone();
         thread::spawn(move || {
             let workspace = workspace::collect(Path::new(&cwd));
@@ -1559,15 +1601,17 @@ impl Live {
             .as_ref()
             .is_some_and(|c| c.conversation == conversation && c.generation == generation);
         if still_open {
-            let files = match workspace {
-                Workspace::Changes { files, .. } => files,
-                Workspace::NotARepository => vec![],
+            let kind = match workspace {
+                Workspace::Changes { files, .. } => EventKind::ChangesSynced(files),
+                Workspace::NotARepository => {
+                    EventKind::ChangesScanState(ChangesState::NotARepository)
+                }
                 Workspace::Unavailable(reason) => {
                     log::warn!("workspace changes unavailable: {reason}");
-                    vec![]
+                    EventKind::ChangesScanState(ChangesState::Unavailable(reason))
                 }
             };
-            worker.emit(conversation, generation, EventKind::ChangesSynced(files));
+            worker.emit(conversation, generation, kind);
         }
         if std::mem::take(&mut self.rescan) {
             self.schedule_changes(worker);

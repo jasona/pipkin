@@ -1134,6 +1134,183 @@ fn workspace_changes_sync_independently_of_any_run() {
     assert_eq!(s.current().unwrap().selected_change, None);
 }
 
+fn scan_event(s: &AppState, kind: EventKind) -> BackendEvent {
+    BackendEvent {
+        op: None,
+        ..ev(s, kind)
+    }
+}
+
+fn scanned_change(path: &str) -> FileChange {
+    FileChange {
+        path: path.into(),
+        added: 1,
+        removed: 0,
+        hunks: vec![],
+    }
+}
+
+#[test]
+fn failed_scans_preserve_the_last_diff_and_retry_is_read_only_and_single_flight() {
+    let mut s = state();
+    s.mode = Mode::Real;
+    assert!(!s.availability().refresh_changes);
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesScanState(ChangesState::Unavailable("early".into())),
+    ));
+    assert_eq!(s.current().unwrap().changes_state, ChangesState::Unscanned);
+    s.apply_event(scan_event(
+        &s,
+        EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    ));
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesSynced(vec![scanned_change("a.rs")]),
+    ));
+    let rev = s.current().unwrap().changes_revision;
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesScanState(ChangesState::Unavailable("git missing".into())),
+    ));
+    assert_eq!(s.current().unwrap().changes[0].path, "a.rs");
+    assert_eq!(s.current().unwrap().selected_change, Some(0));
+    assert_eq!(s.current().unwrap().changes_revision, rev);
+    assert!(s.availability().refresh_changes);
+    // Refresh remains available in a read-only build, but cannot overlap its own request.
+    s.read_only = Some("read-only build".into());
+    let out = s.dispatch(Command::RefreshChanges);
+    assert!(matches!(
+        out.effects.as_slice(),
+        [Effect::Backend(BackendRequest::RefreshChanges { .. })]
+    ));
+    assert_eq!(s.current().unwrap().changes_state, ChangesState::Loading);
+    assert!(!s.availability().refresh_changes);
+    assert!(s.dispatch(Command::RefreshChanges).effects.is_empty());
+    s.set_connection(Connection::Reconnecting);
+    assert!(matches!(
+        s.current().unwrap().changes_state,
+        ChangesState::Unavailable(_)
+    ));
+    assert!(!s.availability().refresh_changes);
+    assert!(s.dispatch(Command::RefreshChanges).effects.is_empty());
+    s.set_connection(Connection::Ready);
+    assert!(s.availability().refresh_changes);
+    s.dispatch(Command::RefreshChanges);
+    s.apply_event(scan_event(&s, EventKind::ChangesSynced(vec![])));
+    assert_eq!(s.current().unwrap().changes_state, ChangesState::Ready);
+    assert!(s.current().unwrap().changes.is_empty());
+    assert_eq!(s.current().unwrap().selected_change, None);
+    assert!(s.current().unwrap().changes_revision > rev);
+}
+
+#[test]
+fn scan_state_is_conversation_scoped_and_stale_generations_are_ignored() {
+    let mut s = state();
+    s.mode = Mode::Real;
+    let opened = || EventKind::Opened {
+        items: vec![],
+        has_older: false,
+        changes: vec![],
+    };
+    s.apply_event(scan_event(&s, opened()));
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesSynced(vec![scanned_change("project-a.rs")]),
+    ));
+    let late = scan_event(
+        &s,
+        EventKind::ChangesScanState(ChangesState::Unavailable("old scan".into())),
+    );
+    s.projects.push(Project {
+        id: ProjectId(2),
+        name: "other".into(),
+        path: "/other".into(),
+    });
+    s.conversations[1].project = ProjectId(2);
+    s.dispatch(Command::SelectConversation(ConversationId(2)));
+    s.apply_event(scan_event(&s, opened()));
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesSynced(vec![scanned_change("project-b.rs")]),
+    ));
+    s.apply_event(late.clone());
+    assert_eq!(s.current().unwrap().changes_state, ChangesState::Ready);
+    assert_eq!(s.current().unwrap().changes[0].path, "project-b.rs");
+    s.dispatch(Command::SelectConversation(ConversationId(1)));
+    assert_eq!(s.current().unwrap().changes_state, ChangesState::Unscanned);
+    s.apply_event(scan_event(&s, opened()));
+    // Reattaching Pi's empty initial diff must preserve this conversation's stale snapshot.
+    assert_eq!(s.current().unwrap().changes[0].path, "project-a.rs");
+    s.apply_event(late);
+    assert_eq!(s.current().unwrap().changes_state, ChangesState::Unscanned);
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesScanState(ChangesState::NotARepository),
+    ));
+    assert!(s.current().unwrap().changes.is_empty());
+    assert_eq!(s.current().unwrap().selected_change, None);
+    assert_eq!(
+        s.current().unwrap().changes_state,
+        ChangesState::NotARepository
+    );
+}
+
+#[test]
+fn equal_size_diff_updates_still_invalidate_cached_rows() {
+    let mut s = state();
+    s.apply_event(ev(
+        &s,
+        EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    ));
+    let change = |text: &str| FileChange {
+        hunks: vec![Hunk {
+            header: "@@".into(),
+            lines: vec![DiffLine {
+                kind: DiffKind::Add,
+                old_no: None,
+                new_no: Some(1),
+                text: text.into(),
+            }],
+        }],
+        ..scanned_change("same.rs")
+    };
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesSynced(vec![change("first")]),
+    ));
+    let revision = s.current().unwrap().changes_revision;
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesSynced(vec![change("second")]),
+    ));
+    assert!(s.current().unwrap().changes_revision > revision);
+    assert_eq!(
+        s.current().unwrap().changes[0].hunks[0].lines[0].text,
+        "second"
+    );
+    s.apply_event(scan_event(
+        &s,
+        EventKind::ChangesSynced(vec![scanned_change("new-first.rs"), change("third")]),
+    ));
+    assert_eq!(
+        s.current().unwrap().selected_change,
+        Some(1),
+        "preserve the selected path, not its old index"
+    );
+    s.mode = Mode::Demo;
+    assert!(!s.availability().refresh_changes);
+    assert!(s.dispatch(Command::RefreshChanges).effects.is_empty());
+}
+
 #[test]
 fn check_status_carries_the_journaled_request_key() {
     let mut s = state();

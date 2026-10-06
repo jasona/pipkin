@@ -115,6 +115,13 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(CancelRun)),
         ),
         cmd(
+            "Refresh workspace changes",
+            "Changes",
+            None,
+            a.refresh_changes,
+            Run::Dispatch(Command::RefreshChanges),
+        ),
+        cmd(
             "Refresh models",
             "Composer",
             None,

@@ -104,7 +104,6 @@ pub fn collect(dir: &Path) -> Workspace {
         Ok((out, _)) if out.starts_with(b"true") => {}
         Ok(_) => return Workspace::NotARepository,
         Err(e) if e.contains("not a git repository") => return Workspace::NotARepository,
-        Err(e) if e.contains("cannot run git") => return Workspace::NotARepository,
         Err(e) => return Workspace::Unavailable(e),
     }
     let base = if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"], 64).is_ok() {
@@ -625,10 +624,10 @@ mod tests {
     fn a_directory_that_is_not_a_repository_is_said_so() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(collect(dir.path()), Workspace::NotARepository);
-        assert_eq!(
-            collect(&dir.path().join("missing")).clone(),
-            collect(&dir.path().join("missing"))
-        );
+        assert!(matches!(
+            collect(&dir.path().join("missing")),
+            Workspace::Unavailable(_)
+        ));
     }
 
     #[test]

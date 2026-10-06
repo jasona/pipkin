@@ -115,6 +115,18 @@ pub struct FileChange {
     pub hunks: Vec<Hunk>,
 }
 
+/// Whether the workspace diff is current. A failed/in-flight scan keeps the last successful
+/// result in memory, but it must not be presented as a current empty or clean workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ChangesState {
+    #[default]
+    Unscanned,
+    Loading,
+    Ready,
+    NotARepository,
+    Unavailable(String),
+}
+
 /// How queued input joins a run: steering lands at the next boundary inside the run, a
 /// follow-up waits for the run to finish.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

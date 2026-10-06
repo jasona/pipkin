@@ -175,7 +175,7 @@ pub struct Workspace {
 
 #[derive(Default)]
 pub struct DiffRows {
-    pub key: Option<(ConversationId, usize, u32, u32)>,
+    pub key: Option<(ConversationId, usize, u64)>,
     pub rows: Vec<(u32, u32)>,
     pub widest: usize,
     pub change: Option<std::rc::Rc<FileChange>>,

@@ -24,6 +24,7 @@ pub enum Command {
     DismissStorageIssue,
     /// Ask the engine to re-read its provider credentials and model catalogue.
     RefreshModels,
+    RefreshChanges,
     /// Save the current draft again after a failed save.
     RetrySave,
 
@@ -85,6 +86,7 @@ pub struct Availability {
     pub queue: bool,
     pub cancel: bool,
     pub refresh_models: bool,
+    pub refresh_changes: bool,
     pub retry_save: bool,
     pub open_in_editor: bool,
     pub open_terminal: bool,
@@ -138,6 +140,11 @@ pub enum BackendRequest {
     },
     /// Re-read the engine's credentials and model catalogue.
     RefreshModels {
+        conversation: ConversationId,
+        generation: u64,
+    },
+    /// Re-scan the open conversation's project without sending any input to the engine.
+    RefreshChanges {
         conversation: ConversationId,
         generation: u64,
     },
@@ -250,6 +257,8 @@ pub enum EventKind {
     ChangesReported(Vec<FileChange>),
     /// The workspace's current changes, independent of any run. Replaces what is shown.
     ChangesSynced(Vec<FileChange>),
+    /// Progress or failure of a project scan; failure does not erase the last successful diff.
+    ChangesScanState(ChangesState),
     /// Pi's authoritative, per-conversation thinking setting and supported levels.
     ThinkingState {
         level: String,

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use pi_client::delta::{Op, Seg};
 use pi_client::testing::{ConnHandle, MockPi, SERVER_ID, install_session_management};
 use pipkin_core::{
-    Backend, BackendEvent, BackendRequest, Bootstrap, Connection, ConversationId, EventKind,
-    ItemKind, LifecycleEvent, OperationId, RequestId,
+    Backend, BackendEvent, BackendRequest, Bootstrap, ChangesState, Connection, ConversationId,
+    EventKind, ItemKind, LifecycleEvent, OperationId, RequestId,
 };
 use serde_json::{Value, json};
 
@@ -215,9 +215,18 @@ impl Env {
         self.catalogs().last().unwrap().conversations[index].0
     }
 
-    /// The next event that is not an engine-state report (those accompany every refresh and are
-    /// checked by their own tests).
+    /// Content tests skip incidental scan-state reports, which are checked explicitly below.
     fn next_event(&self) -> BackendEvent {
+        loop {
+            let event = self.next_event_with_scan_state();
+            if !matches!(event.kind, EventKind::ChangesScanState(_)) {
+                return event;
+            }
+        }
+    }
+
+    /// Engine-state reports accompany every refresh and are checked by their own tests.
+    fn next_event_with_scan_state(&self) -> BackendEvent {
         let deadline = Instant::now() + WAIT;
         loop {
             if let Ok(e) = self.events.try_recv() {
@@ -237,7 +246,10 @@ impl Env {
     fn no_event_within(&self, ms: u64) {
         std::thread::sleep(Duration::from_millis(ms));
         while let Ok(e) = self.events.try_recv() {
-            if !matches!(e.kind, EventKind::EngineState { .. }) {
+            if !matches!(
+                e.kind,
+                EventKind::EngineState { .. } | EventKind::ChangesScanState(_)
+            ) {
                 panic!("unexpected event: {e:?}");
             }
         }
@@ -1488,6 +1500,116 @@ fn a_failed_creation_is_reported_as_a_notice() {
 }
 
 #[test]
+fn explicit_changes_refresh_reports_failure_non_git_and_recovers_without_engine_input() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&project)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(project.join("notes.txt"), "one\n").unwrap();
+
+    let (pi, agent, _) = agent_mock(&[], vec![("s", view(&[]))]);
+    pi.publish(
+        "pi.session-directory",
+        vec![Op::Replace(json!({
+            "revision": 2, "sessions": [{
+                "serverId": SERVER_ID, "sessionId": "s", "createdAt": 5,
+                "cwd": project.to_str().unwrap(),
+            }],
+        }))],
+    );
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 7);
+    event_where(&env, |kind| matches!(kind, EventKind::ThinkingState { .. }));
+    std::thread::sleep(Duration::from_millis(150));
+    while let Ok(event) = env.events.try_recv() {
+        assert!(
+            !matches!(
+                event.kind,
+                EventKind::ChangesSynced(_) | EventKind::ChangesScanState(_)
+            ),
+            "an untouched conversation must not automatically scan"
+        );
+    }
+
+    let refresh = || {
+        env.backend.request(BackendRequest::RefreshChanges {
+            conversation: conv,
+            generation: 7,
+        })
+    };
+    refresh();
+    let loading = event_where(&env, |kind| {
+        matches!(kind, EventKind::ChangesScanState(ChangesState::Loading))
+    });
+    assert_eq!(
+        (loading.conversation, loading.generation, loading.op),
+        (conv, 7, None)
+    );
+    let success = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    let EventKind::ChangesSynced(files) = success.kind else {
+        unreachable!()
+    };
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "notes.txt");
+
+    // A missing working directory is a scan failure, not a clean/non-Git project.
+    let moved = root.path().join("moved");
+    std::fs::rename(&project, &moved).unwrap();
+    refresh();
+    let failed = event_where(&env, |kind| {
+        matches!(
+            kind,
+            EventKind::ChangesScanState(ChangesState::Unavailable(_))
+        )
+    });
+    assert_eq!((failed.conversation, failed.generation), (conv, 7));
+    std::fs::rename(&moved, &project).unwrap();
+    refresh();
+    event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+
+    // Git itself exiting unsuccessfully must also remain an explicit failure.
+    let config_path = project.join(".git/config");
+    let original_config = std::fs::read(&config_path).unwrap();
+    std::fs::write(&config_path, "[broken\n").unwrap();
+    refresh();
+    let git_failed = event_where(&env, |kind| {
+        matches!(
+            kind,
+            EventKind::ChangesScanState(ChangesState::Unavailable(_))
+        )
+    });
+    let EventKind::ChangesScanState(ChangesState::Unavailable(reason)) = git_failed.kind else {
+        unreachable!()
+    };
+    assert!(reason.contains("config"), "{reason}");
+    std::fs::write(&config_path, original_config).unwrap();
+    refresh();
+    event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+
+    std::fs::rename(project.join(".git"), root.path().join("saved-git")).unwrap();
+    refresh();
+    event_where(&env, |kind| {
+        matches!(
+            kind,
+            EventKind::ChangesScanState(ChangesState::NotARepository)
+        )
+    });
+    let agent = agent.lock().unwrap();
+    assert!(
+        agent.prompts.is_empty() && agent.queued.is_empty() && agent.aborts == 0,
+        "a scan must not submit, steer or stop"
+    );
+}
+
+#[test]
 fn workspace_changes_follow_the_session_directory_and_update_when_a_tool_finishes() {
     let repo = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
@@ -1877,7 +1999,7 @@ use pipkin_core::{ItemId, UiAnswer, UiNoticeLevel, UiRequestKind};
 /// The next event satisfying `wanted`; anything else before it is skipped.
 fn event_where(env: &Env, wanted: impl Fn(&EventKind) -> bool) -> BackendEvent {
     loop {
-        let event = env.next_event();
+        let event = env.next_event_with_scan_state();
         if wanted(&event.kind) {
             return event;
         }
