@@ -116,7 +116,7 @@ working tree on 2026-10-06; see `docs/v1-release-gates.md` for identified code/a
 - [x] Verify fresh-conversation Changes state and restoration of older conversations. Automated real-engine and socket tests cover untouched-session behavior and reopen/switch restoration; manual visual verification on the final candidate remains part of Phase 4.
 - [ ] Verify pane resizing after window/display changes and menu placement in narrow/tall/short layouts.
 - [x] Verify effort selection remains engine-authoritative and conversation-specific. Core/adapter tests and `choosing_effort_is_confirmed_by_pi_and_restored_per_conversation` passed with development and packaged engines; native menu walkthrough remains in Phase 4.
-- [ ] Verify project-scoped `@` completion: mouse/Tab selection, linked paths, spaces/Unicode, undo/redo, project switches, inaccessible/deleted/new files, and no completion during IME composition.
+- [x] Verify project-scoped `@` completion: headless GPUI mouse/Tab, Ctrl-click URL dispatch, spaces/Unicode, undo/redo, project/scan-epoch guards, new/deleted paths and IME suppression/unmark tests pass; filesystem tests cover missing/permission-denied roots and excluded symlink traversal. Query-open rescans replace the stale one-time index. This closes automated behavior, not installed native mouse/IME/URI-handler qualification in Phase 4.
 - [x] Confirm `@` mention semantics are transparent: the first-run guide explicitly distinguishes inserted path references from file-content attachments. Native completion/IME qualification remains separate.
 
 ### Exit criteria

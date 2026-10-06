@@ -476,6 +476,36 @@ no new package or provider/native run claimed. Logs: `/tmp/pipkin-security-polic
 Remote qualification for `a849ec3` and queued `1d256cd` had not finished at the last check; new candidates still
 need their own qualification. Owner-profile/desktop/clipboard state was not changed.
 
+## Phase 1: project-path completion freshness and IME unmark (2026-10-06)
+
+Found two release defects: the index was collected only when the project changed, hiding new/deleted paths during
+same-project use; IME `unmark_text` left completion suppressed until another edit. New query openings now refresh
+the bounded, read-only snapshot off the UI thread (not every character/render), with one current-root scan and a
+root/scan-epoch guard against stale results, including A→B→A switches. Matches/links are cleared while scanning;
+loading, no matches and root-scan failure are distinct. A new query can retry a repaired folder. Scans remain
+snapshots, not live filesystem watches; inaccessible descendants/dependency folders/symlinks are excluded.
+Unmark refreshes query state; composing/disabled/selection states still suppress completion.
+
+Automated GPUI tests use disposable real directory fixtures for Tab/arrow navigation, spaces/Unicode, link
+recognition, undo/redo, file create/delete and rapid project switches. A rendered-option mouse event inserts the
+reference; Ctrl-click dispatches the exact percent-encoded project URL through the **test platform**, not the owner's
+URI handler. IME unmark permits completion without submission, while active composition blocks it. Pure filesystem
+tests prove missing-root error, symlink non-traversal and actual permission-denied root handling under local UID 1000
+(the permission assertion explicitly does not qualify a root-user run). Initial synthetic-index test expectations
+were corrected to include discovered directory candidates. No native mouse, IME, URI handler or visual matrix pass
+is claimed; those remain Phase 4.
+
+On app base `9dda58f`: **542 workspace tests passed (40 ignored)**, Clippy/fmt clean, **37 development-engine and
+37 unpacked packaged-engine tests passed**, scratch installer checks passed. Unsigned working-delta 0.0.1 artifact
+SHA-256: `b79c439234de8095e5176f61b0d3a384262db4926720b6b9b50e0879ac969cd4`.
+Logs: `/tmp/pipkin-mentions-review-{targeted,mouse,workspace,clippy,engine,package,verify,installer}.log`.
+No owner profile/configuration/clipboard changes or paid requests.
+
+Observed green remote [37451076672](https://github.com/last-refuge/pipkin/actions/runs/37451076672) on clean app
+`a849ec390c0a38f41879190c84a95035f9918f5a`, including native-inventory fixtures/retention and all packaging steps.
+Queued `1d256cd` run 37451996755 was cancelled as the newest pending revision replaced it; `9dda58f` run 37452621241
+is in progress. This completion change still needs its own candidate qualification.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -490,7 +520,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Interrupted tools/unresolved operations | 1 | Passed (automated) behavior; recovery/status/stop-only retry and metadata support guidance present | Native installed walkthrough/final-candidate qualification remain; never infer settlement from timeout |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
 | Pinned clean engine build and manifest | 2 | Passed (automated): full engine pin, clean-source checks, immutable generated inputs and build identity | Requalify changed candidates; development overrides are not release approval |
-| CI and retained evidence | 2 | Passed (automated) on 77fa11d; earlier 14ee65d packaged-test failure recorded; fuller failure output now retained | Required future/final candidate checks must also pass |
+| CI and retained evidence | 2 | Passed (automated) on a849ec3; earlier 14ee65d packaged-test failure recorded; fuller failure output now retained | Required future/final candidate checks must also pass |
 | Runtime/dependency/license audit | 2 | Partial: inventories, immutable notices and MPL source; 59 review flags, 10 entries without notices; native/ABI findings documented | Resolve/appraise notice applicability, data/asset provenance and external runtime dependencies |
 | Clean installed desktop workflow | 3 | Unverified | Owner/second supported environment: actual package installation, launcher, provider, real reply |
 | Real app upgrade/rollback and schema backup restore | 3 | Partial: automated migration/installer tests; manual installed workflow open | Owner/engineering use disposable profile and actual old/new packages |

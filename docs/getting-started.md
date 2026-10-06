@@ -84,7 +84,12 @@ real first reply on a clean supported desktop remains an open qualification gate
 - **Search** covers locally cached history, not all engine history. Older material may not yet be cached.
 - **`@` paths** are project-scoped references inserted into the text. Selecting one does **not** attach file contents.
   Use the attachment picker/drag-and-drop when you want an attachment; missing/deleted paths cannot become files by
-  being mentioned. Native picker/drop/IME qualification remains separately tracked.
+  being mentioned. Tab/Enter or a popup click inserts the selected reference; Ctrl-click opens a linked path.
+  Each newly opened mention query refreshes a bounded, read-only path snapshot off the UI thread. It is not a
+  live filesystem watch or an exhaustive index: dependency/VCS folders, symlinks and unreadable descendants are
+  skipped. Newly created/deleted files appear on the next query refresh. A failed root scan is shown as unavailable,
+  not an empty success; repair access or select the correct project, then reopen the query to retry.
+  Native picker/drop/IME qualification remains separately tracked.
 - **Extensions**: only the experimental remote question contract is supported. Stable Pi `ctx.ui.*` and terminal
   widgets are not bridged; see [the compatibility matrix](extensions.md).
 

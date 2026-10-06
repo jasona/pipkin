@@ -159,6 +159,8 @@ pub struct ComposerEditor {
     project_root: Option<PathBuf>,
     path_index: Vec<String>,
     path_task: Option<Task<()>>,
+    path_error: Option<String>,
+    path_epoch: u64,
     path_query: Option<PathMention>,
     path_matches: Vec<String>,
     path_selected: usize,
@@ -207,6 +209,8 @@ impl ComposerEditor {
             project_root: None,
             path_index: Vec::new(),
             path_task: None,
+            path_error: None,
+            path_epoch: 0,
             path_query: None,
             path_matches: Vec::new(),
             path_selected: 0,
@@ -222,27 +226,59 @@ impl ComposerEditor {
         if self.project_root == root {
             return;
         }
-        self.project_root = root.clone();
+        self.project_root = root;
+        self.path_epoch = self.path_epoch.wrapping_add(1);
         self.path_task = None;
+        self.path_error = None;
         self.path_index.clear();
         self.refresh_paths();
-        if let Some(root) = root {
-            self.path_task = Some(cx.spawn(async move |this, cx| {
-                let scan_root = root.clone();
-                let paths = cx
-                    .background_spawn(async move { mentions::collect(&scan_root) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    if this.project_root.as_ref() == Some(&root) {
-                        this.path_index = paths;
-                        this.refresh_paths();
-                        cx.notify();
-                    }
-                })
-                .ok();
-            }));
-        }
+        self.scan_paths(cx);
         cx.notify();
+    }
+
+    fn scan_paths(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project_root.clone() else {
+            return;
+        };
+        if self.path_task.is_some() {
+            return;
+        }
+        self.path_epoch = self.path_epoch.wrapping_add(1);
+        let epoch = self.path_epoch;
+        self.path_error = None;
+        self.path_index.clear();
+        self.refresh_paths();
+        self.path_task = Some(cx.spawn(async move |this, cx| {
+            let scan_root = root.clone();
+            let result = cx
+                .background_spawn(async move { mentions::collect(&scan_root) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.project_root.as_ref() == Some(&root) && this.path_epoch == epoch {
+                    this.path_task = None;
+                    match result {
+                        Ok(paths) => this.path_index = paths,
+                        Err(error) => {
+                            this.path_error = Some(format!("Project paths unavailable: {error}"))
+                        }
+                    }
+                    this.refresh_paths();
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Rescan once when a mention query opens, not on every character or render.
+    fn refresh_input_paths(&mut self, cx: &mut Context<Self>) {
+        let previous = self.path_query.as_ref().map(|q| q.range.start);
+        self.refresh_paths();
+        let current = self.path_query.as_ref().map(|q| q.range.start);
+        if current.is_some() && current != previous {
+            self.scan_paths(cx);
+        }
     }
 
     fn refresh_paths(&mut self) {
@@ -297,7 +333,7 @@ impl ComposerEditor {
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let text = self.sanitize(text);
         self.model.set_text(&text);
-        self.refresh_paths();
+        self.refresh_input_paths(cx);
         self.scroll_y = px(0.);
         self.scroll_x = px(0.);
         self.scroll_to_caret = true;
@@ -568,7 +604,7 @@ impl ComposerEditor {
 
     fn after_edit(&mut self, changed: bool, cx: &mut Context<Self>) {
         if changed {
-            self.refresh_paths();
+            self.refresh_input_paths(cx);
             self.goal_x = None;
             self.scroll_to_caret = true;
             self.reset_blink(cx);
@@ -578,7 +614,7 @@ impl ComposerEditor {
     }
 
     fn after_motion(&mut self, keep_goal: bool, cx: &mut Context<Self>) {
-        self.refresh_paths();
+        self.refresh_input_paths(cx);
         if !keep_goal {
             self.goal_x = None;
         }
@@ -898,6 +934,7 @@ impl ComposerEditor {
         }
         let offset = self.offset_at(event.position);
         self.model.move_to(offset, true);
+        self.refresh_input_paths(cx);
         self.goal_x = None;
         cx.notify();
     }
@@ -1161,6 +1198,7 @@ impl EntityInputHandler for ComposerEditor {
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.model.unmark();
+        self.refresh_input_paths(cx);
         cx.emit(ComposerEvent::Changed);
         cx.notify();
     }
@@ -1439,7 +1477,13 @@ impl Render for ComposerEditor {
                             .px(px(10.0))
                             .py(px(6.0))
                             .text_color(theme.colors.text_muted)
-                            .child("No matching project paths"),
+                            .child(self.path_error.clone().unwrap_or_else(|| {
+                                if self.path_task.is_some() {
+                                    "Scanning project paths…".into()
+                                } else {
+                                    "No matching project paths".into()
+                                }
+                            })),
                     );
                 }
                 for (i, path) in matches.into_iter().enumerate() {
@@ -1447,6 +1491,7 @@ impl Render for ComposerEditor {
                     menu = menu.child(
                         gpui::div()
                             .id(("path", i))
+                            .when(i == 0, |r| r.debug_selector(|| "first-project-path".into()))
                             .role(Role::ListBoxOption)
                             .aria_label(path.clone())
                             .aria_selected(i == selected)
@@ -1567,14 +1612,43 @@ mod tests {
         h.editor.read_with(cx, |e, _| e.text())
     }
 
+    struct PathProject(PathBuf);
+
+    impl PathProject {
+        fn new(paths: &[&str]) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "pipkin-mention-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            for path in paths {
+                let file = root.join(path);
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, "synthetic").unwrap();
+            }
+            Self(root)
+        }
+    }
+
+    impl Drop for PathProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[gpui::test]
     fn path_completion_inserts_links_and_undo_restores_the_query(cx: &mut TestAppContext) {
         let (h, cx) = harness(cx, false, 500.);
-        h.editor.update(cx, |e, _| {
-            e.project_root = Some(PathBuf::from("/project"));
-            e.path_index = vec!["src/lib.rs".into(), "src/main.rs".into()];
-        });
+        let project = PathProject::new(&["src/lib.rs", "src/main.rs"]);
+        h.editor
+            .update(cx, |e, cx| e.set_project_root(Some(project.0.clone()), cx));
+        cx.run_until_parked();
         cx.simulate_input("look at @src/m");
+        cx.run_until_parked();
         assert_eq!(
             h.editor.read_with(cx, |e, _| e.path_matches.clone()),
             ["src/main.rs"]
@@ -1588,18 +1662,21 @@ mod tests {
         cx.simulate_keystrokes("ctrl-shift-z");
         assert_eq!(text_of(&h, cx), "look at @src/main.rs ");
         h.editor.update(cx, |e, cx| e.set_text("@src/", cx));
-        cx.simulate_keystrokes("down tab");
+        cx.run_until_parked();
+        // Discovery also includes the src/ directory, ahead of its files.
+        cx.simulate_keystrokes("down down tab");
         assert_eq!(text_of(&h, cx), "@src/main.rs ");
     }
 
     #[gpui::test]
     fn path_completion_handles_spaces_and_is_disabled_during_ime(cx: &mut TestAppContext) {
         let (h, cx) = harness(cx, false, 500.);
-        h.editor.update(cx, |e, _| {
-            e.project_root = Some(PathBuf::from("/project"));
-            e.path_index = vec!["my file.rs".into()];
-        });
+        let project = PathProject::new(&["my file.rs"]);
+        h.editor
+            .update(cx, |e, cx| e.set_project_root(Some(project.0.clone()), cx));
+        cx.run_until_parked();
         cx.simulate_input("@my");
+        cx.run_until_parked();
         h.editor.update(cx, |e, cx| {
             assert!(e.complete_path(0, cx));
         });
@@ -1610,6 +1687,109 @@ mod tests {
             assert!(e.path_matches.is_empty());
             assert!(!e.complete_path(0, cx));
         });
+    }
+
+    #[gpui::test]
+    fn new_queries_refresh_deleted_new_unicode_paths_and_project_switches(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        let a = PathProject::new(&["old.rs"]);
+        let b = PathProject::new(&["other.rs"]);
+        h.editor
+            .update(cx, |e, cx| e.set_project_root(Some(a.0.clone()), cx));
+        cx.run_until_parked();
+        std::fs::remove_file(a.0.join("old.rs")).unwrap();
+        std::fs::write(a.0.join("日 é.rs"), "synthetic").unwrap();
+        cx.simulate_input("@");
+        cx.run_until_parked();
+        assert_eq!(
+            h.editor.read_with(cx, |e, _| e.path_matches.clone()),
+            ["日 é.rs"]
+        );
+        cx.simulate_keystrokes("tab");
+        assert_eq!(text_of(&h, cx), "@\"日 é.rs\" ");
+        assert_eq!(h.editor.read_with(cx, |e, _| e.path_links.len()), 1);
+        h.editor.update(cx, |e, cx| {
+            e.set_project_root(Some(b.0.clone()), cx);
+            assert!(e.path_links.is_empty());
+            assert!(e.path_matches.is_empty());
+            e.set_project_root(Some(a.0.clone()), cx);
+            e.set_project_root(Some(b.0.clone()), cx);
+            e.set_text("@", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            h.editor.read_with(cx, |e, _| e.path_matches.clone()),
+            ["other.rs"]
+        );
+        h.editor.update(cx, |e, cx| {
+            e.set_project_root(Some(a.0.join("missing")), cx)
+        });
+        cx.run_until_parked();
+        assert!(h.editor.read_with(cx, |e, _| e.path_error.is_some()));
+        assert!(h.editor.read_with(cx, |e, _| e.path_matches.is_empty()));
+        assert!(!h.editor.update(cx, |e, cx| e.complete_path(0, cx)));
+    }
+
+    #[gpui::test]
+    fn clicking_completion_then_control_clicking_unicode_link_opens_only_that_project(
+        cx: &mut TestAppContext,
+    ) {
+        let (h, cx) = harness(cx, false, 500.);
+        let project = PathProject::new(&["日 é.rs"]);
+        h.editor
+            .update(cx, |e, cx| e.set_project_root(Some(project.0.clone()), cx));
+        cx.run_until_parked();
+        cx.simulate_input("@日");
+        cx.run_until_parked();
+        let option = cx
+            .debug_bounds("first-project-path")
+            .expect("rendered completion option");
+        cx.simulate_mouse_down(option.center(), MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(option.center(), MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(text_of(&h, cx), "@\"日 é.rs\" ");
+        assert!(!h.events.borrow().contains(&ComposerEvent::Submit));
+        let link_point = h.editor.read_with(cx, |e, _| {
+            e.last_bounds.unwrap().origin
+                + e.layout.as_ref().unwrap().point_for_offset(2)
+                + point(px(2.), px(2.))
+        });
+        cx.simulate_mouse_down(
+            link_point,
+            MouseButton::Left,
+            gpui::Modifiers {
+                control: true,
+                ..gpui::Modifiers::none()
+            },
+        );
+        assert_eq!(
+            cx.opened_url(),
+            Some(mentions::file_url(&project.0.join("日 é.rs")))
+        );
+    }
+
+    #[gpui::test]
+    fn unmarking_ime_text_reopens_completion_without_submitting(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        let project = PathProject::new(&["日本.rs"]);
+        h.editor
+            .update(cx, |e, cx| e.set_project_root(Some(project.0.clone()), cx));
+        cx.run_until_parked();
+        h.editor.update_in(cx, |e, w, cx| {
+            e.set_text("@", cx);
+            e.replace_and_mark_text_in_range(None, "日本", None, w, cx);
+            assert!(e.path_matches.is_empty());
+            assert!(!e.complete_path(0, cx));
+            e.unmark_text(w, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            h.editor.read_with(cx, |e, _| e.path_matches.clone()),
+            ["日本.rs"]
+        );
+        cx.simulate_keystrokes("tab");
+        assert_eq!(text_of(&h, cx), "@日本.rs ");
+        assert!(!h.events.borrow().contains(&ComposerEvent::Submit));
     }
 
     #[gpui::test]

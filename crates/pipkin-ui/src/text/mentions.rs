@@ -73,7 +73,7 @@ pub fn matching(paths: &[String], query: &str) -> Vec<String> {
 }
 
 /// Do not traverse symlinks or dependency/VCS directories. Bound both work and memory.
-pub fn collect(root: &Path) -> Vec<String> {
+pub fn collect(root: &Path) -> std::io::Result<Vec<String>> {
     let mut paths = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0)];
     let mut visited = 0;
@@ -81,8 +81,10 @@ pub fn collect(root: &Path) -> Vec<String> {
         if depth > 16 || visited >= 20_000 {
             continue;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if depth == 0 => return Err(error),
+            Err(_) => continue,
         };
         for entry in entries.flatten() {
             visited += 1;
@@ -122,7 +124,7 @@ pub fn collect(root: &Path) -> Vec<String> {
         }
     }
     paths.sort();
-    paths
+    Ok(paths)
 }
 
 pub fn file_url(path: &Path) -> String {
@@ -163,7 +165,44 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("src/my file.rs"), "").unwrap();
         std::fs::write(root.join("node_modules/pkg/ignored.js"), "").unwrap();
-        assert_eq!(collect(&root), ["src/", "src/my file.rs"]);
+        assert_eq!(collect(&root).unwrap(), ["src/", "src/my file.rs"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_never_traverses_symlinks_and_missing_roots_are_errors() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = std::env::temp_dir().join(format!(
+            "pipkin-path-links-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(root.join("outside/private.txt"), "synthetic").unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("project/link")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside/private.txt"), root.join("project/file"))
+            .unwrap();
+        assert!(collect(&root.join("project")).unwrap().is_empty());
+        assert!(collect(&root.join("missing")).is_err());
+        let uid = std::fs::metadata(root.join("project")).unwrap().uid();
+        std::fs::set_permissions(root.join("project"), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+        let denied = collect(&root.join("project"));
+        std::fs::set_permissions(root.join("project"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        if uid != 0 {
+            assert_eq!(
+                denied.unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        } else {
+            eprintln!("permission-denial assertion unverified when run as root");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
