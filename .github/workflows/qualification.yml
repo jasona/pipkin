@@ -11,7 +11,8 @@ permissions:
 
 concurrency:
   group: qualification-${{ github.ref }}
-  cancel-in-progress: true
+  # Let an identified qualification finish; queue the newest update instead of starving CI.
+  cancel-in-progress: false
 
 jobs:
   scripted-qualification:
