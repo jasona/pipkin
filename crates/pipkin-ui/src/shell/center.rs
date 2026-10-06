@@ -137,16 +137,39 @@ impl Workspace {
         {
             let this = this.clone();
             strips.push(strip(
-                cx, "triangle-alert", c.warning, "Recovery notice",
-                "Pipkin does not resend the prompt. If Pi restarts, its recovery may resume the run and repeat a partially executed tool. Review tool output and project Changes before sending more work. If recovery stays unresolved, run `pipkin --diagnose` for support details.",
-                vec![Btn::new("dismiss-recovery-notice")
-                    .icon("x")
-                    .aria("Dismiss recovery notice")
-                    .compact()
-                    .on_click(move |_, cx| {
-                        this.update(cx, |t, cx| t.dispatch(Command::DismissRecoveryNotice, cx))
-                    })
-                    .into_any_element()],
+                cx,
+                "triangle-alert",
+                c.warning,
+                "Recovery notice",
+                RECOVERY_DETAIL,
+                vec![
+                    Btn::new("copy-recovery-diagnostics")
+                        .icon("copy")
+                        .label("Diagnostics")
+                        .aria("Copy diagnostics: metadata only, no logs or conversation text")
+                        .compact()
+                        .on_click({
+                            let this = this.clone();
+                            move |window, cx| {
+                                this.update(cx, |t, cx| {
+                                    t.run_command(
+                                        &super::commands::Run::CopyDiagnostics,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            }
+                        })
+                        .into_any_element(),
+                    Btn::new("dismiss-recovery-notice")
+                        .icon("x")
+                        .aria("Dismiss recovery notice")
+                        .compact()
+                        .on_click(move |_, cx| {
+                            this.update(cx, |t, cx| t.dispatch(Command::DismissRecoveryNotice, cx))
+                        })
+                        .into_any_element(),
+                ],
             ));
         }
         if let Some((at, reason)) = saved_copy {
@@ -636,7 +659,7 @@ impl Workspace {
                 "circle-help",
                 c.warning,
                 "Outcome unknown",
-                "The app or connection stopped before the prompt was acknowledged. Pipkin is asking the engine what happened; the prompt is never resent automatically.",
+                UNKNOWN_DETAIL,
                 vec![check_status()],
             )),
             RunState::Failed { message } => Some(strip(
@@ -1035,6 +1058,9 @@ impl Workspace {
     }
 }
 
+const RECOVERY_DETAIL: &str = "Pipkin does not resend the prompt. Pi recovery may repeat a partially executed tool. Review tool output, project Changes and external effects before sending more work. If unresolved, Check status reconciles with Pi; copy metadata-only diagnostics for support. Detailed CLI diagnostics may contain sensitive logs.";
+const UNKNOWN_DETAIL: &str = "The app or connection stopped before acknowledgement. This does not prove the prompt or its tools never ran. Check status asks Pi what happened without resending; sending stays disabled until reconciled. Review project and external effects before repeating work.";
+
 fn stopping_detail(error: Option<&str>) -> String {
     let waiting = "Pi has not confirmed that the run stopped; tools may still be running. If this takes longer than expected, Check status reads the engine state without resending the prompt.";
     match error {
@@ -1091,6 +1117,17 @@ pub(super) fn strip(
 #[cfg(test)]
 mod recovery_copy_tests {
     use super::*;
+
+    #[test]
+    fn unknown_and_recovery_guidance_explain_partial_effects_and_safe_support() {
+        assert!(UNKNOWN_DETAIL.contains("does not prove"));
+        assert!(UNKNOWN_DETAIL.contains("without resending"));
+        assert!(UNKNOWN_DETAIL.contains("disabled until reconciled"));
+        assert!(RECOVERY_DETAIL.contains("repeat a partially executed tool"));
+        assert!(RECOVERY_DETAIL.contains("external effects"));
+        assert!(RECOVERY_DETAIL.contains("metadata-only diagnostics"));
+        assert!(RECOVERY_DETAIL.contains("sensitive logs"));
+    }
 
     #[test]
     fn stopping_never_claims_settlement_and_failed_stop_explains_safe_retry() {

@@ -9,8 +9,9 @@ still open. Do not treat automated socket/installer checks as proof of a clean d
 | --- | --- | --- |
 | `$XDG_DATA_HOME/pipkin` or `~/.local/share/pipkin` | Pipkin preferences, drafts/attachment references, submission journal, goals and cached conversations in `pipkin.sqlite3`; engine output in `engine.log` | Private: can contain prompt text, tool output, source paths and secrets |
 | `<data dir>/pipkin.sqlite3.bak-vN` | Pre-migration backup for schema N | Same sensitivity as the database; does not include later drafts |
-| `~/.pi/server` (or explicit `--pi-dir`) | Pi server profile/identity, durable engine state and sessions | Authoritative engine data; private; not disposable desktop cache |
-| `~/.pi/agent` (or `--pi-agent-dir`) | Pi authentication/configuration, provider/model configuration and other Pi-managed state | `auth.json` may contain API keys/OAuth tokens; never upload it |
+| `~/.pi/server` (or explicit `--pi-dir`) | Pi server coordination profile/identity, sockets and process/launcher state | Private; not the durable session database location |
+| `~/.pi/agent` (or `--pi-agent-dir`) | Pi authentication/configuration and other agent-managed state | `auth.json` may contain API keys/OAuth tokens; never upload it |
+| `<agent dir>/experimental/sessions/<session ID>/` | Authoritative experimental Pi sessions: `meta.json` and worker-owned `session.sqlite` | Private; preserve this directory for session recovery, not just the server sockets/profile |
 | Installation prefix / version directories | App, paired engine, public build identity and third-party notices | Not your draft/session storage |
 | Project directory | Actual files changed by tools or other programs | Changes survive Stop, quit and uninstall |
 
@@ -22,7 +23,9 @@ without an engine-to-launch selects an already running external server instead.
 
 Draft attachments are saved as file references/metadata, not a promise that the original file will exist forever.
 Do not delete originals before checking the restored draft. Keep backups private and include both app and engine
-state if you need full recovery; a desktop-cache copy alone is not an engine-session backup.
+state if you need full recovery; a desktop-cache or server-coordination-profile copy alone is not an engine-session
+backup. An externally started server may use an explicit session-directory override; verify its configuration rather
+than assuming the defaults.
 
 ## Quitting and interrupted work
 

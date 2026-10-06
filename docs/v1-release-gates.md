@@ -372,6 +372,40 @@ Unsigned 0.0.1 working-delta package SHA-256:
 Remote [37440342638](https://github.com/last-refuge/pipkin/actions/runs/37440342638) passed for clean full app revision
 `b66f7e7cd1b3fa89f853f8a207e8641d435eaf75` (before this feature). This changed candidate still needs its own green run.
 
+## Phase 1: recovery review, safe support link and effort verification (2026-10-06)
+
+Reviewed the existing recovery implementation rather than adding a second reconciliation path. `stopping_detail`
+explains unconfirmed work and stop-only retry; core availability gates one in-flight check/stop request. Core tests
+`failed_stop_can_be_retried_but_clock_and_status_checks_never_settle_it`,
+`recovery_notice_and_check_failure_are_per_conversation_and_do_not_replay_work`, and unknown-status failure tests
+cover timers, reconnect, late settlement and conversation guards. Real-engine
+`a_lost_stop_request_remains_unsettled_and_can_be_checked_then_retried_without_a_prompt` drops the stop over a fault
+proxy, reconnects, checks and retries without another provider request. Worker-crash and interruption tests remain
+in the full suite. The user's Stop intent cannot override a raced engine-confirmed completion.
+
+Recovery now links directly to metadata-only **Diagnostics** instead of directing users only to potentially sensitive
+CLI output. Unknown outcome explicitly warns that lack of acknowledgement is not proof tools never ran, keeps
+sending disabled until reconciliation, and tells users to inspect actual/external effects before repeating work.
+Copy tests protect that wording. Native installed recovery-layout/button observation remains a Phase 4 gate.
+
+Effort authority/per-conversation restoration is covered by core generation-guard tests and the real-engine
+`choosing_effort_is_confirmed_by_pi_and_restored_per_conversation` test. This closes the automated behavior task,
+not the native menu walkthrough.
+
+**Corrected a documentation error:** the pinned Pi server resolves durable session storage to
+`<agent dir>/experimental/sessions/<session ID>/`, containing `meta.json` and worker-owned `session.sqlite`.
+`~/.pi/server` is the coordination profile, not that session store. `docs/support.md` and `docs/packaging.md` now
+state the correct ownership/backup boundary, verified against `resolveSessionDirectory`, `session-catalog.ts` and
+the suite's `RawSession::attach` path. External servers may override their session directory.
+
+On app base `14ee65d`: **537 workspace tests passed (40 ignored)**, Clippy/fmt clean, **37 development-engine and
+37 packaged-engine suite tests passed**, scratch-prefix installer checks passed. No owner profile/desktop changes
+or paid requests. Unsigned working-delta 0.0.1 artifact SHA-256:
+`c28b47172aef759281de710aa0e1c3c2fa23c6b2802d3b66868910fcd898de67`.
+Logs: `/tmp/pipkin-recovery-review-{workspace,clippy,engine,package,verify,installer}.log`.
+Remote [37445564908](https://github.com/last-refuge/pipkin/actions/runs/37445564908) was still in progress at the
+last check; this delta/final candidate must obtain its own green qualification.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -383,7 +417,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Daily-use beta | 0 | Owner-reported | Owner supplies dates/incidents if available; do not invent metrics |
 | Real-mode rename | 1 | Addressed in working tree: palette disabled, F2 explains; automated regression passed | Native installed walkthrough remains; authoritative rename is not advertised |
 | Changes scan failure | 1 | Addressed in working tree: automated/core/real-engine/package checks passed; native AT-SPI failure/stale/recovery observed | Broader native visual/Orca/mouse checks remain open; repeat on the final candidate |
-| Interrupted tools/unresolved operations | 1 | Open | Engineering audit recovery messaging and safe reconciliation actions; no blind replay |
+| Interrupted tools/unresolved operations | 1 | Passed (automated) behavior; recovery/status/stop-only retry and metadata support guidance present | Native installed walkthrough/final-candidate qualification remain; never infer settlement from timeout |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
 | Pinned clean engine build and manifest | 2 | Passed (automated): full engine pin, clean-source checks, immutable generated inputs and build identity | Requalify changed candidates; development overrides are not release approval |
 | CI and retained evidence | 2 | Passed (automated) on 528457c and 12c9dba; identified logs/artifacts retained | Required future/final candidate checks must also pass |
@@ -406,7 +440,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 
 ## Immediate execution queue
 
-1. Audit interrupted-tool and unresolved-stop messaging/recovery.
+1. Close remaining rename/mention/layout regressions and reconcile automated evidence with installed native walkthroughs; recovery behavior/messaging is audited.
 2. Resolve dependency/license/provenance findings; metadata-only Copy diagnostics and pinned builds/remote CI are established.
 3. Schedule owner-run clean-install and native gates while onboarding/support work proceeds.
 

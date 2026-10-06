@@ -18,7 +18,8 @@ protocol, an incomplete one, or one that needs a newer Pipkin, and says why (`pi
 
 With no flags, Pipkin looks for the engine at `PIPKIN_ENGINE_DIR`, then `../lib/pipkin/engine` relative to its own
 binary (so a relocated prefix works), then `/usr/lib/pipkin/engine`. When it finds one it launches and owns it:
-server profile/durable engine state under `~/.pi/server`, credentials/configuration under Pi's `~/.pi/agent`.
+server coordination profile under `~/.pi/server`, credentials/configuration under Pi's `~/.pi/agent`, and durable
+experimental sessions under `<agent dir>/experimental/sessions/<session ID>/` (`meta.json` and `session.sqlite`).
 The desktop cache and journal are separate; see [data ownership and recovery](support.md). `--pi-repo` (a checkout) and
 `--pi-dir` / `--pi-server-id` (an engine already running) still win, for development.
 

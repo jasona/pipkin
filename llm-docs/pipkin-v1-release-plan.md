@@ -106,16 +106,16 @@ working tree on 2026-10-06; see `docs/v1-release-gates.md` for identified code/a
 
 ### 1.3 Interrupted work and unresolved operations
 
-- [ ] Explain that engine recovery may repeat a partially executed tool even though Pipkin does not resend the prompt.
-- [ ] Show a clear status/recovery path for prolonged “Stopping” or unresolved outcomes.
-- [ ] Offer safe reconciliation/reconnect/diagnostics actions where supported. Never mark an operation settled merely because a timer expired.
-- [ ] Test connection loss during stop, engine restart during work, and late settlement.
+- [x] Explain that engine recovery may repeat a partially executed tool even though Pipkin does not resend the prompt. Recovery notice and support guide also warn about retained/external effects.
+- [x] Show a clear status/recovery path for prolonged “Stopping” or unresolved outcomes. UI explains uncertain work, Check status, bounded stop-only retry and metadata-only diagnostics; installed visual walkthrough remains in Phase 4.
+- [x] Offer safe reconciliation/reconnect/diagnostics actions where supported. Automatic reconnect and one-flight status/stop checks are tested; no timer creates settlement. Recovery notice links directly to Copy diagnostics.
+- [x] Test connection loss during stop, engine restart during work, and late settlement. Core tests plus development/packaged engine suites cover dropped stop/reconnect, worker crash, late completion/cancellation and conversation guards; no blind replay.
 
 ### 1.4 Recent feature regression pass
 
 - [x] Verify fresh-conversation Changes state and restoration of older conversations. Automated real-engine and socket tests cover untouched-session behavior and reopen/switch restoration; manual visual verification on the final candidate remains part of Phase 4.
 - [ ] Verify pane resizing after window/display changes and menu placement in narrow/tall/short layouts.
-- [ ] Verify effort selection remains engine-authoritative and conversation-specific.
+- [x] Verify effort selection remains engine-authoritative and conversation-specific. Core/adapter tests and `choosing_effort_is_confirmed_by_pi_and_restored_per_conversation` passed with development and packaged engines; native menu walkthrough remains in Phase 4.
 - [ ] Verify project-scoped `@` completion: mouse/Tab selection, linked paths, spaces/Unicode, undo/redo, project switches, inaccessible/deleted/new files, and no completion during IME composition.
 - [x] Confirm `@` mention semantics are transparent: the first-run guide explicitly distinguishes inserted path references from file-content attachments. Native completion/IME qualification remains separate.
 
