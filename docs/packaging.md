@@ -28,8 +28,18 @@ scripts/verify-install.sh [PKG]       # unpack into a scratch prefix and check i
 scripts/verify-install.sh --full      # ...and run the real-engine workflow tests against the unpacked engine
 ```
 
-The engine is staged from the Pi fork checkout by `scripts/build-engine.sh`: a copy without `.git` and the
-evaluation suite, dev dependencies pruned, plus the manifest. It is source plus dependencies run by Node's
+Release engine sources must match the full revision in `packaging/pi-engine-revision` and have a clean Git
+working tree. `scripts/check-engine-source.sh PI_CHECKOUT` verifies both before staging. Prepare a clean checkout
+of that revision with `npm ci`, then `npm run hydrate:model-data` at the Pi root if generated provider data is missing.
+`PIPKIN_ENGINE_DEV=1 scripts/package.sh PI_CHECKOUT` is an explicit development override, not release qualification.
+
+`scripts/build-engine.sh` stages the identified tracked sources through Git archive, not arbitrary ignored build
+output. It separately validates/copies required generated provider JSON and installed workspace dependencies,
+then prunes dev dependencies offline. The manifest records the full source revision, generated-data manifest hash,
+protocol, minimum client and whether the development override was used. It does not yet identify every build input
+or certify third-party dependency provenance; those audits and CI qualification remain release gates.
+
+The engine is source plus dependencies run by Node's
 TypeScript support, as Pi's own `pi-test.sh` does; Pi does not yet publish a compiled experimental server, so a
 compiled engine is a Pi-side follow-up. The original installed-size measurement was about 850 MiB. The
 2026-10-06 v1 baseline stages **453 MiB total**, with **200 MiB of engine** and an **89,114,048-byte tarball**

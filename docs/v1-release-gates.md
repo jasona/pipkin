@@ -175,6 +175,37 @@ an app-only update against the old engine retains the context defect. Existing t
 cannot be undone by Stop. No installed app, owner profile, or desktop configuration was changed during qualification.
 Local temporary logs: `/tmp/pipkin-stop-{workspace,clippy,e2e,targeted,package,verify-install,installer}.log`.
 
+## Phase 2: pinned source staging (2026-10-06)
+
+Implemented on app base `55f90b0c0ad713f2fb4125058929f09705f529af` with Pi pin
+`d2a311097cbcf669e699479587332ae3988a49d0` in `packaging/pi-engine-revision`:
+
+- Default engine staging rejects unidentified, dirty/untracked, and unpinned Git sources before replacing output.
+  Development overrides are explicit (`PIPKIN_ENGINE_DEV=1`) and identified in the manifest; release collection
+  refuses this override.
+- Staging archives tracked sources instead of arbitrary ignored checkout output, copies installed workspace
+  dependencies, and validates/copies the required generated provider JSON. The manifest records the full source
+  revision and generated-data manifest SHA-256, not only a short commit.
+- Release collection selects the current version/architecture, not every old tarball in `dist`.
+- Disposable source/staging tests cover pin matching, dirty/untracked/mismatched/invalid pin rejection, the explicit
+  override, missing generated input without destroying prior output, preserved dependencies and exclusion of stale
+  ignored output. Disposable release tests verify development rejection and exclusion of obsolete artifacts.
+
+An initial Git-archive-only build **failed packaged qualification**: provider JSON is Git-ignored but mandatory.
+After explicit asset validation/staging, **37 packaged-engine suite tests passed**, installer scratch-prefix checks
+passed, and **531 workspace tests passed (40 ignored)** with Clippy/fmt clean. The suite includes the no-op opt-in
+seeding helper. No clean desktop install, real-provider onboarding, accessibility or release acceptance is claimed.
+
+The local rebuilt unsigned 0.0.1 artifact SHA-256 is:
+`91484e0c573b0e8a4d83cef4efbc5057f75628ea00628f48a5bc5f5fec08e890`.
+Its engine generated-data manifest SHA-256 is:
+`b92d631bb8bb2cac6f824a03a814baad9452164c518426b8bc4bbc5c2142bb05`.
+
+Phase 2 remains **partial**: CI, complete app/build-input identification, clean-checkout provisioning, and dependency
+license/provenance auditing still need work. This is identified staging, not a claim of byte-for-byte reproducible
+builds. Temporary logs: `/tmp/pipkin-pin-{package,verify,installer,workspace,clippy}.log`; the final verification log
+records the corrected pass, while the failure cause/count above preserves the initial failure evidence.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

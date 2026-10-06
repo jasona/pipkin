@@ -11,9 +11,12 @@ cd "$here"
 version=$(cargo pkgid -p pipkin-app | sed 's/.*[#@]//')
 arch=$(uname -m)
 stage=$here/dist/stage
-rm -rf "$stage"
+pi=${1:-$here/../pi-fork/pi}
+# Reject invalid sources before clearing prior staging or doing an expensive app build.
+"$here/scripts/check-engine-source.sh" "$pi" >/dev/null
 cargo build -p pipkin-app --release --locked
-"$here/scripts/build-engine.sh" "${1:-$here/../pi-fork/pi}" "$stage/usr/lib/pipkin/engine"
+rm -rf "$stage"
+"$here/scripts/build-engine.sh" "$pi" "$stage/usr/lib/pipkin/engine"
 install -Dm755 target/release/pipkin "$stage/usr/bin/pipkin"
 install -Dm644 packaging/pipkin.desktop "$stage/usr/share/applications/pipkin.desktop"
 for size in 128 256 512; do

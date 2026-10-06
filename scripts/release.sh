@@ -6,10 +6,16 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here"
+[ "${PIPKIN_ENGINE_DEV:-0}" != 1 ] || {
+  echo "release cannot use PIPKIN_ENGINE_DEV=1; package development engines separately" >&2; exit 1;
+}
+version=$(cargo pkgid -p pipkin-app | sed 's/.*[#@]//')
+arch=$(uname -m)
 "$here/scripts/package.sh" "$@"
 out=$here/dist/release
 rm -rf "$out"; mkdir -p "$out"
-cp dist/pipkin-*.tar.zst "$out/"
+# Collect only this build, not older versions/architectures left in dist.
+cp "dist/pipkin-$version-$arch.tar.zst" "$out/"
 (cd "$out" && sha256sum pipkin-*.tar.zst > SHA256SUMS)
 if [ -n "${PIPKIN_SIGN_KEY:-}" ]; then
   gpg --batch --yes --local-user "$PIPKIN_SIGN_KEY" --armor --detach-sign --output "$out/SHA256SUMS.asc" "$out/SHA256SUMS"
