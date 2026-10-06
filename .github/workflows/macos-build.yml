@@ -73,6 +73,9 @@ jobs:
           cargo test -p pipkin-app --release --locked the_engine_starts_serves_and_stops_without_leaving_processes -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/engine-lifecycle.log
           cargo test -p pipkin-app --release --locked a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/engine-edit-history.log
           target=$(rustc -vV | awk '/^host:/ {print $2}')
+          # Metadata includes workspace-unified feature dependencies not necessarily compiled
+          # by the limited smoke checks. Populate the exact locked target graph before offline audit.
+          cargo fetch --locked --target "$target" 2>&1 | tee qualification-logs/notice-inputs.log
           python3 scripts/write-license-inventory.py dist/macos-notices "$target" 2>&1 | tee qualification-logs/notices.log
           python3 scripts/package-macos.py "$target" 2>&1 | tee qualification-logs/package.log
           cp dist/macos/build-info.json qualification-logs/

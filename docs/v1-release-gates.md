@@ -613,6 +613,20 @@ archive SHA-256 `371910604f838c60f39178557b160354cd04c997067b5ac4c81f74b40474dc2
 A fresh native run is still required for the corrected engine smoke checks and actual Mac artifact production.
 Failure details retained locally in `/tmp/pipkin-macos-ci-{failure,full}.log` and remotely as build evidence.
 
+## macOS smoke checks passed; locked notice-input provisioning correction (2026-10-06)
+
+Native run [37481551475](https://github.com/last-refuge/pipkin/actions/runs/37481551475) on clean
+`11a7496` passed actual **aarch64-apple-darwin** release compilation, core/transport/ownership and portable identity
+checks, owned engine startup/clean shutdown (2.25 s), and scripted-provider edit/diff/history reopening (6.60 s).
+It then **failed** in offline license metadata collection: `bit-set 0.8.0` was locked but absent from the runner's
+cache because limited smoke checks do not compile the whole workspace-unified feature graph. No Mac archive
+was produced by that failed run; this is not a native GUI/provider-authentication/installed acceptance claim.
+
+The workflow now explicitly `cargo fetch --locked --target "$target"` before the unchanged offline inventory
+operation. This supplies checksum-locked audit inputs without dropping notices, weakening offline collection or
+mutating the lockfile. First-pass help links now point to readable source guides when viewed outside the source
+checkout. Failure log: `/tmp/pipkin-macos-uuid-ci-failure.log`. Fresh artifact-producing CI remains required.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

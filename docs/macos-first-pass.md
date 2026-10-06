@@ -41,7 +41,9 @@ Launch from a terminal whose PATH contains Node; Finder does not necessarily inh
 ```
 
 Choose a disposable project and deliberately configure provider credentials if making real requests.
-See [getting started](getting-started.md), [support/privacy](support.md) and [security reporting](../SECURITY.md)
+See [getting started](https://github.com/last-refuge/pipkin/blob/main/docs/getting-started.md),
+[support/privacy](https://github.com/last-refuge/pipkin/blob/main/docs/support.md) and
+[security reporting](https://github.com/last-refuge/pipkin/blob/main/SECURITY.md)
 in the source repository; the app's resource folder retains SECURITY.md. Gatekeeper may refuse the
 unnotarized artifact: this first pass does not claim normal end-user installation or trust acceptance.
 
