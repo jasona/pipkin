@@ -8,6 +8,7 @@ use super::controls::*;
 use super::overlays::effort_label;
 use super::workspace::{Overlay, Panel, Workspace};
 use crate::theme::ActiveTheme;
+use crate::transcript::tools::recent_activity;
 
 /// How long ago `then` was, for a saved copy's label.
 fn ago(now: i64, then: i64) -> String {
@@ -471,6 +472,7 @@ impl Workspace {
             intent_error,
             pending_queue,
             real,
+            activity,
         ) = {
             let s = self.state(cx);
             let cv = s.current().unwrap();
@@ -486,6 +488,7 @@ impl Workspace {
                 cv.intent_error.clone(),
                 cv.pending_queue.clone(),
                 s.mode == Mode::Real,
+                recent_activity(&cv.items),
             )
         };
         let _ = retry_hint;
@@ -605,7 +608,9 @@ impl Workspace {
                 "loader-circle",
                 c.accent,
                 "Working…",
-                "Pi is working. You can steer, queue a follow-up, or stop.",
+                activity
+                    .as_deref()
+                    .unwrap_or("Pi is working. You can steer, queue a follow-up, or stop."),
                 vec![
                     Btn::new("stop-run")
                         .icon("square")

@@ -815,12 +815,98 @@ fn collapsed_work_shows_latest_explanation_then_outcome_not_tool_details() {
     assert_eq!(activity_caption(&items, false, false, ""), "Done.");
     assert_eq!(
         activity_caption(&items[1..2], true, false, summary),
-        "Working…"
+        "Read 1 file, ran 2 commands · 9s"
     );
     assert_eq!(
         activity_caption(&[notice(5, "Thinking...")], true, false, summary),
         "Working…"
     );
+    assert_eq!(
+        activity_caption(&[notice(5, "Thinking..."), tool(6)], true, false, summary),
+        summary,
+    );
+    assert_eq!(
+        activity_caption(
+            &[tool(6), notice(7, "Thinking..."), tool(8)],
+            true,
+            false,
+            summary
+        ),
+        summary,
+    );
+}
+
+#[test]
+fn recent_activity_uses_observed_tools_and_resets_at_the_latest_prompt() {
+    let mut active = tool(3);
+    if let ItemKind::Tool(t) = &mut active.kind {
+        t.status = ToolStatus::Running;
+        t.name = "edit".into();
+    }
+    let items = vec![tool(1), item(0), tool(2), notice(4, "Thinking..."), active];
+    assert_eq!(
+        super::super::tools::recent_activity(&items).as_deref(),
+        Some("Read 1 file, editing 1 file"),
+    );
+    assert_eq!(super::super::tools::recent_activity(&items[..2]), None);
+    assert_eq!(
+        super::super::tools::recent_activity(&[item(0), notice(4, "Thinking..."), tool(2)])
+            .as_deref(),
+        Some("Read 1 file"),
+    );
+    assert_eq!(
+        super::super::tools::recent_activity(&[item(0), notice(4, "Thinking\n**Checking build**")])
+            .as_deref(),
+        Some("Checking build"),
+    );
+    let mut failed = tool(8);
+    if let ItemKind::Tool(t) = &mut failed.kind {
+        t.status = ToolStatus::Failed;
+    }
+    assert_eq!(
+        super::super::tools::recent_activity(&[item(0), failed]).as_deref(),
+        Some("1 tool failed"),
+    );
+    let many: Vec<_> = (0..257).map(tool).collect();
+    assert_eq!(
+        super::super::tools::recent_activity(&many).as_deref(),
+        Some("Recent: Read 256 files"),
+    );
+}
+
+#[gpui::test]
+fn observed_activity_updates_as_tool_calls_start_and_finish(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 0);
+    let activity = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let items = &h.model.read(cx).state.current().unwrap().items;
+            super::super::tools::recent_activity(items)
+        })
+    };
+    run_event(
+        &h,
+        EventKind::ToolStarted {
+            call: 1,
+            name: "read".into(),
+            input: "{}".into(),
+        },
+        cx,
+    );
+    assert_eq!(activity(cx).as_deref(), Some("Reading 1 file"));
+    run_event(&h, EventKind::ToolFinished { call: 1, ok: true }, cx);
+    assert_eq!(activity(cx).as_deref(), Some("Read 1 file"));
+    run_event(
+        &h,
+        EventKind::ToolStarted {
+            call: 2,
+            name: "edit".into(),
+            input: "{}".into(),
+        },
+        cx,
+    );
+    assert_eq!(activity(cx).as_deref(), Some("Read 1 file, editing 1 file"));
+    run_event(&h, EventKind::ToolFinished { call: 2, ok: true }, cx);
+    assert_eq!(activity(cx).as_deref(), Some("Read 1 file, edited 1 file"));
 }
 
 #[gpui::test]

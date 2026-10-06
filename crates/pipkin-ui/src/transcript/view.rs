@@ -211,7 +211,16 @@ fn activity_caption(items: &[TranscriptItem], active: bool, failed: bool, summar
             _ => None,
         })
         .next()
-        .unwrap_or_else(|| "Working…".into())
+        .unwrap_or_else(|| {
+            if items
+                .iter()
+                .any(|item| matches!(item.kind, ItemKind::Tool(_)))
+            {
+                summary.to_owned()
+            } else {
+                "Working…".into()
+            }
+        })
 }
 
 /// The fold control of a run of two or more work items.
@@ -221,7 +230,7 @@ struct StepsLine {
     first: ItemId,
     /// "Read 2 files, ran 3 commands".
     summary: String,
-    /// Latest human-readable thinking while active; work summary and outcome once finished.
+    /// Latest human-readable thinking or observed tool counts while active; outcome once finished.
     caption: String,
     /// How the run stands: still going, any step failed, or all done.
     running: bool,

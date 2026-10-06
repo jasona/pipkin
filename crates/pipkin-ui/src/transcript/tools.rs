@@ -1,6 +1,8 @@
 //! How a tool call reads in the transcript: a friendly verb, the thing it acts on, and an icon.
 //! Pure, so the mapping is tested without a window.
 
+use pipkin_core::{ItemKind, NoticeLevel, ToolStatus, TranscriptItem};
+
 /// What to show for a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolLabel {
@@ -175,6 +177,77 @@ pub fn run_summary<'a>(names: impl Iterator<Item = &'a str>, running: bool) -> S
         parts.push(part);
     }
     parts.join(", ")
+}
+
+/// What this run has actually done so far, based on reported tool calls, not the prompt text.
+/// Only the latest prompt is counted. Bound the scan on unusually long/compacted transcripts;
+/// when its start is out of view, say "Recent" rather than implying these are lifetime totals.
+pub fn recent_activity(items: &[TranscriptItem]) -> Option<String> {
+    const MAX_ITEMS: usize = 256;
+    let mut completed = Vec::new();
+    let mut running = Vec::new();
+    let mut failed = 0;
+    let mut thought = None;
+    let mut found_prompt = false;
+    for item in items.iter().rev().take(MAX_ITEMS) {
+        match &item.kind {
+            ItemKind::User { .. } => {
+                found_prompt = true;
+                break;
+            }
+            ItemKind::Tool(tool) => match tool.status {
+                ToolStatus::Ok => completed.push(tool.name.as_str()),
+                ToolStatus::Running => running.push(tool.name.as_str()),
+                ToolStatus::Failed => failed += 1,
+            },
+            ItemKind::Notice {
+                text,
+                level: NoticeLevel::Info,
+            } if is_thinking(text)
+                && thought.is_none()
+                && completed.is_empty()
+                && running.is_empty()
+                && failed == 0 =>
+            {
+                let line = thinking_first_line(text);
+                if !line.is_empty() {
+                    thought = Some(line);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(thought) = thought {
+        return Some(thought);
+    }
+    let mut parts = Vec::new();
+    let done = run_summary(completed.into_iter(), false);
+    if !done.is_empty() {
+        parts.push(done);
+    }
+    let active = run_summary(running.into_iter(), true);
+    if !active.is_empty() {
+        parts.push(if parts.is_empty() {
+            active
+        } else {
+            format!("{}{}", active[..1].to_ascii_lowercase(), &active[1..])
+        });
+    }
+    if failed > 0 {
+        parts.push(format!(
+            "{failed} tool{} failed",
+            if failed == 1 { "" } else { "s" }
+        ));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let summary = parts.join(", ");
+    if !found_prompt && items.len() > MAX_ITEMS {
+        Some(format!("Recent: {summary}"))
+    } else {
+        Some(summary)
+    }
 }
 
 /// The run of consecutive tool rows that contains `ix`, as `(first, last)` inclusive, or `None`
