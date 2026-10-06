@@ -43,6 +43,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.19.0"
+      - name: Expose the declared Node runtime in the bare system PATH
+        run: |
+          # setup-node installs into its tool cache; verify-install intentionally strips that PATH.
+          # Only this ephemeral runner is modified, not a user's desktop.
+          sudo ln -sf "$(command -v node)" /usr/bin/node
+          /usr/bin/node --version
       - name: Rust and packaging policy checks
         run: |
           mkdir -p qualification-logs
@@ -54,6 +60,7 @@ jobs:
           scripts/test-release-collection.sh
           scripts/test-build-info.sh
           scripts/test-build-stamp.sh
+          python3 scripts/test-license-inventory.py
           scripts/test-guard.sh
       - name: Provision a clean pinned engine
         run: |
@@ -82,6 +89,7 @@ jobs:
           sha256sum "$package" > qualification-logs/SHA256SUMS
           cp dist/stage/usr/lib/pipkin/engine/engine.json qualification-logs/
           cp dist/stage/usr/share/doc/pipkin/build-info.json qualification-logs/
+          cp dist/stage/usr/share/doc/pipkin/third-party/inventory.json qualification-logs/license-inventory.json
           git rev-parse HEAD > qualification-logs/app-revision.txt
       - name: Retain qualification evidence (not release publication)
         if: always()
