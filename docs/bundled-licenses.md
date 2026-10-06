@@ -74,7 +74,7 @@ license/provenance task complete until those findings are resolved or an explici
 recorded. Regenerate/review the inventory for every changed candidate; a prior snapshot is not clearance of a new
 app/engine pair.
 
-## Native/runtime inspection
+## Native runtime inspection
 
 Packages also carry `usr/share/doc/pipkin/runtime-inventory.json`, generated using **readelf without executing any
 artifact**. It lists staged ELF hashes/machines, direct NEEDED shared-library names and referenced GLIBC/GLIBCXX/

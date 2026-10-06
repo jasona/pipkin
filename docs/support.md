@@ -92,10 +92,11 @@ identity, whether the artifact is dirty/unsigned, desktop/environment, exact rep
 behavior, and whether data/effects are uncertain. State whether you used a demo, scripted provider or real provider.
 Include only minimal reviewed evidence. Never include secrets or a whole private session by default.
 
-Do not publish an exploitable security issue or credential leak in a public issue. A dedicated private security
-contact/channel remains to be established for v1. If the repository offers **Report a vulnerability**, use that;
-otherwise request a private reporting route without disclosing exploit details. Rotate an exposed credential at its
-provider; deleting a posted log does not revoke the key.
+Do not publish an exploitable security issue or credential leak in a public issue. GitHub private vulnerability
+reporting is enabled: use **[Report a vulnerability](https://github.com/last-refuge/pipkin/security/advisories/new)**.
+See the [security policy](../SECURITY.md) for reporting, privacy and current fix/support scope. If the route is
+unavailable, request a confidential route without disclosing exploit details. No response SLA is promised. Rotate
+an exposed credential at its provider; deleting a posted log does not revoke the key.
 
 An installed qualification build is not an automatic update channel. Retain the previous known-working package;
 verify downloaded artifacts and follow the documented manual install/rollback procedure. Only an owner-approved,

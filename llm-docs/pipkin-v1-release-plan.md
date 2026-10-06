@@ -217,7 +217,7 @@ The supported desktop workflow passes the agreed native gates. Every remaining l
 - [ ] Replace historical/contradictory status claims with current evidence; keep old measurements labelled historical.
 - [ ] Update README commands, repository links, screenshots, and version/support labels.
 - [ ] Observe several new users going from installation to first reply where feasible; record stalls and fix blocking onboarding problems. Do not fabricate a participant count or completion rate.
-- [x] Provide a bug-report template and documented diagnostics/recovery procedure. `.github/ISSUE_TEMPLATE/bug-report.md` and `docs/support.md` warn that current CLI reports contain unredacted log/error text. Share-safe in-app diagnostics are implemented/tested; private security reporting remains open.
+- [x] Provide a bug-report template and documented diagnostics/recovery procedure. `.github/ISSUE_TEMPLATE/bug-report.md` and `docs/support.md` warn that current CLI reports contain unredacted log/error text. Share-safe in-app diagnostics are implemented/tested. GitHub private vulnerability reporting is enabled and documented in `SECURITY.md`; no response SLA or approved-release maintenance window is claimed.
 
 ### Exit criteria
 

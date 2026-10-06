@@ -54,7 +54,7 @@ editing, selection and accessibility tree.
   M / A / D badges and counts.
 - Open the selected file in your editor, or a terminal in the project, from the pane.
 
-**Never lose work**
+**Keep work recoverable**
 - Drafts are saved as you type; a send is journalled *before* dispatch and reconciled with the engine after a crash
   or lost connection. Uncertain outcomes are not blindly resent. This does not guarantee exactly-once external tool
   effects; see [recovery semantics](docs/support.md#quitting-and-interrupted-work).
@@ -88,8 +88,12 @@ editing, selection and accessibility tree.
 
 ## Install
 
-You need a Wayland (or X11) desktop, a Vulkan-capable GPU driver, and **Node.js 22.19 or newer**. Pipkin bundles
-the Pi engine, so nothing else has to be installed; your own Pi credentials in `~/.pi/agent` are used as they are.
+The working qualification scope is **x86_64 Arch/Omarchy, Hyprland/Wayland** with a Vulkan-capable GPU driver.
+You also need **Node.js 22.19 or newer**, Git and the desktop/runtime libraries listed in
+[`packaging/PKGBUILD`](packaging/PKGBUILD). The bundled Pi engine does not replace those system dependencies.
+Other desktops/distributions and X11 remain experimental. Each artifact's native ABI requirements depend on its
+build inputs; see [runtime inventory and limitations](docs/bundled-licenses.md#native-runtime-inspection).
+Your Pi credentials in `~/.pi/agent` are used unless an alternate agent directory is explicitly selected.
 
 ### Arch / Omarchy
 
@@ -128,6 +132,8 @@ The checkout must have validated generated model inputs as well as dependencies;
 Provider setup, missing/expired credentials and model refresh are documented in
 [getting started](docs/getting-started.md). Data ownership, quitting, uncertain work and diagnostic privacy are in
 [support and recovery](docs/support.md). Review diagnostic output before sharing it: engine logs may contain secrets.
+For sensitive security concerns, use the [private vulnerability-report route and security policy](SECURITY.md),
+not a public bug report.
 
 ## Using it
 
@@ -160,8 +166,11 @@ The Pi server currently does not expose provider account quota, remaining balanc
 | `Ctrl K` command palette | `Ctrl N` new chat | `Ctrl L` focus composer | `Ctrl J` focus transcript |
 | `Enter` send | `Shift Enter` new line | `Ctrl Enter` queue follow-up | `Ctrl Shift Enter` steer the run |
 | `Ctrl .` stop the run | `Ctrl M` choose model | `Ctrl O` attach files | `Ctrl Down` jump to latest |
-| `Ctrl B` sidebar | `Ctrl I` changes pane | `Alt Up/Down` previous / next chat | `F2` rename chat |
+| `Ctrl B` sidebar | `Ctrl I` changes pane | `Alt Up/Down` previous / next chat | `F2` rename demo chat |
 | `Ctrl ,` settings | `Ctrl Shift O` open project | `Esc` close a menu | `Ctrl Q` quit |
+
+Real-mode conversation names are derived from prompts. The pinned engine has no rename operation: the palette
+entry is disabled and F2 explains the limitation, rather than claiming a local title is engine-confirmed.
 
 ## How it works
 
@@ -178,8 +187,9 @@ flowchart LR
   about the GUI. Every event from the engine carries `(conversation, generation, operation)` and stale ones are
   dropped.
 - **`pipkin-ui`** only renders and turns input into commands. Rendering does no I/O and no parsing.
-- **`pipkin-app`** owns the database, the engine's lifecycle and the glue. It starts the engine, restarts it a few times
-  if it crashes, and stops it when you quit.
+- **`pipkin-app`** owns the database, the launched engine's lifecycle and the glue. It starts/restarts the engine it
+  owns and stops it when you quit. A separately started external server can continue work; see
+  [quitting and interrupted work](docs/support.md#quitting-and-interrupted-work).
 - **`pi-client`** speaks Pi's local protocol and checks who is on the other end of the socket before trusting it.
 
 ## Status

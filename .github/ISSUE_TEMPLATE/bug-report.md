@@ -4,7 +4,8 @@ about: Report a non-sensitive Pipkin failure with build identity and reproducibl
 title: ''
 ---
 
-<!-- Do not post security exploits or credentials here. Use a private vulnerability-report route when available.
+<!-- Do not post security exploits or credentials here. Use GitHub private vulnerability reporting:
+https://github.com/last-refuge/pipkin/security/advisories/new (see SECURITY.md).
 Do not attach auth.json, whole databases, process environments, full private sessions or unreviewed engine logs.
 --diagnose includes log/error text: review and redact it first. -->
 

@@ -457,6 +457,25 @@ suite tests passed** against the clean pinned engine. Only a core test was added
 claimed here. Candidate CI still requalifies packaging. Logs:
 `/tmp/pipkin-rename-regression-{workspace,clippy,engine}.log`.
 
+## Phase 5: private security route and README boundary corrections (2026-10-06)
+
+GitHub private vulnerability reporting was disabled. Enabled it for `last-refuge/pipkin` and confirmed
+`GET /repos/last-refuge/pipkin/private-vulnerability-reporting` returns **enabled: true**. Added `SECURITY.md`
+with the actual advisory-report URL, minimal synthetic/redacted evidence guidance, credential-rotation advice,
+current qualification-only fix scope, paired app/engine updates and execution/data boundaries. No report was filed;
+report delivery/response time is not observed, and no SLA, security audit or approved-release maintenance window
+is promised. Support docs and public bug-report instructions now point to this private route.
+
+README no longer says the engine bundle replaces all external dependencies or that every external server stops
+on quit. It scopes qualification to x86_64 Arch/Omarchy/Hyprland/Wayland, links native ABI/runtime findings, explains
+prompt-derived real conversation labels and demo-only rename, and replaces the infallible “Never lose work” heading.
+These are corrected source claims, not installed/native acceptance or final release support approval.
+
+On app base `1d256cd`: **538 workspace tests passed (40 ignored)**, Clippy/fmt clean; documentation-only delta,
+no new package or provider/native run claimed. Logs: `/tmp/pipkin-security-policy-{workspace,clippy}.log`.
+Remote qualification for `a849ec3` and queued `1d256cd` had not finished at the last check; new candidates still
+need their own qualification. Owner-profile/desktop/clipboard state was not changed.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -484,7 +503,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Picker/drop/clipboard/links/launching | 4 | Partial; not fully walked on installed candidate | Owner performs real interactions; engineering fixes findings |
 | Engine-unavailable native state | 4 | Automated behavior covered; native installed observation open | Owner/engineering check actionable error, cached history, and disabled dispatch |
 | Cold reboot/start | 4 | Unverified | Owner records recovery and usable startup, not just window mapping |
-| Onboarding/diagnostics/compatibility docs | 5 | Partial: setup/support/recovery guides, extension exclusions and report template published in source | Metadata-only Copy diagnostics/privacy tests passed; native installed clipboard check, final support acceptance and new-user observations remain |
+| Onboarding/diagnostics/compatibility docs | 5 | Partial: setup/support/recovery guides, extension exclusions and report template published in source | Metadata-only diagnostics/privacy tests passed; private vulnerability route enabled/documented; native installed clipboard check, final support acceptance and new-user observations remain |
 | Extended soak + real-window day | 6 | Open; 40-prompt baseline tripwire passed, historical 1500-prompt measurement exists | Engineering + owner run documented longer workloads and record app/engine resources |
 | Real signing key and independently verifiable candidate | 6 | Open; signature tooling previously exercised with throwaway key | Owner manages real key; engineering builds/verifies candidate |
 | RC stabilization and final release | 6/7 | Not started | Owner approves gates; engineering publishes identified signed artifacts and update/recovery policy |
