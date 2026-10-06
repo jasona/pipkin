@@ -168,6 +168,14 @@ pub fn selected_model(state: &Value) -> Option<String> {
     ))
 }
 
+pub fn selected_thinking(state: &Value) -> Option<String> {
+    state
+        .get("configuration")?
+        .get("thinkingLevel")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// Split a `provider/modelId` id at the first slash (model ids may themselves contain slashes).
 pub fn split_model_id(id: &str) -> Option<(&str, &str)> {
     let (provider, model) = id.split_once('/')?;

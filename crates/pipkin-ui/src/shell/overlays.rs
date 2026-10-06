@@ -10,6 +10,47 @@ use super::workspace::{Overlay, Workspace};
 use crate::model::DemoControls;
 use crate::theme::ActiveTheme;
 
+/// Put a submenu beside its parent, preferring the right edge. On a narrow window
+/// neither side fits, so overlap the parent instead of losing the submenu offscreen.
+fn submenu_x(parent_x: f32, parent_width: f32, submenu_width: f32, window_width: f32) -> f32 {
+    let right = parent_x + parent_width + 6.0;
+    let left = parent_x - submenu_width - 6.0;
+    if right + submenu_width <= window_width - 8.0 {
+        right
+    } else if left >= 8.0 {
+        left
+    } else {
+        right.clamp(8.0, (window_width - submenu_width - 8.0).max(8.0))
+    }
+}
+
+/// Choose the vertical edge offering the most room, unless downward already fits.
+/// The returned height includes the menu's chrome, not just its scrolling list.
+fn submenu_vertical(top: f32, bottom: f32, height: f32, desired: f32) -> (bool, f32, f32) {
+    let top = top.clamp(8.0, (height - 8.0).max(8.0));
+    let bottom = bottom.clamp(8.0, (height - 8.0).max(8.0));
+    let down = (height - 8.0 - top).max(0.0);
+    let up = (bottom - 8.0).max(0.0);
+    if down >= desired || down >= up {
+        (false, top, down.min(desired))
+    } else {
+        (true, bottom, up.min(desired))
+    }
+}
+
+pub(super) fn effort_label(level: &str) -> String {
+    match level {
+        "off" => "Off".into(),
+        "xhigh" => "Extra high".into(),
+        other => {
+            let mut chars = other.chars();
+            chars.next().map_or_else(String::new, |c| {
+                c.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        }
+    }
+}
+
 impl Workspace {
     fn palette_items(&self, cx: &gpui::App) -> Vec<Cmd> {
         let q = self.overlay_input.read(cx).text();
@@ -28,6 +69,11 @@ impl Workspace {
         match self.overlay {
             Overlay::Palette => self.palette_items(cx).len(),
             Overlay::Model => self.state(cx).models.len(),
+            Overlay::ModelSettings => 2,
+            Overlay::Effort => self
+                .state(cx)
+                .current()
+                .map_or(0, |c| c.thinking_levels.len()),
             // The projects, then "Open project folder…" when one can be opened.
             Overlay::Project => {
                 self.state(cx).projects.len() + usize::from(self.state(cx).can_create)
@@ -55,6 +101,27 @@ impl Workspace {
                     }
                     self.close_overlay(window, cx);
                     self.run_command(&cmd.run, window, cx);
+                }
+            }
+            Overlay::ModelSettings => match sel {
+                0 => self.open_overlay(Overlay::Model, window, cx),
+                1 if self
+                    .state(cx)
+                    .current()
+                    .is_some_and(|c| !c.thinking_levels.is_empty()) =>
+                {
+                    self.open_overlay(Overlay::Effort, window, cx);
+                }
+                _ => {}
+            },
+            Overlay::Effort => {
+                let level = self
+                    .state(cx)
+                    .current()
+                    .and_then(|c| c.thinking_levels.get(sel).cloned());
+                if let Some(level) = level {
+                    self.dispatch(Command::SetThinkingLevel(level), cx);
+                    self.close_overlay(window, cx);
                 }
             }
             Overlay::Model => {
@@ -105,7 +172,10 @@ impl Workspace {
         let c = &t.colors;
         let overlay = self.overlay;
         let this = cx.entity();
-        let transparent = matches!(overlay, Overlay::Model | Overlay::Project);
+        let transparent = matches!(
+            overlay,
+            Overlay::Model | Overlay::ModelSettings | Overlay::Effort | Overlay::Project
+        );
         let backdrop = div()
             .id("overlay-backdrop")
             .absolute()
@@ -117,21 +187,58 @@ impl Workspace {
                 move |_, window, cx| this.update(cx, |t, cx| t.close_overlay(window, cx))
             });
 
+        // Keep the settings menu visible while a submenu opens next to it.
+        let settings_bounds = self.submenu_parent_bounds(window, cx);
         let panel: gpui::AnyElement = match overlay {
             Overlay::Palette => self.render_palette(cx).into_any_element(),
-            Overlay::Model => self.render_menu_overlay(cx).into_any_element(),
-            Overlay::Project => self.render_menu_overlay(cx).into_any_element(),
+            Overlay::ModelSettings => self.render_model_settings(true, cx).into_any_element(),
+            Overlay::Model | Overlay::Effort => {
+                self.render_model_settings(false, cx).into_any_element()
+            }
+            Overlay::Project => self.render_menu_overlay(window, cx).into_any_element(),
             Overlay::Rename(_) => self.render_rename(cx).into_any_element(),
             Overlay::Prefs => self.render_prefs(cx).into_any_element(),
             Overlay::About => self.render_about(cx).into_any_element(),
             Overlay::Question => self.render_question(cx).into_any_element(),
             Overlay::None => div().into_any_element(),
         };
+        let submenu = match overlay {
+            Overlay::Model | Overlay::Effort => {
+                let contents = if overlay == Overlay::Model {
+                    self.render_menu_overlay(window, cx).into_any_element()
+                } else {
+                    self.render_effort_menu(window, cx).into_any_element()
+                };
+                let (upward, y, _) = self.submenu_vertical_layout(window, cx);
+                let x = submenu_x(
+                    f32::from(settings_bounds.origin.x),
+                    f32::from(settings_bounds.size.width),
+                    300.0 * t.scale.max(1.0),
+                    f32::from(window.viewport_size().width),
+                );
+                Some(
+                    gpui::deferred(
+                        gpui::anchored()
+                            .anchor(if upward {
+                                gpui::Anchor::BottomLeft
+                            } else {
+                                gpui::Anchor::TopLeft
+                            })
+                            .position(gpui::point(px(x), px(y)))
+                            .snap_to_window_with_margin(px(8.0))
+                            .child(contents),
+                    )
+                    .with_priority(3)
+                    .into_any_element(),
+                )
+            }
+            _ => None,
+        };
         let h = window.viewport_size().height;
         let positioned = match overlay {
             // Opens just above the model button: its bottom-left corner sits at the button's
             // top-left, in window coordinates, and is kept inside the window.
-            Overlay::Model => match self.model_button {
+            Overlay::Model | Overlay::ModelSettings | Overlay::Effort => match self.model_button {
                 Some(button) => gpui::deferred(
                     gpui::anchored()
                         .anchor(gpui::Anchor::BottomLeft)
@@ -168,7 +275,12 @@ impl Workspace {
                 .child(panel)
                 .into_any_element(),
         };
-        div().absolute().inset_0().child(backdrop).child(positioned)
+        div()
+            .absolute()
+            .inset_0()
+            .child(backdrop)
+            .child(positioned)
+            .children(submenu)
     }
 
     fn render_palette(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -419,19 +531,209 @@ impl Workspace {
             )
     }
 
-    fn render_menu_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_model_settings(&mut self, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let c = &t.colors;
+        let (model, effort, has_effort) = {
+            let s = self.state(cx);
+            let model = s
+                .models
+                .iter()
+                .find(|m| Some(&m.id) == s.prefs.model.as_ref())
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "Choose model".into());
+            let effort = s
+                .current()
+                .and_then(|conv| conv.thinking_level.as_deref())
+                .map(effort_label)
+                .unwrap_or_else(|| "Unavailable".into());
+            let has_effort = s
+                .current()
+                .is_some_and(|conv| !conv.thinking_levels.is_empty());
+            (model, effort, has_effort)
+        };
+        let this = cx.entity();
+        let measure = this.clone();
+        let selected = match self.overlay {
+            Overlay::Model => 0,
+            Overlay::Effort => 1,
+            _ => self.overlay_sel,
+        };
+        elevated(cx)
+            .id("model-settings")
+            .relative()
+            .key_context("Overlay")
+            .when(focused, |menu| menu.track_focus(&self.menu_focus))
+            .role(Role::Menu)
+            .aria_label("Model and effort")
+            .w(px(300.0 * t.scale.max(1.0)))
+            .p(px(6.0))
+            .flex()
+            .flex_col()
+            .occlude()
+            .children(
+                [(0, "Model", model, true), (1, "Effort", effort, has_effort)]
+                    .into_iter()
+                    .map(|(i, label, value, enabled)| {
+                        let this = this.clone();
+                        menu_row(("setting", i), i == selected, cx)
+                            .role(Role::MenuItem)
+                            .aria_label(format!("{label}: {value}"))
+                            .when(!enabled, |r| r.opacity(0.45))
+                            .on_click(move |_, window, cx| {
+                                if enabled {
+                                    this.update(cx, |t, cx| {
+                                        t.open_overlay(
+                                            if i == 0 {
+                                                Overlay::Model
+                                            } else {
+                                                Overlay::Effort
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            })
+                            .child(div().flex_1().child(label))
+                            .child(
+                                div()
+                                    .max_w(px(145.0))
+                                    .truncate()
+                                    .text_color(c.text_muted)
+                                    .child(value),
+                            )
+                            .child(icon("chevron-right", px(14.0), c.text_muted))
+                    }),
+            )
+            .child(
+                gpui::canvas(
+                    move |bounds, _, cx| {
+                        measure.update(cx, |t, _| t.model_settings_bounds = Some(bounds))
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+    }
+
+    fn submenu_parent_bounds(&self, window: &Window, cx: &gpui::App) -> gpui::Bounds<gpui::Pixels> {
+        self.model_settings_bounds.unwrap_or_else(|| {
+            let t = cx.theme();
+            let width = 300.0 * t.scale.max(1.0);
+            let height = 2.0 * f32::from(t.control_height()) + 14.0;
+            let button = self
+                .model_button
+                .map(|b| b.origin)
+                .unwrap_or(gpui::point(px(8.0), px(height + 14.0)));
+            gpui::Bounds::new(
+                gpui::point(
+                    px(f32::from(button.x).clamp(
+                        8.0,
+                        (f32::from(window.viewport_size().width) - width - 8.0).max(8.0),
+                    )),
+                    px((f32::from(button.y) - 6.0 - height).max(8.0)),
+                ),
+                gpui::size(px(width), px(height)),
+            )
+        })
+    }
+
+    fn submenu_vertical_layout(&self, window: &Window, cx: &gpui::App) -> (bool, f32, f32) {
+        let t = cx.theme();
+        let parent = self.submenu_parent_bounds(window, cx);
+        let chrome = f32::from(t.control_height()) + 23.0;
+        submenu_vertical(
+            f32::from(parent.origin.y),
+            f32::from(parent.origin.y + parent.size.height),
+            f32::from(window.viewport_size().height),
+            420.0 * t.scale.max(1.0) + chrome,
+        )
+    }
+
+    fn submenu_list_limit(&self, window: &Window, cx: &gpui::App) -> f32 {
+        let (_, _, room) = self.submenu_vertical_layout(window, cx);
+        (room - f32::from(cx.theme().control_height()) - 23.0).max(0.0)
+    }
+
+    fn render_effort_menu(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let c = &t.colors;
+        let (levels, selected) = self.state(cx).current().map_or_else(
+            || (Vec::new(), None),
+            |conv| (conv.thinking_levels.clone(), conv.thinking_level.clone()),
+        );
+        let this = cx.entity();
+        elevated(cx)
+            .id("effort-menu")
+            .key_context("Overlay")
+            .track_focus(&self.menu_focus)
+            .role(Role::Menu)
+            .aria_label("Effort")
+            .w(px(300.0 * t.scale.max(1.0)))
+            .p(px(6.0))
+            .flex()
+            .flex_col()
+            .occlude()
+            .child(
+                menu_row("effort-back", false, cx)
+                    .role(Role::MenuItem)
+                    .aria_label("Back to model and effort")
+                    .on_click({
+                        let this = this.clone();
+                        move |_, window, cx| {
+                            this.update(cx, |t, cx| {
+                                t.open_overlay(Overlay::ModelSettings, window, cx)
+                            })
+                        }
+                    })
+                    .child(icon("chevron-left", px(14.0), c.text_muted))
+                    .child("Model and effort"),
+            )
+            .child(div().h(px(1.0)).w_full().my(px(4.0)).bg(c.border))
+            .child(
+                div()
+                    .id("effort-list")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(self.submenu_list_limit(window, cx)))
+                    .overflow_y_scroll()
+                    .children(levels.into_iter().enumerate().map(|(i, level)| {
+                        let this = this.clone();
+                        let checked = Some(&level) == selected.as_ref();
+                        menu_row(("effort", i), i == self.overlay_sel, cx)
+                            .role(Role::MenuItem)
+                            .aria_label(format!("{} effort", effort_label(&level)))
+                            .on_click(move |_, window, cx| {
+                                this.update(cx, |t, cx| {
+                                    t.overlay_sel = i;
+                                    t.confirm_selection(window, cx);
+                                });
+                            })
+                            .child(div().w(px(16.0)).child(if checked {
+                                icon("check", px(14.0), c.accent).into_any_element()
+                            } else {
+                                div().into_any_element()
+                            }))
+                            .child(effort_label(&level))
+                    })),
+            )
+    }
+
+    fn render_menu_overlay(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let c = &t.colors;
         let this = cx.entity();
         let model_mode = self.overlay == Overlay::Model;
         let sel = self.overlay_sel;
-        // Tall enough to be useful, never taller than the space above the button it opens from.
-        let list_cap = {
-            let cap = 420.0 * t.scale.max(1.0);
-            match (model_mode, self.model_button) {
-                (true, Some(b)) => (f32::from(b.origin.y) - 24.0).clamp(120.0, cap),
-                _ => cap,
-            }
+        // Side menus must fit below the parent's top, rather than jumping above it.
+        let list_cap = if model_mode {
+            self.submenu_list_limit(window, cx)
+        } else {
+            420.0 * t.scale.max(1.0)
         };
         // The project menu ends with a row that opens the folder picker.
         let action_row = !model_mode && self.state(cx).can_create;
@@ -473,6 +775,22 @@ impl Workspace {
             .flex()
             .flex_col()
             .occlude()
+            .when(model_mode, |d| {
+                let this = this.clone();
+                d.child(
+                    menu_row("model-back", false, cx)
+                        .role(Role::MenuItem)
+                        .aria_label("Back to model and effort")
+                        .on_click(move |_, window, cx| {
+                            this.update(cx, |t, cx| {
+                                t.open_overlay(Overlay::ModelSettings, window, cx)
+                            })
+                        })
+                        .child(icon("chevron-left", px(14.0), c.text_muted))
+                        .child("Model and effort"),
+                )
+                .child(div().h(px(1.0)).w_full().my(px(4.0)).bg(c.border))
+            })
             .child(
                 // A long list (every model a provider offers) scrolls inside the menu instead
                 // of running off the window.
@@ -784,5 +1102,49 @@ impl Workspace {
                         }),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod submenu_tests {
+    use super::{submenu_vertical, submenu_x};
+
+    #[test]
+    fn submenu_uses_upward_space_near_bottom_instead_of_a_squat_list() {
+        assert_eq!(
+            submenu_vertical(650.0, 720.0, 800.0, 473.0),
+            (true, 720.0, 473.0)
+        );
+        assert_eq!(
+            submenu_vertical(50.0, 120.0, 800.0, 473.0),
+            (false, 50.0, 473.0)
+        );
+        assert_eq!(
+            submenu_vertical(230.0, 300.0, 500.0, 473.0),
+            (true, 300.0, 292.0)
+        );
+    }
+
+    #[test]
+    fn submenu_fits_inside_landscape_and_portrait_viewports() {
+        for height in [360.0, 800.0, 1440.0] {
+            for top in [8.0, height / 2.0, height - 80.0] {
+                let (up, edge, room) = submenu_vertical(top, top + 70.0, height, 473.0);
+                let (start, end) = if up {
+                    (edge - room, edge)
+                } else {
+                    (edge, edge + room)
+                };
+                assert!(start >= 8.0);
+                assert!(end <= height - 8.0);
+            }
+        }
+    }
+
+    #[test]
+    fn submenu_opens_beside_parent_and_stays_visible_on_small_windows() {
+        assert_eq!(submenu_x(240.0, 300.0, 300.0, 1440.0), 546.0);
+        assert_eq!(submenu_x(570.0, 300.0, 300.0, 900.0), 264.0);
+        assert_eq!(submenu_x(8.0, 300.0, 300.0, 500.0), 192.0);
     }
 }

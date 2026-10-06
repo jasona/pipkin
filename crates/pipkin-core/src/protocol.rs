@@ -15,6 +15,7 @@ pub enum Command {
     AddAttachments(Vec<Attachment>),
     RemoveAttachment(usize),
     SetModel(String),
+    SetThinkingLevel(String),
     /// Add a project folder (by absolute path) so conversations can be created in it.
     AddProject(String),
     /// Dismiss the application-level notice shown after a failed background action.
@@ -184,6 +185,11 @@ pub enum BackendRequest {
         generation: u64,
         model: String,
     },
+    SetThinkingLevel {
+        conversation: ConversationId,
+        generation: u64,
+        level: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,6 +250,11 @@ pub enum EventKind {
     ChangesReported(Vec<FileChange>),
     /// The workspace's current changes, independent of any run. Replaces what is shown.
     ChangesSynced(Vec<FileChange>),
+    /// Pi's authoritative, per-conversation thinking setting and supported levels.
+    ThinkingState {
+        level: String,
+        levels: Vec<String>,
+    },
     Completed,
     Failed {
         message: String,

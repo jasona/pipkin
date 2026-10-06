@@ -502,7 +502,9 @@ impl Worker {
             }
             // The demo creates conversations and chooses models locally in the core, so these
             // are never sent to it.
-            BackendRequest::CreateConversation { .. } | BackendRequest::SetModel { .. } => {}
+            BackendRequest::CreateConversation { .. }
+            | BackendRequest::SetModel { .. }
+            | BackendRequest::SetThinkingLevel { .. } => {}
             BackendRequest::CheckStatus {
                 conversation,
                 generation,

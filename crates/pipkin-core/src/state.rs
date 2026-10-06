@@ -43,6 +43,9 @@ pub struct ConversationState {
     pub draft: Draft,
     pub changes: Vec<FileChange>,
     pub selected_change: Option<usize>,
+    /// Reported by Pi for this conversation, not a global preference.
+    pub thinking_level: Option<String>,
+    pub thinking_levels: Vec<String>,
     /// Text of the last submission, kept for explicit retry.
     pub last_submission: Option<(String, Vec<Attachment>)>,
     /// A submission waiting for its journal commit. While set, nothing else can be submitted.
@@ -85,6 +88,8 @@ impl ConversationState {
             draft: Draft::default(),
             changes: Vec::new(),
             selected_change: None,
+            thinking_level: None,
+            thinking_levels: Vec::new(),
             last_submission: None,
             pending_intent: None,
             intent_error: None,
@@ -680,6 +685,20 @@ impl AppState {
                         c.draft.save = SaveState::Dirty;
                         out.notes.push(Note::Other);
                     }
+                }
+            }
+            Command::SetThinkingLevel(level) => {
+                if self.mode == Mode::Real
+                    && let Some(c) = self.current()
+                    && c.opened
+                    && c.thinking_levels.contains(&level)
+                {
+                    out.effects
+                        .push(Effect::Backend(BackendRequest::SetThinkingLevel {
+                            conversation: c.id,
+                            generation: c.generation,
+                            level,
+                        }));
                 }
             }
             Command::SetModel(m) => {
@@ -1455,6 +1474,7 @@ impl AppState {
                 | EventKind::Synced { .. }
                 | EventKind::OpenFailed { .. }
                 | EventKind::ChangesSynced(_)
+                | EventKind::ThinkingState { .. }
                 | EventKind::QueueAdmitted { .. }
                 | EventKind::QueueRefused { .. }
                 | EventKind::QueueAckLost { .. }
@@ -1731,6 +1751,13 @@ impl AppState {
                         ToolStatus::Failed
                     };
                     out.notes.push(Note::ItemChanged(id, i));
+                }
+            }
+            EventKind::ThinkingState { level, levels } => {
+                if c.opened {
+                    c.thinking_level = Some(level);
+                    c.thinking_levels = levels;
+                    out.notes.push(Note::Other);
                 }
             }
             EventKind::ChangesSynced(changes) => {

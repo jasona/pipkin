@@ -765,6 +765,7 @@ struct Agent {
     prompts: Vec<Value>,
     aborts: usize,
     selects: Vec<Value>,
+    thinking_selections: Vec<Value>,
     creates: Vec<Value>,
     /// requestId -> the JSON `lookup` returns.
     statuses: std::collections::HashMap<String, Value>,
@@ -944,6 +945,24 @@ fn agent_mock(
                 *status = settled(&op, "unanswered", Some("aborted"), None);
             }
         }
+        Ok(None)
+    });
+    pi.set_handler("pi.models", "getThinkingLevels", |_, _, _| {
+        Ok(Some(json!(["off", "low", "medium", "high"])))
+    });
+    let a = agent.clone();
+    pi.set_handler("pi.models", "selectThinking", move |pi, _, call| {
+        a.lock()
+            .unwrap()
+            .thinking_selections
+            .push(call.args[0].clone());
+        pi.publish(
+            "pi.models",
+            vec![Op::Set(
+                vec![key("configuration"), key("thinkingLevel")],
+                call.args[0].clone(),
+            )],
+        );
         Ok(None)
     });
     let a = agent.clone();
@@ -1314,6 +1333,10 @@ fn a_run_that_finished_while_another_session_was_open_settles_when_reopened() {
         env.next_for_conversation(b).kind,
         EventKind::Opened { .. }
     ));
+    assert!(matches!(
+        env.next_for_conversation(b).kind,
+        EventKind::ThinkingState { .. }
+    ));
     // While away, the engine finishes the run; nothing is delivered for a session not attached.
     agent
         .lock()
@@ -1347,6 +1370,37 @@ fn choosing_a_model_asks_the_engine_and_the_selection_follows_its_report() {
             |e| matches!(e, LifecycleEvent::ModelSelected(Some(m)) if m == "anthropic/sonnet")
         )
     );
+    let initial = loop {
+        let ev = env.next_event();
+        if let EventKind::ThinkingState { level, levels } = ev.kind {
+            break (level, levels);
+        }
+    };
+    assert_eq!(
+        initial,
+        (
+            "off".into(),
+            vec![
+                "off".to_string(),
+                "low".into(),
+                "medium".into(),
+                "high".into()
+            ]
+        )
+    );
+    env.backend.request(BackendRequest::SetThinkingLevel {
+        conversation: conv,
+        generation: 1,
+        level: "high".into(),
+    });
+    let updated = loop {
+        let ev = env.next_event();
+        if let EventKind::ThinkingState { level, .. } = ev.kind {
+            break level;
+        }
+    };
+    assert_eq!(updated, "high");
+    assert_eq!(agent.lock().unwrap().thinking_selections, [json!("high")]);
     env.backend.request(BackendRequest::SetModel {
         conversation: conv,
         generation: 1,
@@ -1485,6 +1539,10 @@ fn workspace_changes_follow_the_session_directory_and_update_when_a_tool_finishe
     // A fresh session starts with a fresh inspector. Its first workspace scan waits
     // for work in this session rather than showing pre-existing project changes.
     assert!(matches!(env.next_event().kind, EventKind::Opened { .. }));
+    assert!(matches!(
+        env.next_event().kind,
+        EventKind::ThinkingState { .. }
+    ));
     env.no_event_within(150);
 
     // A tool edits a tracked file and creates a new one; the transcript shows a finished tool.

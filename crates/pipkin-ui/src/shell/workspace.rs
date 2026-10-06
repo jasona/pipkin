@@ -22,6 +22,8 @@ pub enum Overlay {
     None,
     Palette,
     Model,
+    ModelSettings,
+    Effort,
     Project,
     Rename(ConversationId),
     Prefs,
@@ -162,6 +164,7 @@ pub struct Workspace {
     pub(super) menu_scroll: ScrollHandle,
     /// Where the model button was last painted, so its menu opens right above it.
     pub(super) model_button: Option<gpui::Bounds<gpui::Pixels>>,
+    pub(super) model_settings_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     pub(super) changes_scroll: ScrollHandle,
     pub(super) diff_rows: DiffRows,
     live_nav: Option<f32>,
@@ -239,6 +242,7 @@ impl Workspace {
             nav_scroll: ScrollHandle::new(),
             menu_scroll: ScrollHandle::new(),
             model_button: None,
+            model_settings_bounds: None,
             changes_scroll: ScrollHandle::new(),
             diff_rows: DiffRows::default(),
             live_nav: None,
@@ -550,8 +554,12 @@ impl Workspace {
         if self.overlay == Overlay::None {
             self.restore_focus = window.focused(cx);
         }
+        let previous = self.overlay;
+        if o == Overlay::ModelSettings && !matches!(previous, Overlay::Model | Overlay::Effort) {
+            self.model_settings_bounds = None;
+        }
         self.overlay = o;
-        self.overlay_sel = 0;
+        self.overlay_sel = usize::from(o == Overlay::ModelSettings && previous == Overlay::Effort);
         match o {
             Overlay::Palette => {
                 self.overlay_input.update(cx, |e, cx| {
@@ -586,7 +594,16 @@ impl Workspace {
                 self.menu_scroll.scroll_to_item(self.overlay_sel);
                 window.focus(&self.menu_focus, cx);
             }
-            Overlay::Project | Overlay::Prefs | Overlay::About => {
+            Overlay::Effort => {
+                self.overlay_sel = self.state(cx).current().map_or(0, |c| {
+                    c.thinking_levels
+                        .iter()
+                        .position(|l| Some(l) == c.thinking_level.as_ref())
+                        .unwrap_or(0)
+                });
+                window.focus(&self.menu_focus, cx);
+            }
+            Overlay::ModelSettings | Overlay::Project | Overlay::Prefs | Overlay::About => {
                 window.focus(&self.menu_focus, cx)
             }
             Overlay::Question => {

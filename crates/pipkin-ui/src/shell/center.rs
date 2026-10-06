@@ -5,6 +5,7 @@ use gpui::{
 use pipkin_core::*;
 
 use super::controls::*;
+use super::overlays::effort_label;
 use super::workspace::{Overlay, Panel, Workspace};
 use crate::theme::ActiveTheme;
 
@@ -458,6 +459,18 @@ impl Workspace {
                     "Choose model".into()
                 }
             });
+        let model_name = if real {
+            match self
+                .state(cx)
+                .current()
+                .and_then(|c| c.thinking_level.as_deref())
+            {
+                Some("off") | None => model_name,
+                Some(level) => format!("{model_name} · {}", effort_label(level)),
+            }
+        } else {
+            model_name
+        };
         let this = cx.entity();
 
         // ---- not-sent strip: the text was not sent (or not queued) and is still in the composer
@@ -803,11 +816,16 @@ impl Workspace {
                         Btn::new("model-menu")
                             .label(model_name)
                             .trailing_icon("chevron-up")
-                            .aria("Choose model (Ctrl+M)")
-                            .selected(self.overlay == Overlay::Model)
+                            .aria("Model and effort settings (Ctrl+M for models)")
+                            .selected(matches!(
+                                self.overlay,
+                                Overlay::ModelSettings | Overlay::Model | Overlay::Effort
+                            ))
                             .disabled(no_models)
                             .on_click(move |window, cx| {
-                                this.update(cx, |t, cx| t.open_overlay(Overlay::Model, window, cx))
+                                this.update(cx, |t, cx| {
+                                    t.open_overlay(Overlay::ModelSettings, window, cx)
+                                })
                             }),
                     )
                     // Remember where the button is, for the menu that opens above it.

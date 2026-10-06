@@ -394,9 +394,9 @@ impl Worker {
                     reason: OFFLINE.into(),
                 },
             ),
-            BackendRequest::CreateConversation { .. } | BackendRequest::SetModel { .. } => {
-                self.notice(OFFLINE.into())
-            }
+            BackendRequest::CreateConversation { .. }
+            | BackendRequest::SetModel { .. }
+            | BackendRequest::SetThinkingLevel { .. } => self.notice(OFFLINE.into()),
             // These need the engine; the user can try again.
             BackendRequest::Cancel { .. }
             | BackendRequest::CheckStatus { .. }
@@ -836,6 +836,11 @@ impl Live {
                 model,
                 ..
             } => self.set_model(worker, conversation, &model),
+            BackendRequest::SetThinkingLevel {
+                conversation,
+                level,
+                ..
+            } => self.set_thinking_level(worker, conversation, &level),
             BackendRequest::CreateConversation { cwd, request, .. } => {
                 self.create_conversation(worker, &cwd, &request)
             }
@@ -1455,6 +1460,53 @@ impl Live {
         }
     }
 
+    fn set_thinking_level(
+        &mut self,
+        worker: &mut Worker,
+        conversation: ConversationId,
+        level: &str,
+    ) {
+        let Some(target) = self.target_for(conversation) else {
+            return worker.notice("Open the conversation first, then choose effort.".into());
+        };
+        // The replicated configuration, not this call, confirms the new selection.
+        if let Err(error) = self.call(&target, "pi.models", "selectThinking", vec![json!(level)]) {
+            worker.notice(format!("Could not change effort: {error}"));
+        }
+    }
+
+    fn sync_thinking(
+        &self,
+        worker: &Worker,
+        conversation: ConversationId,
+        generation: u64,
+        target: &RpcTarget,
+        state: &Value,
+    ) {
+        let Some(level) = session::selected_thinking(state) else {
+            return;
+        };
+        match self.call(target, "pi.models", "getThinkingLevels", vec![]) {
+            Ok(Some(value)) => {
+                let levels = value
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::ThinkingState { level, levels },
+                );
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!("could not read thinking levels: {error}"),
+        }
+    }
+
     fn create_conversation(&mut self, worker: &mut Worker, cwd: &str, request: &RequestId) {
         // The request key doubles as the session id, so repeating a lost creation is harmless:
         // Pi refuses a duplicate id and that refusal is treated as success.
@@ -1645,6 +1697,9 @@ impl Live {
             (worker.sink)(LifecycleEvent::ModelSelected(
                 state.as_ref().and_then(session::selected_model),
             ));
+            if let Some(state) = &state {
+                self.sync_thinking(worker, conversation, generation, &target, state);
+            }
         }
         self.resubscribes = 0;
         if let Some(ui) = &ui
@@ -1766,6 +1821,13 @@ impl Live {
             (worker.sink)(LifecycleEvent::ModelSelected(session::selected_model(
                 &state,
             )));
+            self.sync_thinking(
+                worker,
+                current.conversation,
+                current.generation,
+                &current.target,
+                &state,
+            );
             // A provider the engine could not read (expired login, bad key) is said once.
             let warning = session::refresh_warning(&state);
             if warning != worker.last_refresh_warning {

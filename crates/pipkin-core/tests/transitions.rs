@@ -81,6 +81,84 @@ fn run_started(s: &mut AppState, text: &str) -> OperationId {
 }
 
 #[test]
+fn effort_is_per_conversation_engine_authoritative_and_generation_guarded() {
+    let mut s = state();
+    s.mode = Mode::Real;
+    let opened = ev(
+        &s,
+        EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    );
+    apply(&mut s, opened);
+    let thinking = ev(
+        &s,
+        EventKind::ThinkingState {
+            level: "low".into(),
+            levels: vec!["off".into(), "low".into(), "high".into()],
+        },
+    );
+    apply(&mut s, thinking);
+    assert!(
+        s.dispatch(Command::SetThinkingLevel("max".into()))
+            .effects
+            .is_empty()
+    );
+    let out = s.dispatch(Command::SetThinkingLevel("high".into()));
+    assert!(
+        matches!(&out.effects[..], [Effect::Backend(BackendRequest::SetThinkingLevel { conversation: ConversationId(1), level, .. })] if level == "high")
+    );
+    assert_eq!(s.current().unwrap().thinking_level.as_deref(), Some("low"));
+    let confirmed = ev(
+        &s,
+        EventKind::ThinkingState {
+            level: "high".into(),
+            levels: vec!["off".into(), "low".into(), "high".into()],
+        },
+    );
+    apply(&mut s, confirmed);
+    assert_eq!(s.current().unwrap().thinking_level.as_deref(), Some("high"));
+
+    s.dispatch(Command::SelectConversation(ConversationId(2)));
+    assert!(s.current().unwrap().thinking_level.is_none());
+    let b = ev(
+        &s,
+        EventKind::Opened {
+            items: vec![],
+            has_older: false,
+            changes: vec![],
+        },
+    );
+    apply(&mut s, b);
+    let thinking = ev(
+        &s,
+        EventKind::ThinkingState {
+            level: "off".into(),
+            levels: vec!["off".into()],
+        },
+    );
+    apply(&mut s, thinking);
+    s.dispatch(Command::SelectConversation(ConversationId(1)));
+    let old_generation = s.current().unwrap().generation - 1;
+    assert!(
+        s.apply_event(BackendEvent {
+            conversation: ConversationId(1),
+            generation: old_generation,
+            op: None,
+            kind: EventKind::ThinkingState {
+                level: "off".into(),
+                levels: vec!["off".into()]
+            }
+        })
+        .notes
+        .is_empty()
+    );
+    assert_eq!(s.current().unwrap().thinking_level.as_deref(), Some("high"));
+}
+
+#[test]
 fn submit_moves_draft_into_transcript_and_runs() {
     let mut s = state();
     s.dispatch(Command::EditDraft("fix the test".into()));

@@ -627,6 +627,10 @@ fn a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history() {
     // The engine, not a local preference, says which model is selected.
     assert_eq!(h.state.prefs.model.as_deref(), Some("stub/scripted"));
     assert!(h.state.models.iter().any(|m| m.id == "stub/scripted"));
+    h.until("the engine reports supported effort levels", |s| {
+        s.current().is_some_and(|c| !c.thinking_levels.is_empty())
+    });
+    assert_eq!(h.state.current().unwrap().thinking_levels, ["off"]);
 
     h.send("please update the notes and add a greeting");
     h.until("the run completes", |s| {
@@ -1883,6 +1887,43 @@ fn a_provider_configured_after_start_appears_after_a_refresh_and_can_then_be_use
     });
     h.stop();
     drop(p.provider);
+}
+
+#[test]
+#[ignore = "needs a real Pi engine: set PIPKIN_PI_REPO"]
+fn choosing_effort_is_confirmed_by_pi_and_restored_per_conversation() {
+    let p = prepare(|_, _| Reply::Text("okay".into()));
+    init_project(&p.project);
+    let agent_dir = p.config.agent_dir.as_ref().unwrap();
+    let path = agent_dir.join("models.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["providers"]["stub"]["models"][0]["reasoning"] = json!(true);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let db = p.root.join("app.sqlite3");
+    let mut h = Harness::start(PiConfig::managed(p.config.clone()), &db);
+    h.open_new_conversation(&p.project);
+    h.until("reasoning levels load", |s| {
+        s.current()
+            .is_some_and(|c| c.thinking_levels.iter().any(|l| l == "high"))
+    });
+    let first = h.state.current().unwrap().id;
+    h.dispatch(Command::SetThinkingLevel("high".into()));
+    h.until("Pi confirms high effort", |s| {
+        s.current()
+            .is_some_and(|c| c.thinking_level.as_deref() == Some("high"))
+    });
+    h.dispatch(Command::NewConversation);
+    h.until("new conversation opens", |s| {
+        s.current()
+            .is_some_and(|c| c.id != first && c.opened && c.thinking_level.is_some())
+    });
+    h.dispatch(Command::SelectConversation(first));
+    h.until("first conversation restores its effort", |s| {
+        s.current().is_some_and(|c| {
+            c.id == first && c.opened && c.thinking_level.as_deref() == Some("high")
+        })
+    });
+    h.stop();
 }
 
 // ------------------------------------------------------------------------------ M4
