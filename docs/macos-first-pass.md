@@ -17,8 +17,12 @@ resources but signature indicates they must be present.” Do not use those arti
 Packaging now ad-hoc signs the completed `.app` and requires strict signature verification both before
 archiving and after extraction. The embedded build report records the pre-bundle-signing binary hash; the
 external `build-info.json` records the final signed executable hash, avoiding a self-referential resource seal.
-An actual green run is required for this correction. Ad-hoc signatures verify integrity, **not publisher
-identity or Gatekeeper acceptance**; Developer ID signing and notarization remain absent.
+Corrected run [37488722228](https://github.com/last-refuge/pipkin/actions/runs/37488722228) on clean
+`91e1586000a1ed999d28b04fe9dbf4dcae316c83` passed both actual signature checks (“valid on disk” and
+“satisfies its Designated Requirement”). Download its `pipkin-macos-ARM64-91e1586000a1ed999d28b04fe9dbf4dcae316c83`
+artifact and extract a fresh app; replace the old bundle rather than merging files into it.
+Ad-hoc signatures verify integrity, **not publisher identity or Gatekeeper acceptance**; Developer ID signing
+and notarization remain absent.
 
 Read-only checks on your extracted copy (use straight quotes, not smart quotes):
 

@@ -675,6 +675,29 @@ its engine/build checks and perform the new actual codesign/archive verification
 `/tmp/pipkin-macos-bundle-signature-{workspace,clippy}.log`. Native signature correction remains unverified until
 that new runner succeeds; normal quarantined download trust still requires a separate acceptance decision.
 
+## Corrected completed-bundle signature: observed green (2026-10-06)
+
+[Mac run 37488722228](https://github.com/last-refuge/pipkin/actions/runs/37488722228) on clean full app
+`91e1586000a1ed999d28b04fe9dbf4dcae316c83` passed compilation/transport/ownership/engine smoke checks and
+**actual strict signature verification of the completed and re-extracted bundles**. Both codesign calls reported
+“valid on disk” and “satisfies its Designated Requirement.” This addresses the owner-reported missing-resource
+signature failure in the prior packaging. It does not establish quarantined download/Gatekeeper acceptance.
+
+Corrected Apple Silicon archive SHA-256:
+`1821666d514fbe75eabd92f3dcc0e313925be93f06a891bda1b7a33153a8526b`.
+Final signed executable SHA-256: `be8c087d709a624a10707d19d061f78d59ae99a8794c1bab0e379b3f3c31d2ca`;
+pre-bundle-signing executable SHA-256: `85dd8c5b7e8490ddb37126a70cc6e08bccaa7ec3076a898bccc072458ab995e8`.
+Downloaded archive checks confirmed CodeResources presence, archive/final executable hashes and separation of
+embedded pre-sign identity from the external final hash, without executing it locally. Native log:
+`/tmp/pipkin-macos-bundle-signature-ci-full.log`; review root pointer:
+`/tmp/pipkin-macos-signed-artifact-root`. Linux run 37488722412 remains in progress at this check.
+
+Artifact: **`pipkin-macos-ARM64-91e1586000a1ed999d28b04fe9dbf4dcae316c83`**. Extract into a fresh directory and
+replace the old app as a whole, not by merging resources. Actual owner launch retry/Gatekeeper assessment is
+still required. The signature is ad-hoc only; Developer ID/notarization remain absent. No release/signing-key
+promise or successful GUI launch is inferred. Preserved the concurrent unrelated redacted-thinking change
+`ef861bd`; only packaging/tests/documentation were modified here.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
