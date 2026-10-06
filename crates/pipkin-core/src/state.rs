@@ -20,6 +20,8 @@ pub struct ConversationState {
     pub run: RunState,
     /// Latest committed usage from Pi for this conversation. None means not reported.
     pub usage: Option<SessionUsage>,
+    /// A successful run finished while another conversation was selected.
+    pub unseen_completion: bool,
     /// User-owned continuous goal. A paused goal never schedules another prompt.
     pub goal: Option<Goal>,
     goal_op: Option<OperationId>,
@@ -86,6 +88,7 @@ impl ConversationState {
             generation: 0,
             run: RunState::Idle,
             usage: None,
+            unseen_completion: false,
             goal: None,
             goal_op: None,
             recovery_notice: false,
@@ -123,6 +126,7 @@ impl ConversationState {
     /// Short activity label for the navigation list.
     pub fn activity(&self) -> Option<&'static str> {
         match self.run {
+            RunState::Idle if self.unseen_completion => Some("Done!"),
             RunState::Idle => None,
             ref r => Some(r.label()),
         }
@@ -605,6 +609,7 @@ impl AppState {
                 }
                 self.selected = Some(id);
                 self.prefs.selected_project = Some(project);
+                self.conv_mut(id).unwrap().unseen_completion = false;
                 self.prefs.selected_conversation = Some(id);
                 let c = self.conv_mut(id).unwrap();
                 // A real engine is attached to one session at a time, so coming back to a
@@ -1602,6 +1607,7 @@ impl AppState {
         let mut out = Outcome::default();
         let id = ev.conversation;
         let real = self.mode == Mode::Real;
+        let selected = self.selected == Some(id);
         // What is worth keeping a saved copy of: a settled view of the conversation.
         let cache = real
             && matches!(
@@ -2071,6 +2077,9 @@ impl AppState {
             }
             EventKind::EngineState { busy, queue } => {
                 if real {
+                    if busy {
+                        c.unseen_completion = false;
+                    }
                     if c.current_request.is_none() {
                         c.status_check_pending = false;
                         c.status_error = None;
@@ -2107,6 +2116,7 @@ impl AppState {
                 }
             }
             EventKind::Completed => {
+                c.unseen_completion = !selected;
                 c.stop_error = None;
                 c.status_error = None;
                 c.status_check_pending = false;
@@ -2117,6 +2127,7 @@ impl AppState {
                 out.merge(self.advance_goal(id, ev.op));
             }
             EventKind::Failed { message } => {
+                c.unseen_completion = false;
                 if let Some(goal) = &mut c.goal {
                     goal.paused = Some(format!("Run failed: {message}"));
                     out.effects.push(Effect::SaveGoal {
@@ -2144,6 +2155,7 @@ impl AppState {
                 out.notes.push(Note::Other);
             }
             EventKind::Cancelled => {
+                c.unseen_completion = false;
                 if c.goal_op == ev.op
                     && let Some(goal) = &mut c.goal
                     && goal.turns > 0

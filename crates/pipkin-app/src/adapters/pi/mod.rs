@@ -1,8 +1,9 @@
 //! The Pi engine adapter: maps Pi's replicated services onto Pipkin's core.
 //!
-//! One worker thread owns the connection. It discovers a trusted local server (or launches and
-//! owns one), mirrors the session directory into the catalogue, and opens a conversation by
-//! attaching its session and subscribing to its `Transcript` and `Models` services. Every update
+//! One worker thread owns the visible connection. It discovers a trusted local server (or
+//! launches and owns one), mirrors the session directory into the catalogue, and opens a
+//! conversation by attaching its session and subscribing to its `Transcript` and `Models`
+//! services. Detached runs started here are watched on separate read-only connections. Every update
 //! is checked against the live subscription, so traffic from an attachment the user has moved
 //! away from cannot reach the screen.
 //!
@@ -28,8 +29,9 @@ pub mod workspace;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -127,6 +129,11 @@ enum Msg {
         generation: u64,
         workspace: Workspace,
     },
+    BackgroundSettled {
+        op: OperationId,
+        request: RequestId,
+        kind: EventKind,
+    },
     Shutdown,
 }
 
@@ -170,6 +177,7 @@ impl Backend for PiBackend {
             last_open: None,
             ever_connected: false,
             runs: HashMap::new(),
+            watchers: HashMap::new(),
             queue_unknown: Vec::new(),
             last_refresh_warning: None,
         };
@@ -235,6 +243,8 @@ struct Worker {
     /// Accepted prompts awaiting an outcome. Kept across reconnects: they are reconciled by
     /// asking the engine, never by resending.
     runs: HashMap<OperationId, Run>,
+    /// Detached-session observers; the main connection remains attached to the selected session.
+    watchers: HashMap<OperationId, Arc<AtomicBool>>,
     /// Queue requests whose acknowledgment was lost, resolved when the conversation is attached.
     queue_unknown: Vec<QueueReq>,
     /// The last model-refresh warning shown, so it is said once.
@@ -257,6 +267,9 @@ impl Worker {
                     }
                 }
             }
+        }
+        for stop in self.watchers.values() {
+            stop.store(true, Ordering::Relaxed);
         }
         // Stop only what this adapter started.
         if let Some(engine) = self.engine.as_mut() {
@@ -302,6 +315,26 @@ impl Worker {
         });
     }
 
+    fn stop_watching(&mut self, op: OperationId) {
+        if let Some(stop) = self.watchers.remove(&op) {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn background_settled(&mut self, op: OperationId, request: &RequestId, kind: EventKind) {
+        let Some(run) = self
+            .runs
+            .get(&op)
+            .filter(|r| &r.request == request)
+            .cloned()
+        else {
+            return;
+        };
+        self.runs.remove(&op);
+        self.stop_watching(op);
+        self.emit_op(run.conversation, run.generation, op, kind);
+    }
+
     fn queue_refused(&self, req: &QueueReq, reason: String) {
         self.emit(
             req.conversation,
@@ -334,6 +367,9 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Timeout) => return false,
                 Err(mpsc::RecvTimeoutError::Disconnected) | Ok(Msg::Shutdown) => return true,
                 Ok(Msg::Request(request)) => self.refuse_offline(request),
+                Ok(Msg::BackgroundSettled { op, request, kind }) => {
+                    self.background_settled(op, &request, kind);
+                }
                 Ok(Msg::Client(_)) | Ok(Msg::Changes { .. }) => {} // from a connection that is gone
             }
         }
@@ -596,6 +632,9 @@ impl Worker {
                         generation,
                         workspace,
                     } => live.changes_ready(self, conversation, generation, workspace),
+                    Msg::BackgroundSettled { op, request, kind } => {
+                        self.background_settled(op, &request, kind);
+                    }
                 }
             }
             live.flush(self, dirty);
@@ -636,6 +675,7 @@ struct Current {
 
 struct Live {
     client: Client,
+    route: ServerRoute,
     location: String,
     dir: Subscription,
     sessions: Vec<(ConversationId, Session)>,
@@ -714,6 +754,93 @@ fn parse_lookup(value: &Value) -> Option<Lookup> {
     }
 }
 
+/// Poll one detached session on its own connection. Never move the visible client's attachment.
+/// The request key identifies the run; a lost connection only triggers a fresh lookup, not a
+/// second submission. The worker validates the key again before publishing an outcome.
+fn watch_background(
+    tx: Sender<Msg>,
+    route: ServerRoute,
+    session_id: String,
+    op: OperationId,
+    request: RequestId,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        let result = (|| -> Result<Option<EventKind>, Error> {
+            let (client, _events) =
+                unix::connect(&route.path, ClientOptions::new(&route.server_id))?;
+            let result = (|| -> Result<Option<EventKind>, Error> {
+                let attach =
+                    ServiceCall::new("pi.session-management", "attach", vec![json!(session_id)]);
+                client
+                    .request(&server_target(&route), &attach)?
+                    .wait_timeout(CALL_TIMEOUT)?;
+                let deadline = Instant::now() + ATTACH_TIMEOUT;
+                let target = loop {
+                    if stop.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    if let Some(attachment) = client.attachment()
+                        && attachment.session_id == session_id
+                    {
+                        break attachment.rpc();
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(Error::Timeout);
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                };
+                while !stop.load(Ordering::Relaxed) {
+                    let answer = client
+                        .request(
+                            &target,
+                            &ServiceCall::new(
+                                "pi.agent-controller",
+                                "lookup",
+                                vec![json!(request.0)],
+                            ),
+                        )?
+                        .wait_timeout(CALL_TIMEOUT)?;
+                    match answer.as_ref().and_then(parse_lookup) {
+                        Some(Lookup::Known {
+                            open: false,
+                            reason,
+                            detail,
+                            ..
+                        }) => {
+                            return Ok(Some(outcome_event(reason.as_deref(), detail.as_deref())));
+                        }
+                        Some(Lookup::Unknown) => {
+                            return Ok(Some(EventKind::Failed {
+                                message: "Pi no longer has a record of this run. Its tool effects cannot be confirmed; inspect the project before sending more work.".into(),
+                            }));
+                        }
+                        _ => thread::sleep(RUN_POLL),
+                    }
+                }
+                Ok(None)
+            })();
+            client.disconnect();
+            result
+        })();
+        match result {
+            Ok(Some(kind)) => {
+                let _ = tx.send(Msg::BackgroundSettled {
+                    op,
+                    request: request.clone(),
+                    kind,
+                });
+                break;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                log::debug!("background session lookup will retry: {error}");
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
 impl Live {
     fn server(&self) -> RpcTarget {
         RpcTarget::Server {
@@ -745,6 +872,7 @@ impl Live {
             .map_err(|e| Connection::Offline(e.to_string()))?;
         let mut live = Live {
             client: client.clone(),
+            route: route.clone(),
             location: display_path(&config.directory),
             dir,
             sessions: Vec::new(),
@@ -1260,6 +1388,7 @@ impl Live {
                 // A previously accepted run losing its record is not an unadmitted prompt.
                 // Never tell the person it had no side effects merely because lookup is empty.
                 let kind = if worker.runs.remove(&op).is_some() {
+                    worker.stop_watching(op);
                     EventKind::Failed { message: "Pi no longer has a record of this run. Its tool effects cannot be confirmed; inspect the project before sending more work.".into() }
                 } else {
                     EventKind::StatusResolved { accepted: false }
@@ -1289,6 +1418,7 @@ impl Live {
                     );
                 } else {
                     worker.runs.remove(&op);
+                    worker.stop_watching(op);
                     // Put the latest durable reply into core before settlement/goal evaluation;
                     // the lookup response can beat the view's queued dirty notification.
                     self.flush(
@@ -1345,6 +1475,7 @@ impl Live {
                 },
             };
             worker.runs.remove(&op);
+            worker.stop_watching(op);
             self.flush(
                 worker,
                 Dirty {
@@ -1730,6 +1861,22 @@ impl Live {
             );
         };
         let session_id = session.session_id.clone();
+        if let Some(previous) = &self.current
+            && previous.conversation != conversation
+        {
+            for (op, run) in &worker.runs {
+                if run.conversation == previous.conversation && !worker.watchers.contains_key(op) {
+                    let stop = Arc::new(AtomicBool::new(false));
+                    worker.watchers.insert(*op, stop.clone());
+                    let tx = worker.tx.clone();
+                    let route = self.route.clone();
+                    let session = previous.session_id.clone();
+                    let op = *op;
+                    let request = run.request.clone();
+                    thread::spawn(move || watch_background(tx, route, session, op, request, stop));
+                }
+            }
+        }
         // Drop the previous attachment's subscriptions first; the client retires them anyway.
         self.current = None;
         let attach = ServiceCall::new("pi.session-management", "attach", vec![json!(session_id)]);

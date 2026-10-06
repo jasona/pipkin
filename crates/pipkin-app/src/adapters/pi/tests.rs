@@ -1464,7 +1464,7 @@ fn stopping_a_run_asks_the_engine_and_settles_as_cancelled() {
 }
 
 #[test]
-fn a_run_that_finished_while_another_session_was_open_settles_when_reopened() {
+fn a_run_that_finished_while_another_session_was_open_settles_in_background() {
     let (pi, agent, _) = agent_mock(
         &[("s-a", 100), ("s-b", 200)],
         vec![("s-a", view(&[])), ("s-b", view(&[]))],
@@ -1489,15 +1489,22 @@ fn a_run_that_finished_while_another_session_was_open_settles_when_reopened() {
         env.next_for_conversation(b).kind,
         EventKind::ThinkingState { .. }
     ));
-    // While away, the engine finishes the run; nothing is delivered for a session not attached.
+    // The separate watcher observes the outcome without moving the visible attachment.
     agent
         .lock()
         .unwrap()
         .statuses
         .insert("req-away".into(), settled("1", "done", None, None));
-    env.no_event_within(700);
-    env.open(a, 2);
-    assert_eq!(env.next_for(40).kind, EventKind::Completed);
+    let settled = env.next_for(40);
+    assert_eq!(settled.conversation, a);
+    assert_eq!(settled.kind, EventKind::Completed);
+    assert!(
+        env.conns
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|conn| { conn.attachment().is_some_and(|a| a.session_id == "s-b") })
+    );
 }
 
 impl Env {

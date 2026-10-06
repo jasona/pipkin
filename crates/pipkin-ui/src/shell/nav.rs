@@ -129,7 +129,9 @@ impl Workspace {
                     div()
                         .id(("conv", id.0 as usize))
                         .role(Role::ListItem)
-                        .aria_label(title.clone())
+                        .aria_label(
+                            activity.map_or_else(|| title.clone(), |a| format!("{title}, {a}")),
+                        )
                         .aria_selected(is_sel)
                         .relative()
                         .flex()
@@ -181,7 +183,13 @@ impl Workspace {
                                     format!("{} ago", relative_time(now, at))
                                         .replace("now ago", "just now"),
                                 )
-                                .children(activity.map(|a| chip(a, c.accent, c.accent_bg, cx))),
+                                .children(activity.map(|a| {
+                                    if a == "Done!" {
+                                        chip(a, c.success, c.diff_add_bg, cx)
+                                    } else {
+                                        chip(a, c.accent, c.accent_bg, cx)
+                                    }
+                                })),
                         )
                 }))
                 .into_any_element()

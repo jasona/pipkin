@@ -81,6 +81,45 @@ fn run_started(s: &mut AppState, text: &str) -> OperationId {
 }
 
 #[test]
+fn background_completion_is_unseen_until_the_conversation_is_selected() {
+    let mut s = state();
+    let op = run_started(&mut s, "start");
+    let generation = s.current().unwrap().generation;
+    s.dispatch(Command::SelectConversation(ConversationId(2)));
+    assert_eq!(
+        s.conversation(ConversationId(1)).unwrap().activity(),
+        Some("Working")
+    );
+    apply(
+        &mut s,
+        BackendEvent {
+            conversation: ConversationId(1),
+            generation,
+            op: Some(op),
+            kind: EventKind::Completed,
+        },
+    );
+    assert_eq!(
+        s.conversation(ConversationId(1)).unwrap().activity(),
+        Some("Done!")
+    );
+    s.dispatch(Command::SelectConversation(ConversationId(1)));
+    assert_eq!(s.conversation(ConversationId(1)).unwrap().activity(), None);
+    let op = run_started(&mut s, "again");
+    let generation = s.current().unwrap().generation;
+    apply(
+        &mut s,
+        BackendEvent {
+            conversation: ConversationId(1),
+            generation,
+            op: Some(op),
+            kind: EventKind::Completed,
+        },
+    );
+    assert_eq!(s.conversation(ConversationId(1)).unwrap().activity(), None);
+}
+
+#[test]
 fn effort_is_per_conversation_engine_authoritative_and_generation_guarded() {
     let mut s = state();
     s.mode = Mode::Real;
