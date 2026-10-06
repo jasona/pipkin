@@ -1,0 +1,314 @@
+# Pipkin v1.0: release qualification and delivery plan
+
+## Purpose
+
+Turn the current daily-use beta into an installable, recoverable, documented, and supportable v1.0. This is a release-hardening plan, not another broad feature milestone.
+
+The owner reports heavy beta use, including building Pipkin itself and working on other projects. Treat that as owner-reported daily-use evidence. It does not establish clean-machine installation, other-platform support, or untested recovery/accessibility behavior.
+
+**Recommended initial release scope:** x86_64 Arch/Omarchy, Hyprland, Wayland. Confirm this scope before implementation. Other environments remain experimental or unsupported until separately qualified.
+
+## Evidence and working rules
+
+Reference these documents and implementations, but verify their current state before changing code:
+
+- `docs/native-gate-testing.md`: manual desktop, installation, and recovery gates.
+- `docs/packaging.md`: packaging, engine staging, diagnostics, migration, and rollback.
+- `docs/platforms.md`: support boundaries and cross-platform blockers.
+- `docs/extensions.md`: native extension compatibility.
+- `docs/beta.md`, `docs/scorecard.md`, `docs/rust-desktop-client-plan.md`: historical targets and evidence. Several entries are outdated or contradictory.
+- `scripts/build-engine.sh`, `scripts/package.sh`, `scripts/release.sh`, `scripts/verify-install.sh`, `scripts/verify-release.sh`, `scripts/test-install.sh`.
+
+Rules for every phase:
+
+1. Distinguish **automated**, **observed**, **owner-reported**, **failed**, and **unverified** evidence. Record the build/engine revisions and relevant environment with results.
+2. Preserve journal-before-send, engine-authoritative state, stale-event guards, and honest offline/simulated states.
+3. Never turn recovery into blind prompt replay. Prompt deduplication is not a guarantee of exactly-once external tool effects.
+4. Read the GPUI desktop skill before modifying views, text input, persistence, core state, or native tests. Follow `AGENTS.md`, including guarded synthetic input and desktop safety restrictions.
+5. For code changes, require `cargo test --workspace`, `cargo clippy --workspace --all-targets`, and `cargo fmt --all --check`. Run applicable real-engine tests separately; ignored tests are not evidence of a pass.
+6. Keep changes in focused commits. Do not modify desktop configuration, install system packages, or change display scale without approval.
+7. Do not perform destructive recovery testing on the owner's working profile. Use disposable projects, profiles, and databases.
+
+## Execution status
+
+Phase 0 execution began on 2026-10-06 UTC. The current baseline and live tracker are in
+[`docs/v1-release-gates.md`](../docs/v1-release-gates.md): 505 workspace tests passed, 33 real-engine tests
+passed against the development engine, another 33 passed against the unpacked bundled engine, and the
+scratch-prefix install/upgrade/rollback/uninstall checks passed. Working platform scope is recorded;
+final scope/acceptance sign-off and the manual gates remain owner decisions.
+
+## Release policy
+
+A v1.0 candidate must have:
+
+- No known silent loss of acknowledged drafts or submission intents.
+- No known client-induced duplicate dispatch after reconnect or restart.
+- No visible control that silently claims success without performing its action.
+- No known misleading empty/success state for a failed operation.
+- A tested install, upgrade, and recovery path on the supported platform.
+- A pinned, identifiable app/engine pair and verifiable release artifacts.
+- Accurate support, compatibility, and limitation documentation.
+- Closed supported-platform native gates, or an explicit scope/acceptance decision for any unresolved gate. Documentation alone does not make a failed gate pass.
+
+Do not require Windows/macOS, automatic updates, an embedded editor/terminal, or additional agent features for this release.
+
+---
+
+## Phase 0 — Establish the release baseline and freeze scope
+
+**Dependency:** none.
+
+### Tasks
+
+- [ ] Confirm the supported platform and architecture with the owner.
+- [x] Record the current Pipkin and Pi engine full revisions, toolchain, Node version, and database schema.
+- [x] Capture the automated baseline, full real-engine suite results, and existing package/installer test results.
+- [x] Record the owner's beta report: environments, projects/workflows exercised, duration if known, and known incidents. Do not invent measurements.
+- [x] Replace stale claims such as “beta not started” with accurately attributed evidence in the current beta/native-gate records. Historical roadmap sections still need consolidation in Phase 5.
+- [x] Create a release-gate record containing each gate's status, evidence, owner, and follow-up.
+- [x] Establish the working freeze: fixes, qualification, onboarding/support, and release machinery. New feature requests go to the post-v1 backlog unless they resolve a release blocker.
+
+### Deliverables
+
+- A current release baseline and gate record, preferably maintained alongside `docs/native-gate-testing.md`.
+- A short approved support statement.
+- A prioritized blocker list linked to the phases below.
+
+### Exit criteria
+
+The team can identify what is being shipped, which engine it uses, what has actually passed, and what remains unverified. Daily-use beta evidence is recorded without overstating platform coverage.
+
+---
+
+## Phase 1 — Remove silent and misleading product behavior
+
+**Dependency:** Phase 0.
+
+### 1.1 Conversation naming
+
+Current finding: `Command::RenameConversation` is a no-op in real mode in `crates/pipkin-core/src/state.rs`.
+
+- [x] Verify the current Pi metadata/rename contract: no rename operation is available in the current experimental session service.
+- [x] Either implement authoritative rename with pending/error/reopen behavior, or remove/disable the real-mode action with a clear explanation. Real-mode palette entry disabled; F2 explains the limitation; demo behavior preserved.
+- [x] Ensure buttons, shortcuts, and palette availability agree: real-mode rename cannot open the no-op dialog.
+- [ ] Test failure, restart, and conversation switching. Do not present a local-only title as an engine-confirmed rename.
+
+### 1.2 Changes-pane scan failures
+
+Current finding: the Pi adapter maps `Workspace::Unavailable` to an empty changes list.
+
+- [ ] Represent loading, stale, unavailable, and genuinely empty states distinctly.
+- [ ] Preserve the previous successful diff as stale when a refresh fails.
+- [ ] Surface the failure reason and provide a bounded retry/refresh path.
+- [ ] Clear previous-project data on project/conversation changes; never preserve another project's diff as the new project's state.
+- [ ] Test Git failure, missing project directory, non-Git project, and recovery.
+
+### 1.3 Interrupted work and unresolved operations
+
+- [ ] Explain that engine recovery may repeat a partially executed tool even though Pipkin does not resend the prompt.
+- [ ] Show a clear status/recovery path for prolonged “Stopping” or unresolved outcomes.
+- [ ] Offer safe reconciliation/reconnect/diagnostics actions where supported. Never mark an operation settled merely because a timer expired.
+- [ ] Test connection loss during stop, engine restart during work, and late settlement.
+
+### 1.4 Recent feature regression pass
+
+- [ ] Verify fresh-conversation Changes state and restoration of older conversations.
+- [ ] Verify pane resizing after window/display changes and menu placement in narrow/tall/short layouts.
+- [ ] Verify effort selection remains engine-authoritative and conversation-specific.
+- [ ] Verify project-scoped `@` completion: mouse/Tab selection, linked paths, spaces/Unicode, undo/redo, project switches, inaccessible/deleted/new files, and no completion during IME composition.
+- [ ] Confirm `@` mention semantics are transparent: path references are not automatic file-content attachments.
+
+### Exit criteria
+
+No known silent no-op remains in the advertised workflow. Changes failures cannot masquerade as “No changes yet.” Recovery states describe what is known and offer safe next steps. Targeted regressions and applicable real-engine tests pass.
+
+---
+
+## Phase 2 — Make builds and qualification repeatable
+
+**Dependency:** Phase 0; may proceed alongside Phase 1. Must finish before qualifying the release package.
+
+### Tasks
+
+- [ ] Pin the exact Pi engine full revision used by the release rather than implicitly packaging whichever adjacent checkout exists.
+- [ ] Make release builds reject dirty/unidentified engine sources, or use a clean checkout created from the pin. Development overrides may remain explicit.
+- [ ] Record app version/revision, full engine revision, protocol/compatibility information, and relevant build inputs in the manifest/diagnostics.
+- [ ] Verify required generated engine assets and production dependencies exist. A manifest must describe the artifact actually staged.
+- [ ] Add CI for Rust tests, Clippy, formatting, and installer tests.
+- [ ] Add a real-engine CI qualification job using the pinned engine and scripted provider, without credentials or paid requests.
+- [ ] Test the packaged engine, not only the development checkout; run `verify-install.sh --full` or its equivalent.
+- [ ] Audit bundled licenses/provenance and runtime dependencies.
+- [ ] Ensure release artifact collection cannot accidentally include obsolete packages from previous builds.
+
+### Exit criteria
+
+A clean build can produce and test the same identified app/engine pair without relying on the owner's development checkout state. Compatibility rejection is tested. Required CI checks are established and green.
+
+---
+
+## Phase 3 — Qualify clean installation, upgrade, and rollback
+
+**Dependencies:** Phases 1 and 2.
+
+Use a second supported machine when available, otherwise a fresh supported user/system environment. A scratch-prefix check is useful but is not a substitute for the desktop install gate.
+
+### Tasks
+
+- [ ] Install the actual package without an adjacent Pi checkout or development environment.
+- [ ] Launch from the desktop launcher; verify icon, window identity, and engine discovery.
+- [ ] Run `pipkin --diagnose --probe` from the installed copy.
+- [ ] Configure a provider through the documented workflow and obtain a real answer.
+- [ ] Exercise a real project with file-changing work and inspect the diff.
+- [ ] Save a draft with attachments, quit, reopen, and verify it.
+- [ ] Upgrade with saved drafts/history present; verify the new bundled engine is used and data survives.
+- [ ] Test rollback, newer-schema refusal, and restoring the correct backup in a disposable profile.
+- [ ] Test the generic installer's upgrade/rollback/uninstall behavior on the supported environment if it will be offered for v1.0.
+- [ ] Confirm uninstall preserves user data and all required dependencies are documented.
+
+### Exit criteria
+
+A person can install, launch, use, upgrade, and recover Pipkin from the shipped artifact without source checkouts. Data-preservation and rollback results are recorded with package versions and environment details.
+
+---
+
+## Phase 4 — Close supported-platform native gates
+
+**Dependencies:** Phases 1–3. Use the installed candidate where possible.
+
+### Required checks
+
+- [ ] **Minimize/restore:** draft, caret focus, transcript scroll, and rendering survive.
+- [ ] **Suspend/resume during work:** reconnect or an honest offline state; draft intact; no duplicate client dispatch.
+- [ ] **Monitor unplug/replug:** pane edges remain reachable; layout recovers as the window/viewport shrinks and grows.
+- [ ] **Scale and text:** both themes, enlarged text, narrow layouts, focus rings, menus, and path completion at the supported scales. Record actual scale values, including compositor snapping.
+- [ ] **IME:** actual compose, candidate selection, commit, and cancel; candidate geometry follows the caret; Enter does not submit during composition.
+- [ ] **Keyboard:** complete normal workflow, menus, completion, attachments, queue controls, dialogs, and recovery without a pointer.
+- [ ] **Orca:** typed-character/caret speech and a full workflow through navigation, composer, transcript, tools, and status announcements. This is a known partial/failing gate until demonstrated otherwise.
+- [ ] **Native interactions:** file picker, real drag-and-drop, clipboard image/text, file links, editor/terminal launch, and extension questions.
+- [ ] **Unavailable engine:** actionable startup error, readable saved history, and no misleading ready/send state.
+- [ ] **Cold launch after reboot:** record recovery and time to usable UI, not only window mapping.
+
+### Gate policy
+
+Fix supported-platform failures before release. If a gate cannot be closed, obtain an explicit decision to defer/change the acceptance criterion and document the limitation prominently. Do not advertise an accessibility or IME workflow as supported solely because its API exists.
+
+Display-presentation latency is a measurement follow-up unless a specific latency guarantee is part of the release promise. Do not substitute CPU frame submission for presentation measurement.
+
+### Exit criteria
+
+The supported desktop workflow passes the agreed native gates. Every remaining limitation has an explicit acceptance decision and accurate public wording.
+
+---
+
+## Phase 5 — Finish onboarding, support, and compatibility documentation
+
+**Dependencies:** Phase 1 for behavior; Phases 3–4 for final installation/platform claims. Drafting can happen earlier.
+
+### Tasks
+
+- [ ] Document first-run provider setup, missing credentials, expired authentication, and model refresh.
+- [ ] Add an in-app **Copy diagnostics** action with clear privacy expectations. Audit redaction before encouraging users to share reports.
+- [ ] Document locations and ownership of drafts, sessions, credentials, caches, backups, and logs.
+- [ ] Document what quitting does to active engine work and how to recover after interruption.
+- [ ] Explain workspace-wide Changes semantics, partial cached-history search coverage, and `@` references versus attachments.
+- [ ] Publish the extension compatibility matrix. Decide whether stable Pi `ctx.ui.*` routing is required for the advertised extension promise; bridge it or explicitly exclude it.
+- [ ] Publish the exact supported platform, engine compatibility, runtime dependencies, and unsupported environments.
+- [ ] Replace historical/contradictory status claims with current evidence; keep old measurements labelled historical.
+- [ ] Update README commands, repository links, screenshots, and version/support labels.
+- [ ] Observe several new users going from installation to first reply where feasible; record stalls and fix blocking onboarding problems. Do not fabricate a participant count or completion rate.
+- [ ] Provide a bug-report template and documented diagnostics/recovery procedure.
+
+### Exit criteria
+
+A new user can follow the installation/setup instructions without undocumented developer knowledge. Support reports can identify the app/engine pair safely. Public claims match tested behavior and qualification results.
+
+---
+
+## Phase 6 — Cut and stabilize a signed release candidate
+
+**Dependencies:** Phases 1–5.
+
+### Tasks
+
+- [ ] Set consistent release-candidate versions in Cargo, package metadata, manifests, and release output.
+- [ ] Build from clean, pinned sources; retain an immutable record of the app/engine pair.
+- [ ] Run all required CI, the full real-engine suite, installer checks, and packaged-engine qualification against that candidate.
+- [ ] Run the extended automated soak with a documented round count and workload.
+- [ ] Run a real-window day-long session; measure app and engine memory/file descriptors, and distinguish initial cache growth from sustained growth.
+- [ ] Recheck crash/reconnect, saved-draft recovery, unknown submission, storage-write failure, and upgrade paths in disposable profiles.
+- [ ] Establish the real release signing key, safe key handling, and independently published fingerprint.
+- [ ] Generate checksums/signatures; download and verify on a separate environment, including a tampered-artifact rejection check.
+- [ ] Publish the candidate, known limitations, install/update/rollback instructions, and changelog.
+- [ ] Complete a bounded stabilization period with the owner and available testers. Fix release blockers only; rebuild/requalify any changed candidate.
+
+### Exit criteria
+
+The candidate is identifiable, downloadable, verifiable, installable, and stable in the agreed workflows. There are no unresolved release-blocking incidents. Qualification results refer to the artifact being approved, not an older build.
+
+---
+
+## Phase 7 — Publish v1.0 and establish maintenance
+
+**Dependency:** Phase 6 accepted by the owner.
+
+### Tasks
+
+- [ ] Review and sign off the gate record and known limitations.
+- [ ] Set the final `1.0.0` version consistently and tag the exact sources.
+- [ ] Build/test the final artifacts; do not merely rename an artifact carrying an RC version.
+- [ ] Publish signed artifacts, checksums, verification instructions, and the release notes.
+- [ ] Publish explicit supported-platform and extension-compatibility statements.
+- [ ] Document the manual update process and tested rollback procedure. An in-app updater is not required.
+- [ ] Define how bugs/security reports are received and how app/engine compatibility changes are released.
+- [ ] Retain the prior working package and recovery instructions.
+- [ ] Move non-blocking issues to a prioritized post-v1 backlog.
+
+### Exit criteria
+
+v1.0 is available through a documented release channel, can be verified by users, and has a practical support and update/recovery policy.
+
+## Post-v1 backlog — explicitly not required for this release
+
+- Windows/macOS transports, process ownership, native input/accessibility, installers, and signing/notarization.
+- GNOME/KDE, pure X11, other Linux distributions, and additional architectures.
+- Provider speed/priority-tier controls.
+- Automatic update checks/installations.
+- Compiled/smaller engine packaging; measure current artifact size before setting a target.
+- Engine-wide search beyond locally cached history.
+- Additional extension/TUI compatibility beyond the v1 contract.
+- Embedded terminal/editor, cloud/team features, and patch reversion.
+- Additional performance tooling and display-presentation measurements.
+
+## Execution order at a glance
+
+```text
+0. Scope, baseline, and evidence
+          |
+          +--> 1. Product/recovery hardening --+
+          |                                    |
+          +--> 2. Pinned builds and CI --------+--> 3. Installed-product qualification
+                                                       |
+                                                       v
+                                                 4. Native gates
+                                                       |
+                     5. Onboarding/support drafts -----+--> Finalize docs
+                                                       |
+                                                       v
+                                                 6. Signed RC + soak
+                                                       |
+                                                       v
+                                                 7. Publish v1.0
+```
+
+## Final go/no-go checklist
+
+- [ ] Supported platform and release scope are approved.
+- [ ] Silent no-ops, misleading empty states, and known client-induced data-loss/duplicate-dispatch defects are closed.
+- [ ] Recovery semantics are tested and explained, including partial tool execution.
+- [ ] Clean install, upgrade, rollback, and data preservation pass.
+- [ ] Required native gates pass, or scope/criteria changes are explicitly accepted and disclosed.
+- [ ] App and engine are pinned; the packaged pair passes required automated and real-engine checks.
+- [ ] Soak/stabilization evidence is recorded for the candidate.
+- [ ] Onboarding, diagnostics privacy, support, and compatibility documentation are accurate.
+- [ ] Signed artifacts and verification/rollback instructions are published.
+- [ ] The owner approves v1.0.

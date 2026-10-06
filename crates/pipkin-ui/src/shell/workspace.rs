@@ -803,6 +803,13 @@ impl Workspace {
         self.open_overlay(Overlay::Prefs, window, cx);
     }
     fn on_rename(&mut self, _: &RenameConversation, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state(cx).mode == Mode::Real {
+            self.show_toast(
+                "Renaming conversations is not supported by this Pi engine.",
+                cx,
+            );
+            return;
+        }
         if let Some(id) = self.state(cx).selected {
             self.open_overlay(Overlay::Rename(id), window, cx);
         }

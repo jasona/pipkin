@@ -31,7 +31,10 @@ scripts/verify-install.sh --full      # ...and run the real-engine workflow test
 The engine is staged from the Pi fork checkout by `scripts/build-engine.sh`: a copy without `.git` and the
 evaluation suite, dev dependencies pruned, plus the manifest. It is source plus dependencies run by Node's
 TypeScript support, as Pi's own `pi-test.sh` does; Pi does not yet publish a compiled experimental server, so a
-compiled engine is a Pi-side follow-up. The installed size is large (about 850 MiB) because of that.
+compiled engine is a Pi-side follow-up. The original installed-size measurement was about 850 MiB. The
+2026-10-06 v1 baseline stages **453 MiB total**, with **200 MiB of engine** and an **89,114,048-byte tarball**
+(about 85 MiB). Sizes vary with engine dependencies and binary debug information; see
+[v1-release-gates.md](v1-release-gates.md) for the exact identified artifact.
 
 `makepkg` needs `!lto` (set in the PKGBUILD): its LTO flags break linking the bundled SQLite.
 

@@ -2,8 +2,10 @@
 
 There is no telemetry. Pipkin sends nothing anywhere about its use. Beta evidence comes from people running it
 and reporting, with `pipkin --diagnose --probe` output (home directory hidden, no credentials) attached to a
-report. Everything below is a target to measure against; **none has been measured**, because there has been no
-beta.
+report. The owner now reports heavy daily-use beta testing, including building Pipkin itself and working on
+other projects, and describes the app as being in great shape. This is **owner-reported workflow evidence**;
+duration, incident rates, and new-user results are not quantified. The targets below remain targets rather
+than measured beta rates. Current release qualification is tracked in [v1-release-gates.md](v1-release-gates.md).
 
 ## Reliability targets
 
@@ -26,4 +28,5 @@ beta.
 ## Gates a beta must pass before wider release
 
 The owner-run gates in `native-gate-testing.md`, the install gates on a clean machine, and the platforms
-claimed in `platforms.md`.
+claimed in `platforms.md`. Daily-use beta does not automatically close these gates; results must be recorded
+for the relevant environment and release candidate. See the sequenced [v1 release plan](../llm-docs/pipkin-v1-release-plan.md).

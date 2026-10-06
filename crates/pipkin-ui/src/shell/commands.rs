@@ -2,7 +2,7 @@
 //! `AppState::availability()` so every surface agrees.
 
 use gpui::Action;
-use pipkin_core::{AppState, Command, ItemKind, TextSize, Theme as ThemeChoice, ToolStatus};
+use pipkin_core::{AppState, Command, ItemKind, Mode, TextSize, Theme as ThemeChoice, ToolStatus};
 
 use super::actions::*;
 use crate::model::DemoControls;
@@ -62,7 +62,7 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             "Rename conversation",
             "Conversation",
             Some("F2"),
-            has_conv,
+            has_conv && state.mode == Mode::Demo,
             Run::Action(Box::new(RenameConversation)),
         ),
         cmd(
@@ -484,6 +484,14 @@ mod removal_tests {
             .iter()
             .find(|c| c.title == title)
             .unwrap_or_else(|| panic!("no command {title:?}"))
+    }
+
+    #[test]
+    fn rename_is_disabled_when_the_real_engine_cannot_rename_sessions() {
+        let mut state = state_with_queue_and_attachments();
+        assert!(find(&build(&state, None), "Rename conversation").enabled);
+        state.mode = Mode::Real;
+        assert!(!find(&build(&state, None), "Rename conversation").enabled);
     }
 
     #[test]

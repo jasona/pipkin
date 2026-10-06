@@ -1,5 +1,9 @@
 # Native gate testing notes (owner-run)
 
+**v1 qualification is active:** see [v1-release-gates.md](v1-release-gates.md) for the current identified build,
+automated package evidence, owner-reported daily-use beta, and the release tracker. The beta below is no longer
+“not started,” but individual manual checks still need recorded results; heavy use does not implicitly pass them.
+
 These checks need a person at the machine and a real desktop session. They are **unverified** unless a result is recorded below. Launch with `scripts/try-m2.sh` (managed engine, scripted provider), or `cargo run -p pipkin-app --release -- --demo normal`.
 
 | # | Gate | Steps | Pass when | Result |
@@ -31,6 +35,6 @@ These checks need a person at the machine and a real desktop session. They are *
 | 15 | Other compositors | Run on GNOME and KDE Wayland: file picker, clipboard, decorations, IME. | Everything in the walkthrough works. | unverified |
 | 16 | Generic installer on another distribution | `./install.sh` from the tarball on Fedora/Debian/Ubuntu with Node >= 22.19; upgrade, rollback, uninstall. | Same results as `scripts/test-install.sh`, and a launcher entry works. | unverified (checked on Arch in a scratch prefix) |
 | 17 | Signed release | Sign with a real key, download elsewhere, run `verify-release.sh --require-signature`. | Verifies; a tampered file fails. | partial (throwaway key only) |
-| 18 | Beta | See `beta.md`. | Targets met. | not started |
+| 18 | Beta | See `beta.md` and `v1-release-gates.md`. | Targets met with recorded evidence. | owner reports heavy daily use; quantitative targets and other-user qualification remain open |
 
 Record results here with the date, compositor, scale and input-method engine used.

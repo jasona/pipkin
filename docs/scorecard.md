@@ -1,5 +1,19 @@
 # Scorecard
 
+## Current v1 qualification baseline (2026-10-06)
+
+The owner reports heavy daily-use beta, including building Pipkin itself and using it on other projects.
+The current automated baseline is **505 workspace tests passed (36 ignored)**, Clippy/fmt clean, **33 real-engine
+release tests passed**, and another **33 passed against the packaged engine**. Scratch-prefix install, upgrade,
+rollback and uninstall checks also passed. Native and clean-system qualification remain separately tracked.
+Full app/engine revisions, environment, artifact checksum, evidence boundaries, and open gates are in
+[v1-release-gates.md](v1-release-gates.md).
+
+## Historical prototype scorecard
+
+The measurements, test counts, and recommendation below describe the original prototype; they are not current
+release qualification. Later IME/Orca/scale observations are in `native-gate-testing.md` and the product plan.
+
 Reference machine: see `docs/baseline.md` (Omarchy, Hyprland 0.56.2, Intel RPL-S via Vulkan, 2560×1080 @ 60 Hz, scale 1, Rust 1.99.0). Release build. Results are split into measured, observed, failed and unverified. Thresholds are proposed targets, not benchmarks.
 
 ## Automated (all green, `cargo test --workspace`, clippy and fmt clean)
