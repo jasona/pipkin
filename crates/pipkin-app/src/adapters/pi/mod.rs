@@ -687,7 +687,7 @@ struct Live {
     resubscribes: u32,
     /// A workspace scan is running; another is wanted once it ends.
     scanning: bool,
-    rescan: bool,
+    rescan: Option<(ConversationId, u64)>,
 }
 
 fn server_target(route: &ServerRoute) -> RpcTarget {
@@ -883,7 +883,7 @@ impl Live {
             current: None,
             resubscribes: 0,
             scanning: false,
-            rescan: false,
+            rescan: None,
         };
         live.refresh_directory();
         Ok(live)
@@ -999,7 +999,7 @@ impl Live {
                         generation,
                         EventKind::ChangesScanState(ChangesState::Loading),
                     );
-                    self.schedule_changes(worker);
+                    self.schedule_changes(worker, conversation, generation);
                 } else {
                     worker.emit(
                         conversation,
@@ -1122,7 +1122,7 @@ impl Live {
                         },
                     );
                     worker.emit_op(conversation, generation, op, EventKind::Accepted);
-                    self.schedule_changes(worker);
+                    self.schedule_changes(worker, conversation, generation);
                 }
                 Some(false) => {
                     let reason = reply["error"]["message"]
@@ -1196,7 +1196,7 @@ impl Live {
                                     entry: QueueId(entry),
                                 },
                             );
-                            self.schedule_changes(worker);
+                            self.schedule_changes(worker, req.conversation, req.generation);
                         }
                         // Admitted, but we cannot tell which entry: ask again.
                         None => worker.queue_lost(&req),
@@ -1431,16 +1431,10 @@ impl Live {
                     worker.stop_watching(op);
                     // Put the latest durable reply into core before settlement/goal evaluation;
                     // the lookup response can beat the view's queued dirty notification.
-                    self.flush(
-                        worker,
-                        Dirty {
-                            transcript: true,
-                            ..Dirty::default()
-                        },
-                    );
+                    self.sync_settled_conversation(worker, conversation);
                     let kind = outcome_event(reason.as_deref(), detail.as_deref());
                     worker.emit_op(conversation, generation, op, kind);
-                    self.schedule_changes(worker);
+                    self.schedule_changes(worker, conversation, generation);
                 }
             }
             Ok(None) => failed(
@@ -1452,6 +1446,23 @@ impl Live {
                 worker,
                 format!("Could not check with Pi: {error}. The outcome is still unresolved."),
             ),
+        }
+    }
+
+    /// Settlement may refresh its own live replica, never whichever session is now selected.
+    fn sync_settled_conversation(&mut self, worker: &mut Worker, conversation: ConversationId) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|c| c.conversation == conversation)
+        {
+            self.flush(
+                worker,
+                Dirty {
+                    transcript: true,
+                    ..Dirty::default()
+                },
+            );
         }
     }
 
@@ -1486,18 +1497,16 @@ impl Live {
             };
             worker.runs.remove(&op);
             worker.stop_watching(op);
-            self.flush(
-                worker,
-                Dirty {
-                    transcript: true,
-                    ..Dirty::default()
-                },
-            );
+            self.sync_settled_conversation(worker, run.conversation);
             worker.emit_op(run.conversation, run.generation, op, event);
-            if let Some(current) = self.current.as_mut() {
+            if let Some(current) = self
+                .current
+                .as_mut()
+                .filter(|c| c.conversation == run.conversation && c.generation == run.generation)
+            {
                 current.workspace_ready = true;
             }
-            self.schedule_changes(worker);
+            self.schedule_changes(worker, run.conversation, run.generation);
         }
         self.resolve_queue_unknown(worker);
     }
@@ -1781,8 +1790,14 @@ impl Live {
 
     /// Scan the open session's working directory for changes, off this thread, one scan at a
     /// time (a request during a scan asks for one more afterwards).
-    fn schedule_changes(&mut self, worker: &Worker) {
-        let Some(current) = &self.current else { return };
+    fn schedule_changes(&mut self, worker: &Worker, conversation: ConversationId, generation: u64) {
+        let Some(current) = self
+            .current
+            .as_ref()
+            .filter(|c| c.conversation == conversation && c.generation == generation)
+        else {
+            return;
+        };
         if !current.workspace_ready {
             return;
         }
@@ -1797,7 +1812,7 @@ impl Live {
             return;
         };
         if self.scanning {
-            self.rescan = true;
+            self.rescan = Some((conversation, generation));
             return;
         }
         self.scanning = true;
@@ -1846,8 +1861,8 @@ impl Live {
             };
             worker.emit(conversation, generation, kind);
         }
-        if std::mem::take(&mut self.rescan) {
-            self.schedule_changes(worker);
+        if let Some((conversation, generation)) = self.rescan.take() {
+            self.schedule_changes(worker, conversation, generation);
         }
     }
 
@@ -1891,6 +1906,8 @@ impl Live {
         }
         // Drop the previous attachment's subscriptions first; the client retires them anyway.
         self.current = None;
+        // A deferred scan belongs to the attachment that requested it, not the new one.
+        self.rescan = None;
         let attach = ServiceCall::new("pi.session-management", "attach", vec![json!(session_id)]);
         // Pi's server can answer `internal_error` when a session is re-attached right after a
         // client switched away from it (observed against the real server: the session's worker
@@ -2027,7 +2044,7 @@ impl Live {
             last_workspace: None,
             oldest_entry,
         });
-        self.schedule_changes(worker);
+        self.schedule_changes(worker, conversation, generation);
         // Prompts accepted earlier may have finished while this conversation was not attached.
         self.poll_runs(worker);
     }
@@ -2209,7 +2226,7 @@ impl Live {
                     })
                     .unwrap_or(false);
                 if changed {
-                    self.schedule_changes(worker);
+                    self.schedule_changes(worker, conversation, generation);
                 }
             }
         }

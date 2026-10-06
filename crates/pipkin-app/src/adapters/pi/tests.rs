@@ -14,7 +14,7 @@ use pipkin_core::{
 };
 use serde_json::{Value, json};
 
-use super::{PiBackend, PiConfig};
+use super::{Msg, PiBackend, PiConfig, Workspace};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -1498,6 +1498,34 @@ fn a_run_that_finished_while_another_session_was_open_settles_in_background() {
     let settled = env.next_for(40);
     assert_eq!(settled.conversation, a);
     assert_eq!(settled.kind, EventKind::Completed);
+    // A scan started before the switch can complete after the run itself. Neither its
+    // contents nor a follow-up scan may be redirected to the visible conversation.
+    env.backend
+        .tx
+        .send(Msg::Changes {
+            conversation: a,
+            generation: 1,
+            workspace: Workspace::Changes {
+                files: vec![FileChange {
+                    path: "only-in-a.txt".into(),
+                    added: 1,
+                    removed: 0,
+                    hunks: vec![],
+                }],
+                truncated: false,
+            },
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    while let Ok(event) = env.events.try_recv() {
+        assert!(
+            !matches!(
+                event.kind,
+                EventKind::ChangesSynced(_) | EventKind::ChangesScanState(_)
+            ),
+            "a background completion must not change the visible inspector: {event:?}"
+        );
+    }
     assert!(
         env.conns
             .lock()

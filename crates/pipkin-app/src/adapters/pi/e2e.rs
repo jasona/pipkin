@@ -1632,10 +1632,41 @@ fn switching_conversations_keeps_each_ones_run_and_settles_what_ended_while_away
         is_idle(s) && assistant_texts(s).contains(&"b is done".to_owned())
     });
 
-    // A finishes while the user is looking at B.
+    h.until("B's initial workspace scan is complete", |s| {
+        s.current().unwrap().changes_state == ChangesState::Ready
+    });
+    // Drain B's coalesced initial scans before simulating A's final filesystem effect.
+    for _ in 0..5 {
+        thread::sleep(Duration::from_millis(100));
+        h.pump();
+    }
+    let before = h.state.current().unwrap();
+    let (b_changes, b_revision, b_selected) = (
+        before.changes.clone(),
+        before.changes_revision,
+        before.selected_change,
+    );
+    std::fs::write(
+        fx.project.join("only-in-a.txt"),
+        "effect of the background task\n",
+    )
+    .unwrap();
+    // A finishes while the user is looking at B. Its completion must not trigger a
+    // workspace refresh for B, even though these conversations share a project.
     gate.open();
     h.until_asked(&fx.provider, 2);
-    thread::sleep(Duration::from_millis(500));
+    h.until("A settles in the background", |s| {
+        matches!(s.conversation(a).unwrap().run, RunState::Idle)
+    });
+    for _ in 0..5 {
+        thread::sleep(Duration::from_millis(100));
+        h.pump();
+    }
+    assert_eq!(h.state.selected, Some(b));
+    let current = h.state.current().unwrap();
+    assert_eq!(current.changes, b_changes);
+    assert_eq!(current.changes_revision, b_revision);
+    assert_eq!(current.selected_change, b_selected);
     h.dispatch(Command::SelectConversation(a));
     h.until("A is attached again and settled", |s| {
         s.selected == Some(a)
