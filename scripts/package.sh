@@ -28,7 +28,15 @@ for f in Poppins-OFL.txt Lilex-OFL.txt IBMPlexSans-LICENSE.txt; do
   install -Dm644 "assets/fonts/$f" "$stage/usr/share/licenses/pipkin/$f"
 done
 install -Dm644 assets/PROVENANCE.md "$stage/usr/share/doc/pipkin/PROVENANCE.md"
-install -Dm644 README.md "$stage/usr/share/doc/pipkin/README.md"
+install -Dm644 packaging/README.md "$stage/usr/share/doc/pipkin/README.md"
+install -Dm644 SECURITY.md "$stage/usr/share/doc/pipkin/SECURITY.md"
+for guide in docs/*.md; do
+  install -Dm644 "$guide" "$stage/usr/share/doc/pipkin/$guide"
+done
+install -Dm644 llm-docs/pipkin-v1-release-plan.md "$stage/usr/share/doc/pipkin/llm-docs/pipkin-v1-release-plan.md"
+install -Dm644 assets/PROVENANCE.md "$stage/usr/share/doc/pipkin/assets/PROVENANCE.md"
+install -Dm644 packaging/PKGBUILD "$stage/usr/share/doc/pipkin/packaging/PKGBUILD"
+# Preserve the earlier installed manual location as well.
 install -Dm644 docs/native-gate-testing.md "$stage/usr/share/doc/pipkin/native-gate-testing.md"
 node "$here/scripts/write-build-info.mjs" "$stage" "$pi"
 python3 "$here/scripts/write-license-inventory.py" "$stage"

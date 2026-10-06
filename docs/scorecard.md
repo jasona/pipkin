@@ -1,15 +1,17 @@
 # Scorecard
 
-## Current v1 qualification baseline (2026-10-06)
+## Latest recorded automated qualification (2026-10-06)
 
 The owner reports heavy daily-use beta, including building Pipkin itself and using it on other projects.
-Following Changes-pane, recovery, goals, and Stop hardening, the current working tree has **523 workspace tests
-passed (40 ignored)**, Clippy/fmt clean, **37 real-engine e2e suite tests passed**, and another **37 passed against
-the packaged engine**. The paired Pi fix passed its full check and **223 targeted durable tests**. Scratch-prefix
+The latest recorded path-completion working delta on app base `9dda58f` (committed as `6296cf2`) passed
+**542 workspace tests (40 ignored)**, Clippy/fmt, **37 development-engine suite tests**, and **37 unpacked
+packaged-engine suite tests** with Pi pin `d2a311097cbcf669e699479587332ae3988a49d0`. These are identified
+historical checks of that delta, not automatic qualification of every later HEAD or an approved release candidate. The paired Pi fix passed its full check and **223 targeted durable tests**. Scratch-prefix
 install, upgrade, rollback and uninstall checks also passed. A prior disposable native AT-SPI walkthrough observed
 scan failure, retained stale diff, and guarded palette refresh/recovery; Stop/replacement-task behavior was qualified
 with automated real-engine regressions, not a new native walkthrough. This is not a clean-system,
-visual-matrix, mouse, or screen-reader speech pass. Native and clean-system qualification remain separately tracked.
+native visual-matrix/mouse/URI-handler, or screen-reader speech pass. Headless GPUI input/mouse/clipboard tests
+do not close those native gates. Native and clean-system qualification remain separately tracked.
 Full app/engine revisions, environment, artifact checksum, evidence boundaries, and open gates are in
 [v1-release-gates.md](v1-release-gates.md).
 
@@ -20,10 +22,10 @@ release qualification. Later IME/Orca/scale observations are in `native-gate-tes
 
 Reference machine: see `docs/baseline.md` (Omarchy, Hyprland 0.56.2, Intel RPL-S via Vulkan, 2560×1080 @ 60 Hz, scale 1, Rust 1.99.0). Release build. Results are split into measured, observed, failed and unverified. Thresholds are proposed targets, not benchmarks.
 
-## Automated (all green, `cargo test --workspace`, clippy and fmt clean)
+### Historical automated snapshot (135 tests; not current HEAD)
 - pipkin-core 13 · pipkin-ui 73 (composer 33 incl. GPUI input-handler tests, transcript 39, command registry 1) · pipkin-app 49 (all seven scenarios headless, determinism, storage incl. SIGKILL after acknowledged saves). 135 tests.
 
-## Gates
+### Historical native/prototype gates
 | Gate | Result | Evidence |
 | --- | --- | --- |
 | Native operation | **Partly verified.** Native Wayland launch, repeated resize 1440→1024→720 with correct re-layout, light/dark switch. Minimize/restore and suspend/resume **unverified**. | Screenshots in `docs/captures/` |
@@ -39,11 +41,11 @@ Reference machine: see `docs/baseline.md` (Omarchy, Hyprland 0.56.2, Intel RPL-S
 | Application correctness | **Verified natively** (followup scenario): steer row "You (steering)" with Pi acknowledging it, two queued follow-ups listed with remove buttons, Stop moves the conversation to "Stopping…" and it stays there until confirmation, then "Run stopped." with the queue retained. Also verified by core and headless scenario tests: stale events dropped, unknown outcome never resent, palette and buttons share `availability()`. | `docs/captures/steer-queue-running.png`, `stopping.png`, `stopped-queue-kept.png` |
 | Visual quality | Subjective, for owner review. Observed: consistent spacing and states in both themes. Known gaps: inline-code size, translucent window under the user's Omarchy opacity rule. | captures |
 
-## Incident
+### Historical incident
 During the native steer/queue/cancel pass another application (Minecraft) took keyboard focus mid-run, so some keystrokes intended for Pipkin may have reached it. Automation was stopped; subsequent input is guarded (sent only when Pipkin is the active window).
 
-## Recommendation: **Conditional go**
+### Historical framework recommendation: **Conditional go** (not a v1 release approval)
 GPUI delivered the hard parts on the target machine: real input-handler composer, variable-height virtualized transcript with document-level selection, diff virtualization, native Wayland rendering. Conditions before calling it settled, all blocked on things outside this session's remit (system packages, changing the user's display scale, root, or physical suspend): (1) a real IME composition test (install an fcitx5 engine), (2) a screen-reader pass (install Orca) and composer text exposure, (3) 125%/150% display scale and suspend/resume/minimize checks, (4) input-to-paint measured against display presentation (needs compositor presentation-time tooling), and a true cold boot. Estimated cost: a few hours of manual checks plus bounded fixes. Windows, macOS, other Linux desktops and X11 remain unverified.
 
-## Capture matrix status
+### Historical capture matrix status
 Captured (`docs/captures/`): dark streaming + diff, light + diff, light 1024 and 720, palette, selection and paste, persistence recovery, 10,000-message history, steer/queue/running, stopping, stopped with queue kept, scrolled-away with Jump to latest, empty state, dark 720 px with navigation drawer. **Not captured:** failure/recovery scenario, expanded-tool close-up, screen recording.

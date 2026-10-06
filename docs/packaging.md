@@ -7,11 +7,19 @@
 /usr/lib/pipkin/engine/                 a self-contained Pi engine (sources, production node_modules, engine.json)
 /usr/share/applications/pipkin.desktop  launcher entry (StartupWMClass=pipkin)
 /usr/share/licenses/pipkin/             MIT licence for Pipkin, plus the font and icon licences
+/usr/share/doc/pipkin/README.md         installed-help index (not the source marketing README)
+/usr/share/doc/pipkin/SECURITY.md       private reporting and current fix/support policy
+/usr/share/doc/pipkin/docs/             onboarding, recovery, compatibility and labelled historical notes
 /usr/share/doc/pipkin/build-info.json   source/binary identity, compatibility and public build inputs
 /usr/share/doc/pipkin/third-party/      conservative dependency inventory, notices and MPL source
 /usr/share/doc/pipkin/runtime-inventory.json  staged native format, direct shared libraries and ABI references
 /usr/share/icons/hicolor/{128,256,512}x…/apps/pipkin.png
 ```
+
+Installed help includes current Markdown guides and the qualification plan, without requiring an adjacent source
+checkout to read setup/privacy/recovery instructions. Developer commands and screenshot/fixture links still require
+the full source repository; these are not installed source tooling. `scripts/test-package-docs.py dist/stage` checks
+that packaged guides match their source bytes and is required by CI.
 
 The engine runs on the system `nodejs` (>= 22.19, a package dependency). `engine.json` records the engine
 version, the protocol it speaks (8) and the oldest Pipkin it supports. Pipkin refuses an engine with another
@@ -123,8 +131,9 @@ engine 633 -> 700 MiB, open files 15 -> 19. Current RC soak and real-window day-
 ./install.sh --uninstall    # remove links and versions; your drafts and history are not touched
 ```
 
-Each version carries its own engine (the binary finds it relative to itself), so an upgrade never leaves an
-app and an engine that disagree, and the old version is a working fallback. `scripts/test-install.sh` checks
+Each version carries its paired engine (the binary finds it relative to itself), reducing accidental mixed
+app/engine installs. This is not a guarantee of a healthy upgrade or schema-compatible rollback. Verify the
+identified pair and preserve compatible app/engine data backups before relying on an old version as a fallback. `scripts/test-install.sh` checks
 install, upgrade, list, rollback and uninstall in a scratch prefix, including that data survives.
 
 ## Releases: checksums and signatures
@@ -137,7 +146,7 @@ scripts/verify-release.sh DIR [--require-signature]   # what a downloader runs
 
 Checked here with a throwaway gpg key (signature verifies; a modified tarball fails the checksum). No real
 release key exists, nothing is published, and there is no in-app update check: an update is "download, verify,
-`./install.sh`", with `--rollback` as the bootable prior version.
+`./install.sh`", with `--rollback` selecting a retained prior package, subject to the schema/backup requirements above.
 
 ## Display servers
 

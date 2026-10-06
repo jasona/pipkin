@@ -506,6 +506,38 @@ Observed green remote [37451076672](https://github.com/last-refuge/pipkin/action
 Queued `1d256cd` run 37451996755 was cancelled as the newest pending revision replaced it; `9dda58f` run 37452621241
 is in progress. This completion change still needs its own candidate qualification.
 
+## Phase 5: status consolidation and installed help (2026-10-06)
+
+Corrected a remaining unsafe beta statement: home substitution in `--diagnose --probe` does **not** make output
+credential-free or safe to post. Beta reporting now prefers limited metadata and links privacy/private security
+instructions; duplicate-dispatch targets no longer imply universal exactly-once model/tool effects. The 1500-prompt
+measurement is explicitly historical. Scorecard counts are an identified 6296cf2 working-delta snapshot, not a moving
+claim that every HEAD passed; old prototype gates/framework recommendations are visibly nested as historical.
+
+`docs/platforms.md` now distinguishes the working x86_64 Arch/Omarchy/Hyprland/Wayland scope from final support
+approval, historical local native observations, headless Ubuntu CI and generic installer mechanics. It records
+protocol 8/schema 7, Node/desktop/Git requirements and ABI/native review boundaries. Corrected broad claims that
+Pipkin logs are credential-free, a paired package makes upgrade infallible, or rollback is automatically usable.
+
+Packages previously carried only the marketing README and one native manual, leaving published setup/recovery
+instructions absent. Installed help now has a focused index, SECURITY policy, current Markdown guides, qualification
+plan/provenance and dependency recipe. It intentionally does not include full source tooling/screenshots; historical
+notes and developer commands are labelled as such. `test-package-docs.py` verifies **25 guides/inputs** against exact
+source bytes and is required after packaging in CI. Local disposable fixtures also rejected missing/stale support
+text without changing the staged artifact. Packaging metadata uses the actual `last-refuge/pipkin` repository URL.
+
+On app base `6296cf2`: **542 workspace tests passed (40 ignored)**, Clippy/fmt clean, documentation check passed,
+**37 unpacked packaged-engine tests passed**, scratch installer checks passed. No new development-engine run or
+native/new-user observation is claimed for this docs/packaging delta. Unsigned working-delta artifact SHA-256:
+`d257c78fcd750cfbf731a83d36763b2818c4d61b8b85e3e6e4044d611b8bbae5`.
+Its guide-byte check preceded the post-run plan/journal update; final clean-candidate CI must capture fresh guides.
+Logs: `/tmp/pipkin-support-consolidation-{workspace,clippy,package,verify,installer}.log`.
+
+Observed green remote [37452621241](https://github.com/last-refuge/pipkin/actions/runs/37452621241) for clean full
+app `9dda58fefed4853a3cc7502e13f7af65ed550258`. Run 37454852910 on 6296cf2 remains in progress at the last check.
+Remaining roadmap references, screenshot/version labels, final support acceptance and native/new-user gates are
+not silently closed by these documentation corrections.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -520,7 +552,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Interrupted tools/unresolved operations | 1 | Passed (automated) behavior; recovery/status/stop-only retry and metadata support guidance present | Native installed walkthrough/final-candidate qualification remain; never infer settlement from timeout |
 | Recent UI regression walkthrough | 1/4 | Partial: targeted automated/native evidence exists | Engineering + owner verify menus, effort, pane sizing, and mentions in installed build |
 | Pinned clean engine build and manifest | 2 | Passed (automated): full engine pin, clean-source checks, immutable generated inputs and build identity | Requalify changed candidates; development overrides are not release approval |
-| CI and retained evidence | 2 | Passed (automated) on a849ec3; earlier 14ee65d packaged-test failure recorded; fuller failure output now retained | Required future/final candidate checks must also pass |
+| CI and retained evidence | 2 | Passed (automated) on 9dda58f; earlier 14ee65d packaged-test failure recorded; fuller failure output now retained | Required future/final candidate checks must also pass |
 | Runtime/dependency/license audit | 2 | Partial: inventories, immutable notices and MPL source; 59 review flags, 10 entries without notices; native/ABI findings documented | Resolve/appraise notice applicability, data/asset provenance and external runtime dependencies |
 | Clean installed desktop workflow | 3 | Unverified | Owner/second supported environment: actual package installation, launcher, provider, real reply |
 | Real app upgrade/rollback and schema backup restore | 3 | Partial: automated migration/installer tests; manual installed workflow open | Owner/engineering use disposable profile and actual old/new packages |

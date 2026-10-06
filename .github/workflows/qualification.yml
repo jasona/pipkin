@@ -84,6 +84,7 @@ jobs:
         run: |
           set -o pipefail
           scripts/package.sh "$PIPKIN_PI_REPO" 2>&1 | tee qualification-logs/package.log
+          python3 scripts/test-package-docs.py dist/stage 2>&1 | tee qualification-logs/package-docs.log
           version=$(cargo pkgid -p pipkin-app | sed 's/.*[#@]//')
           package="dist/pipkin-$version-$(uname -m).tar.zst"
           scripts/verify-install.sh --full "$package" 2>&1 | tee qualification-logs/packaged-engine.log
