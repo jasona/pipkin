@@ -52,16 +52,35 @@ impl Render for DragGhost {
 pub const MIN_CENTER: f32 = 480.0;
 pub const DOCK_NAV_MIN_WIDTH: f32 = 900.0;
 const DIVIDER_WIDTH: f32 = 5.0;
+const MIN_INSPECTOR: f32 = 280.0;
+
+// Keep the centre readable when a saved width comes from a larger monitor. These are
+// display widths only: shrinking a window must not overwrite the user's saved preference.
+fn docked_nav_width(total: f32, preferred: f32, inspector_open: bool) -> f32 {
+    let nav = preferred.min(total - DIVIDER_WIDTH - MIN_CENTER);
+    // If both panes can fit at their minimums, shrink the navigation first rather
+    // than letting it push the enabled inspector's resize handle offscreen.
+    if inspector_open && total >= 180.0 + MIN_INSPECTOR + MIN_CENTER + 2.0 * DIVIDER_WIDTH {
+        nav.min(total - 2.0 * DIVIDER_WIDTH - MIN_CENTER - MIN_INSPECTOR)
+    } else {
+        nav
+    }
+}
+
+fn docked_inspector_width(total: f32, nav: f32, preferred: f32) -> Option<f32> {
+    let room = total - nav - 2.0 * DIVIDER_WIDTH - MIN_CENTER;
+    (room >= MIN_INSPECTOR).then(|| preferred.clamp(MIN_INSPECTOR, room))
+}
 
 // The inspector can use all available space except the navigation pane and a readable centre.
 fn inspector_drag_width(x: f32, total: f32, nav: f32) -> f32 {
     let available = total - nav - 2.0 * DIVIDER_WIDTH - MIN_CENTER;
-    (total - x).clamp(280.0, available.max(280.0))
+    (total - x).clamp(MIN_INSPECTOR, available.max(MIN_INSPECTOR))
 }
 
 #[cfg(test)]
 mod resize_tests {
-    use super::inspector_drag_width;
+    use super::{docked_inspector_width, docked_nav_width, inspector_drag_width};
 
     #[test]
     fn inspector_uses_available_room_instead_of_a_fixed_ceiling() {
@@ -69,6 +88,46 @@ mod resize_tests {
         assert_eq!(inspector_drag_width(1800.0, 1920.0, 240.0), 280.0);
         assert_eq!(inspector_drag_width(1100.0, 1200.0, 240.0), 280.0);
         assert_eq!(inspector_drag_width(0.0, 1200.0, 240.0), 470.0);
+    }
+
+    #[test]
+    fn saved_large_monitor_width_shrinks_on_laptop_and_restores_when_widened() {
+        assert_eq!(docked_inspector_width(1920.0, 240.0, 1100.0), Some(1100.0));
+        assert_eq!(docked_inspector_width(1200.0, 240.0, 1100.0), Some(470.0));
+        assert_eq!(docked_inspector_width(1010.0, 240.0, 1100.0), Some(280.0));
+        assert_eq!(docked_nav_width(1009.0, 240.0, true), 239.0);
+        assert_eq!(docked_inspector_width(1009.0, 239.0, 1100.0), Some(280.0));
+        assert_eq!(docked_inspector_width(1920.0, 240.0, 1100.0), Some(1100.0));
+    }
+
+    #[test]
+    fn both_dividers_and_a_dragged_navigation_leave_room_for_the_centre() {
+        assert_eq!(docked_nav_width(900.0, 420.0, true), 415.0);
+        assert_eq!(docked_inspector_width(1200.0, 420.0, 400.0), Some(290.0));
+        assert_eq!(docked_nav_width(1050.0, 420.0, true), 280.0);
+        assert_eq!(docked_inspector_width(1050.0, 280.0, 400.0), Some(280.0));
+        assert_eq!(docked_nav_width(950.0, 420.0, true), 180.0);
+        assert_eq!(docked_nav_width(949.0, 420.0, true), 420.0);
+        assert_eq!(docked_inspector_width(949.0, 420.0, 400.0), None);
+    }
+
+    #[test]
+    fn docked_splitters_stay_inside_the_viewport_at_every_width() {
+        for total in 900..=2000 {
+            let total = total as f32;
+            for preferred_nav in [180.0, 240.0, 420.0] {
+                let nav = docked_nav_width(total, preferred_nav, true);
+                assert!(nav >= 180.0);
+                if let Some(inspector) = docked_inspector_width(total, nav, 8192.0) {
+                    assert!(inspector >= 280.0);
+                    assert!(
+                        nav + 2.0 * super::DIVIDER_WIDTH + inspector + super::MIN_CENTER <= total
+                    );
+                } else {
+                    assert!(nav + super::DIVIDER_WIDTH + super::MIN_CENTER <= total);
+                }
+            }
+        }
     }
 }
 
@@ -281,7 +340,7 @@ impl Workspace {
             self.last_change_sel = change_sel;
             if let (Some((id, Some(_))), Some((pid, _))) = (change_sel, was)
                 && id == pid
-                && !self.can_dock_inspector(window)
+                && !self.can_dock_inspector(window, cx)
                 && self.temp_panel != Some(Panel::Inspector)
             {
                 self.open_panel(Panel::Inspector, window, cx);
@@ -470,21 +529,19 @@ impl Workspace {
         f32::from(window.viewport_size().width) >= DOCK_NAV_MIN_WIDTH
     }
 
-    fn can_dock_inspector(&self, window: &Window) -> bool {
+    fn can_dock_inspector(&self, window: &Window, cx: &App) -> bool {
         let w = f32::from(window.viewport_size().width);
-        self.nav_docked(window) && w - self.nav_width_hint() - 400.0 >= MIN_CENTER
-    }
-
-    fn nav_width_hint(&self) -> f32 {
-        self.live_nav.unwrap_or(240.0)
+        self.nav_docked(window)
+            && docked_inspector_width(
+                w,
+                docked_nav_width(w, self.nav_width(cx), true),
+                self.inspector_width(cx),
+            )
+            .is_some()
     }
 
     pub(super) fn inspector_docked(&self, window: &Window, cx: &App) -> bool {
-        let w = f32::from(window.viewport_size().width);
-        let s = self.state(cx);
-        s.prefs.inspector_open
-            && self.nav_docked(window)
-            && w - s.prefs.nav_width.min(420.0) - self.inspector_width(cx) >= MIN_CENTER
+        self.state(cx).prefs.inspector_open && self.can_dock_inspector(window, cx)
     }
 
     // ----------------------------------------------------------------- overlays
@@ -693,7 +750,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.can_dock_inspector(window) {
+        if self.can_dock_inspector(window, cx) {
             let open = !self.state(cx).prefs.inspector_open;
             self.dispatch(Command::SetInspectorOpen(open), cx);
         } else if self.temp_panel == Some(Panel::Inspector) {
@@ -954,9 +1011,19 @@ impl Workspace {
 
     fn on_drag_move(&mut self, split: Split, x: f32, total: f32, cx: &mut Context<Self>) {
         match split {
-            Split::Nav => self.live_nav = Some(x.clamp(180.0, 420.0)),
+            Split::Nav => {
+                self.live_nav = Some(docked_nav_width(
+                    total,
+                    x.clamp(180.0, 420.0),
+                    self.state(cx).prefs.inspector_open,
+                ));
+            }
             Split::Inspector => {
-                self.live_insp = Some(inspector_drag_width(x, total, self.nav_width(cx)))
+                self.live_insp = Some(inspector_drag_width(
+                    x,
+                    total,
+                    docked_nav_width(total, self.nav_width(cx), true),
+                ))
             }
         }
         cx.notify();
@@ -1008,8 +1075,17 @@ impl Render for Workspace {
         let width = f32::from(size.width);
         let nav_docked = self.nav_docked(window);
         let insp_docked = self.inspector_docked(window, cx);
-        let nav_w = self.nav_width(cx);
+        let nav_w = if nav_docked {
+            docked_nav_width(
+                width,
+                self.nav_width(cx),
+                self.state(cx).prefs.inspector_open,
+            )
+        } else {
+            self.nav_width(cx)
+        };
         let insp_w = self.inspector_width(cx);
+        let docked_insp_w = docked_inspector_width(width, nav_w, insp_w);
         let temp = self.temp_panel;
 
         let mut row = div().flex().flex_row().size_full().min_h_0();
@@ -1028,7 +1104,7 @@ impl Render for Workspace {
             row = row.child(self.divider("inspector-divider", Split::Inspector, cx));
             row = row.child(
                 div()
-                    .w(px(insp_w))
+                    .w(px(docked_insp_w.expect("docked inspector has room")))
                     .h_full()
                     .flex_none()
                     .child(self.render_inspector(window, cx)),
@@ -1089,8 +1165,8 @@ impl Render for Workspace {
                 Panel::Inspector => self.render_inspector(window, cx).into_any_element(),
             };
             let pw = (if panel == Panel::Nav { nav_w } else { insp_w })
-                .min(width - 48.0)
-                .max(260.0);
+                .max(260.0)
+                .min((width - 48.0).max(0.0));
             let drawer = div()
                 .id("temp-panel")
                 .key_context("Panel")
