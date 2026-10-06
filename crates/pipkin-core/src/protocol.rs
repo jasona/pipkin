@@ -233,6 +233,8 @@ pub enum EventKind {
     Synced {
         items: Vec<TranscriptItem>,
     },
+    /// The engine's authoritative per-session ledger, independent of the displayed history.
+    UsageSynced(SessionUsage),
     /// Opening the conversation failed. It stays unopened, so selecting it again retries.
     OpenFailed {
         message: String,

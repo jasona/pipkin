@@ -11,6 +11,7 @@ actions!(
         FocusComposer,
         FocusTranscript,
         OpenPreferences,
+        OpenSession,
         RenameConversation,
         CancelRun,
         QueueFollowUp,

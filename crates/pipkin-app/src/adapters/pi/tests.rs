@@ -347,6 +347,46 @@ fn opening_a_session_shows_its_actual_transcript_and_models() {
 }
 
 #[test]
+fn usage_ledger_is_reported_on_attach_and_when_it_changes() {
+    let mut initial = view(&["first"]);
+    initial["docs"]["pi.usage"] = json!({ "models": { "p/m": {
+        "input": 10, "output": 2, "cacheRead": 3, "cacheWrite": 0,
+        "totalTokens": 15, "cost": { "total": 0.02 }
+    } }, "tools": {} });
+    let env = start(mock(&[("s-one", 100)], vec![("s-one", initial)]), true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    assert!(matches!(env.next_event().kind, EventKind::Opened { .. }));
+    let usage = env.next_event();
+    let EventKind::UsageSynced(usage) = usage.kind else {
+        panic!("{usage:?}")
+    };
+    assert_eq!(
+        (usage.session_id.as_str(), usage.total().total_tokens),
+        ("s-one", 15)
+    );
+    env.pi.publish(
+        "pi.transcript",
+        vec![Op::Set(
+            vec![
+                key("docs"),
+                key("pi.usage"),
+                key("models"),
+                key("p/m"),
+                key("output"),
+            ],
+            json!(5),
+        )],
+    );
+    assert!(matches!(env.next_event().kind, EventKind::Synced { .. }));
+    let changed = env.next_event();
+    let EventKind::UsageSynced(usage) = changed.kind else {
+        panic!("{changed:?}")
+    };
+    assert_eq!(usage.models[0].1.output, 5);
+}
+
+#[test]
 fn live_changes_arrive_as_synced_items() {
     let env = start(
         mock(&[("s-one", 100)], vec![("s-one", view(&["first"]))]),
@@ -1476,12 +1516,14 @@ fn choosing_a_model_asks_the_engine_and_the_selection_follows_its_report() {
     let (pi, agent, _) = agent_mock(&[("s", 1)], vec![("s", view(&[]))]);
     let env = start(pi, true);
     let conv = env.open_first();
-    // Opening already reported the engine's model.
-    assert!(
-        env.lifecycle.lock().unwrap().iter().any(
-            |e| matches!(e, LifecycleEvent::ModelSelected(Some(m)) if m == "anthropic/sonnet")
-        )
-    );
+    // The transcript can arrive before the model subscription is processed.
+    wait_until("initial model selected", || {
+        env.lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, LifecycleEvent::ModelSelected(Some(m)) if m == "anthropic/sonnet"))
+    });
     let initial = loop {
         let ev = env.next_event();
         if let EventKind::ThinkingState { level, levels } = ev.kind {

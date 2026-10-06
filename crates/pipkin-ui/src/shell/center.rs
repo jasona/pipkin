@@ -846,10 +846,15 @@ impl Workspace {
                 .disabled(!avail.submit)
                 .on_click({
                     let this = this.clone();
-                    move |_, cx| this.update(cx, |t, cx| t.dispatch(Command::Submit, cx))
+                    move |window, cx| this.update(cx, |t, cx| t.submit_primary(window, cx))
                 })
                 .into_any_element()
         };
+        let usage_cost = self
+            .state(cx)
+            .current()
+            .and_then(|cv| cv.usage.as_ref())
+            .map(|usage| super::overlays::format_cost(usage.total().cost_usd));
         let toolbar = div()
             .flex()
             .items_center()
@@ -898,7 +903,22 @@ impl Workspace {
                     )
             })
             .child(div().flex_1())
-            .when(!running, |d| {
+            .when(real, |d| {
+                let this = this.clone();
+                d.child(
+                    Btn::new("session-usage-button")
+                        .label(
+                            usage_cost
+                                .as_ref()
+                                .map_or("Usage".to_string(), |cost| format!("Usage {cost}")),
+                        )
+                        .kind(BtnKind::Ghost)
+                        .on_click(move |window, cx| {
+                            this.update(cx, |t, cx| t.open_overlay(Overlay::Session, window, cx))
+                        }),
+                )
+            })
+            .when(!running && !real, |d| {
                 d.child(
                     div()
                         .px(px(8.0))

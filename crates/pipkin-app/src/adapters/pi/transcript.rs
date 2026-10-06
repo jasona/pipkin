@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use pipkin_core::{
     Attachment, Delivery, ItemId, ItemKind, LOCAL_ITEM_BASE, NoticeLevel, QueueId, QueueMode,
-    QueuedPrompt, ToolCall, ToolStatus, TranscriptItem, preview_output,
+    QueuedPrompt, SessionUsage, ToolCall, ToolStatus, TranscriptItem, UsageAmount, preview_output,
 };
 use serde_json::Value;
 
@@ -19,6 +19,45 @@ use super::attach::split_message;
 const SLOTS_PER_ENTRY: u64 = 1024;
 /// Live (not yet durable) items live below the local-item range, above any entry-derived id.
 const LIVE_BASE: u64 = LOCAL_ITEM_BASE / 2;
+
+/// Read committed ledger totals, not estimates reconstructed from the visible message page.
+/// An invalid ledger is unavailable rather than a plausible-looking partial total.
+pub fn usage(view: &Value, session_id: &str) -> Option<SessionUsage> {
+    let doc = view.get("docs")?.get("pi.usage")?;
+    let bucket = |name: &str| -> Option<Vec<(String, UsageAmount)>> {
+        let mut entries: Vec<_> = doc
+            .get(name)?
+            .as_object()?
+            .iter()
+            .map(|(key, value)| {
+                let count = |field| value.get(field)?.as_u64();
+                let cost = value
+                    .get("cost")
+                    .and_then(|c| c.get("total"))
+                    .and_then(Value::as_f64)
+                    .filter(|n| n.is_finite() && *n >= 0.0);
+                Some((
+                    key.clone(),
+                    UsageAmount {
+                        input: count("input")?,
+                        output: count("output")?,
+                        cache_read: count("cacheRead")?,
+                        cache_write: count("cacheWrite")?,
+                        total_tokens: count("totalTokens")?,
+                        cost_usd: cost,
+                    },
+                ))
+            })
+            .collect::<Option<_>>()?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(entries)
+    };
+    Some(SessionUsage {
+        session_id: session_id.to_owned(),
+        models: bucket("models")?,
+        tools: bucket("tools")?,
+    })
+}
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Mapped {
@@ -471,6 +510,41 @@ pub fn map_view(view: &Value) -> Mapped {
         busy,
         queue: queued(view),
         unsupported: b.unsupported,
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn committed_ledger_is_exact_and_includes_tool_spend() {
+        let view = json!({ "docs": { "pi.usage": {
+            "models": { "z/model": { "input": 100, "output": 20, "cacheRead": 50, "cacheWrite": 10,
+                "totalTokens": 180, "cost": { "total": 0.12 } } },
+            "tools": { "classifier": { "input": 8, "output": 2, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 10, "cost": { "total": 0.01 } } }
+        } } });
+        let parsed = usage(&view, "pi-session").unwrap();
+        assert_eq!(parsed.session_id, "pi-session");
+        assert_eq!(parsed.total().total_tokens, 190);
+        assert_eq!(parsed.total().cache_read, 50);
+        assert_eq!(parsed.total().cost_usd, Some(0.13));
+    }
+
+    #[test]
+    fn unavailable_is_not_zero_and_missing_cost_is_not_invented() {
+        assert!(usage(&json!({ "docs": {} }), "s").is_none());
+        let view = json!({ "docs": { "pi.usage": {
+            "models": { "p/m": { "input": 2, "output": 3, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 5 } }, "tools": {}
+        } } });
+        let parsed = usage(&view, "s").unwrap();
+        assert_eq!(parsed.total().total_tokens, 5);
+        assert_eq!(parsed.total().cost_usd, None);
+        let invalid = json!({ "docs": { "pi.usage": { "models": { "p/m": { "input": "2" } }, "tools": {} } } });
+        assert!(usage(&invalid, "s").is_none());
     }
 }
 

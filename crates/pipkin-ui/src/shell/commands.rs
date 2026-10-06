@@ -59,6 +59,13 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(OpenProject)),
         ),
         cmd(
+            "Session usage",
+            "Conversation",
+            None,
+            has_conv,
+            Run::Action(Box::new(OpenSession)),
+        ),
+        cmd(
             "Rename conversation",
             "Conversation",
             Some("F2"),

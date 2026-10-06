@@ -18,6 +18,8 @@ pub struct ConversationState {
     /// Attachment generation. Events carrying another generation are dropped.
     pub generation: u64,
     pub run: RunState,
+    /// Latest committed usage from Pi for this conversation. None means not reported.
+    pub usage: Option<SessionUsage>,
     /// User-owned continuous goal. A paused goal never schedules another prompt.
     pub goal: Option<Goal>,
     goal_op: Option<OperationId>,
@@ -83,6 +85,7 @@ impl ConversationState {
             opened: false,
             generation: 0,
             run: RunState::Idle,
+            usage: None,
             goal: None,
             goal_op: None,
             recovery_notice: false,
@@ -1661,12 +1664,19 @@ impl AppState {
                 | EventKind::ToolOutputFull { .. }
                 | EventKind::ToolOutputUnavailable { .. }
                 | EventKind::UiState { .. }
+                | EventKind::UsageSynced(_)
                 | EventKind::UiRespondRefused { .. }
         );
         if scoped && ev.op != c.run.op() {
             return out;
         }
         match ev.kind {
+            EventKind::UsageSynced(usage) => {
+                if c.opened {
+                    c.usage = Some(usage);
+                    out.notes.push(Note::Other);
+                }
+            }
             EventKind::Opened {
                 items,
                 has_older,
@@ -1674,6 +1684,7 @@ impl AppState {
             } => {
                 c.items = items;
                 c.streaming_item = None;
+                c.usage = None;
                 c.has_older = has_older;
                 c.opened = true;
                 c.cached_at = None;

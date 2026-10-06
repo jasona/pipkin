@@ -137,6 +137,12 @@ Type `/goal <what to accomplish>` in the composer and press Enter. While Pipkin 
 
 If Pi does not give an unambiguous status, or a turn fails, Pipkin pauses instead of blindly continuing. Saved goals return paused after a restart so an uncertain turn is never resent automatically; re-enter `/goal <goal>` to resume. In demo mode, replies are simulated and do not execute the goal.
 
+### Session usage
+
+Type `/session` in the composer, use **Session usage** in the command palette, or click **Usage** beside the composer to inspect the selected Pi session. Pipkin reads Pi's committed `pi.usage` ledger and shows input/output/cache tokens, total tokens, reported cost, and a model/tool breakdown. The figures are Pi's estimates, not a provider billing balance. Demo mode reports no real usage.
+
+The Pi server currently does not expose provider account quota, remaining balance, or reset times to Pipkin. Check your provider dashboard for account limits.
+
 ### Keyboard
 
 | | | | |

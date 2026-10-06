@@ -616,6 +616,7 @@ struct Dirty {
 
 struct Current {
     conversation: ConversationId,
+    session_id: String,
     generation: u64,
     target: RpcTarget,
     transcript: Subscription,
@@ -1815,6 +1816,9 @@ impl Live {
             }
         };
         worker.emit(conversation, generation, kind);
+        if let Some(usage) = transcript::usage(&view, &session_id) {
+            worker.emit(conversation, generation, EventKind::UsageSynced(usage));
+        }
         worker.emit(
             conversation,
             generation,
@@ -1851,6 +1855,7 @@ impl Live {
         }
         self.current = Some(Current {
             conversation,
+            session_id,
             generation,
             target,
             transcript,
@@ -1994,9 +1999,9 @@ impl Live {
                 c.transcript
                     .read(|r| r.state("state").cloned())
                     .flatten()
-                    .map(|v| (c.conversation, c.generation, v))
+                    .map(|v| (c.conversation, c.generation, c.session_id.clone(), v))
             });
-            if let Some((conversation, generation, view)) = view {
+            if let Some((conversation, generation, session_id, view)) = view {
                 // A compaction or reset moves where the live view starts; what lies before it
                 // is then history to offer.
                 let oldest = transcript::oldest_entry_id(&view);
@@ -2023,6 +2028,9 @@ impl Live {
                         items: mapped.items,
                     },
                 );
+                if let Some(usage) = transcript::usage(&view, &session_id) {
+                    worker.emit(conversation, generation, EventKind::UsageSynced(usage));
+                }
                 worker.emit(
                     conversation,
                     generation,

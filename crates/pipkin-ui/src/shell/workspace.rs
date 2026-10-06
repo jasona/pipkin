@@ -27,6 +27,7 @@ pub enum Overlay {
     Project,
     Rename(ConversationId),
     Prefs,
+    Session,
     About,
     /// A question an extension asked, for the first one waiting.
     Question,
@@ -428,6 +429,11 @@ impl Workspace {
     /// Enter: send when idle, steer when a run is active.
     pub(super) fn submit_primary(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).text();
+        if text.trim() == "/session" {
+            self.dispatch(Command::EditDraft(String::new()), cx);
+            self.open_overlay(Overlay::Session, _window, cx);
+            return;
+        }
         if text.trim() == "/goal" {
             self.show_toast("Usage: /goal <goal> or /goal clear", cx);
             return;
@@ -633,9 +639,11 @@ impl Workspace {
                 });
                 window.focus(&self.menu_focus, cx);
             }
-            Overlay::ModelSettings | Overlay::Project | Overlay::Prefs | Overlay::About => {
-                window.focus(&self.menu_focus, cx)
-            }
+            Overlay::ModelSettings
+            | Overlay::Project
+            | Overlay::Prefs
+            | Overlay::Session
+            | Overlay::About => window.focus(&self.menu_focus, cx),
             Overlay::Question => {
                 let question = self.waiting_question(cx, true);
                 match question {
@@ -825,6 +833,12 @@ impl Workspace {
     }
     fn on_prefs(&mut self, _: &OpenPreferences, window: &mut Window, cx: &mut Context<Self>) {
         self.open_overlay(Overlay::Prefs, window, cx);
+    }
+
+    fn on_session(&mut self, _: &OpenSession, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state(cx).current().is_some() {
+            self.open_overlay(Overlay::Session, window, cx);
+        }
     }
     fn on_rename(&mut self, _: &RenameConversation, window: &mut Window, cx: &mut Context<Self>) {
         if self.state(cx).mode == Mode::Real {
@@ -1183,6 +1197,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_focus_composer))
             .on_action(cx.listener(Self::on_focus_transcript))
             .on_action(cx.listener(Self::on_prefs))
+            .on_action(cx.listener(Self::on_session))
             .on_action(cx.listener(Self::on_rename))
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_queue))

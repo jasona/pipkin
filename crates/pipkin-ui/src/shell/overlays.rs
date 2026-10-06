@@ -38,6 +38,27 @@ fn submenu_vertical(top: f32, bottom: f32, height: f32, desired: f32) -> (bool, 
     }
 }
 
+pub(super) fn format_tokens(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().rev().enumerate() {
+        if i != 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+
+pub(super) fn format_cost(cost: Option<f64>) -> String {
+    match cost {
+        None => "Not reported".into(),
+        Some(n) if n > 0.0 && n < 0.0001 => "<$0.0001".into(),
+        Some(n) if n < 1.0 => format!("${n:.4}"),
+        Some(n) => format!("${n:.2}"),
+    }
+}
+
 pub(super) fn effort_label(level: &str) -> String {
     match level {
         "off" => "Off".into(),
@@ -198,6 +219,7 @@ impl Workspace {
             Overlay::Project => self.render_menu_overlay(window, cx).into_any_element(),
             Overlay::Rename(_) => self.render_rename(cx).into_any_element(),
             Overlay::Prefs => self.render_prefs(cx).into_any_element(),
+            Overlay::Session => self.render_session(window, cx).into_any_element(),
             Overlay::About => self.render_about(cx).into_any_element(),
             Overlay::Question => self.render_question(cx).into_any_element(),
             Overlay::None => div().into_any_element(),
@@ -920,6 +942,134 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn render_session(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let c = &t.colors;
+        let usage = self.state(cx).current().and_then(|cv| cv.usage.clone());
+        let demo = self.state(cx).mode == Mode::Demo;
+        let this = cx.entity();
+        let row = |label: String, value: String| {
+            div()
+                .flex()
+                .justify_between()
+                .gap(px(16.0))
+                .child(div().min_w_0().text_color(c.text_muted).child(label))
+                .child(div().font_family(t.mono_font()).child(value))
+        };
+        let totals = usage.as_ref().map(SessionUsage::total);
+        let accessible = totals.as_ref().map_or_else(
+            || "Session usage unavailable.".to_string(),
+            |total| {
+                format!(
+                    "Session usage. {} total tokens. Reported cost {}.",
+                    format_tokens(total.total_tokens),
+                    format_cost(total.cost_usd)
+                )
+            },
+        );
+        elevated(cx)
+            .id("session-usage")
+            .key_context("Overlay")
+            .track_focus(&self.menu_focus)
+            .role(Role::Dialog)
+            .aria_label(accessible)
+            .w(px(480.0 * t.scale.max(1.0)))
+            .max_w_full()
+            .max_h(window.viewport_size().height - px(24.0))
+            .overflow_y_scroll()
+            .p(px(16.0))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .occlude()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Session usage"),
+                    )
+                    .child(
+                        Btn::new("session-close")
+                            .icon("x")
+                            .aria("Close session usage")
+                            .compact()
+                            .on_click(move |window, cx| {
+                                this.update(cx, |t, cx| t.close_overlay(window, cx))
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(t.small_size())
+                    .text_color(c.text_muted)
+                    .child(usage.as_ref().map_or_else(
+                        || {
+                            if demo {
+                                "Demo · no model usage".to_string()
+                            } else {
+                                "Pi has not reported usage for this session.".to_string()
+                            }
+                        },
+                        |u| format!("Pi session {} · committed totals", u.session_id),
+                    )),
+            )
+            .when_some(totals, |d, total| {
+                d.child(div().h(px(1.0)).bg(c.border))
+                    .child(row("Input".into(), format_tokens(total.input)))
+                    .child(row("Output".into(), format_tokens(total.output)))
+                    .child(row("Cache read".into(), format_tokens(total.cache_read)))
+                    .child(row("Cache write".into(), format_tokens(total.cache_write)))
+                    .child(row(
+                        "Total tokens".into(),
+                        format_tokens(total.total_tokens),
+                    ))
+                    .child(row("Reported cost".into(), format_cost(total.cost_usd)))
+            })
+            .when_some(usage, |d, usage| {
+                let buckets = usage.models.into_iter().chain(
+                    usage
+                        .tools
+                        .into_iter()
+                        .map(|(name, amount)| (format!("Tool · {name}"), amount)),
+                );
+                d.child(div().h(px(1.0)).bg(c.border))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("By model and tool"),
+                    )
+                    .child(
+                        div()
+                            .id("session-usage-models")
+                            .max_h(px(200.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap(px(7.0))
+                            .children(buckets.map(|(name, amount)| {
+                                row(
+                                    name,
+                                    format!(
+                                        "{} · {}",
+                                        format_tokens(amount.total_tokens),
+                                        format_cost(amount.cost_usd)
+                                    ),
+                                )
+                            })),
+                    )
+            })
+            .child(
+                div()
+                    .text_size(t.small_size())
+                    .text_color(c.text_faint)
+                    .child("Cost is Pi’s reported estimate, not a billing balance."),
+            )
+    }
+
     fn render_prefs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let c = &t.colors;
@@ -1102,6 +1252,19 @@ impl Workspace {
                         }),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod session_format_tests {
+    use super::*;
+
+    #[test]
+    fn counts_and_unreported_costs_are_distinct() {
+        assert_eq!(format_tokens(1_234_567), "1,234,567");
+        assert_eq!(format_cost(Some(0.0)), "$0.0000");
+        assert_eq!(format_cost(Some(0.00001)), "<$0.0001");
+        assert_eq!(format_cost(None), "Not reported");
     }
 }
 

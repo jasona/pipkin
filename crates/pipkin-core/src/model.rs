@@ -14,6 +14,43 @@ pub struct ModelInfo {
     pub note: String,
 }
 
+/// Pi's committed usage for one model or tool bucket. Cost is absent when the engine did not
+/// report one; zero is a real reported value, not an unknown sentinel.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UsageAmount {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub total_tokens: u64,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionUsage {
+    pub session_id: String,
+    pub models: Vec<(String, UsageAmount)>,
+    pub tools: Vec<(String, UsageAmount)>,
+}
+
+impl SessionUsage {
+    pub fn total(&self) -> UsageAmount {
+        let mut total = UsageAmount {
+            cost_usd: Some(0.0),
+            ..UsageAmount::default()
+        };
+        for (_, amount) in self.models.iter().chain(&self.tools) {
+            total.input = total.input.saturating_add(amount.input);
+            total.output = total.output.saturating_add(amount.output);
+            total.cache_read = total.cache_read.saturating_add(amount.cache_read);
+            total.cache_write = total.cache_write.saturating_add(amount.cache_write);
+            total.total_tokens = total.total_tokens.saturating_add(amount.total_tokens);
+            total.cost_usd = total.cost_usd.zip(amount.cost_usd).map(|(a, b)| a + b);
+        }
+        total
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attachment {
     pub path: String,
