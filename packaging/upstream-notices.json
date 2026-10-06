@@ -1,0 +1,302 @@
+{
+  "formatVersion": 1,
+  "notices": [
+    {
+      "ecosystem": "rust",
+      "name": "accesskit",
+      "version": "0.24.1",
+      "file": "upstream-notices/accesskit-0.24.1/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-APACHE",
+      "revision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit",
+      "version": "0.24.1",
+      "file": "upstream-notices/accesskit-0.24.1/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-MIT",
+      "revision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit_atspi_common",
+      "version": "0.19.1",
+      "file": "upstream-notices/accesskit_atspi_common-0.19.1/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-APACHE",
+      "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit_atspi_common",
+      "version": "0.19.1",
+      "file": "upstream-notices/accesskit_atspi_common-0.19.1/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-MIT",
+      "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit_consumer",
+      "version": "0.38.0",
+      "file": "upstream-notices/accesskit_consumer-0.38.0/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-APACHE",
+      "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit_consumer",
+      "version": "0.38.0",
+      "file": "upstream-notices/accesskit_consumer-0.38.0/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-MIT",
+      "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit_unix",
+      "version": "0.22.1",
+      "file": "upstream-notices/accesskit_unix-0.22.1/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-APACHE",
+      "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "accesskit_unix",
+      "version": "0.22.1",
+      "file": "upstream-notices/accesskit_unix-0.22.1/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-MIT",
+      "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "defmt-parser",
+      "version": "1.0.0",
+      "file": "upstream-notices/defmt-parser-1.0.0/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-APACHE",
+      "revision": "4a8cdb44891ed57b8ff5a023b6bec7137c48708f",
+      "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "defmt-parser",
+      "version": "1.0.0",
+      "file": "upstream-notices/defmt-parser-1.0.0/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-MIT",
+      "revision": "4a8cdb44891ed57b8ff5a023b6bec7137c48708f",
+      "sha256": "2710a622a896bba67356913d4d0492cab5465f61b2ecce6d880aeb483834fb50"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "gpu-descriptor",
+      "version": "0.3.2",
+      "file": "upstream-notices/gpu-descriptor-0.3.2/COPYING",
+      "url": "https://raw.githubusercontent.com/zakarumych/gpu-descriptor/bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a/COPYING",
+      "revision": "bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a",
+      "sha256": "f72143f7e9d9fb8bd336b139fa22f825a299591c29f2f7338c5566347b137613"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "gpu-descriptor-types",
+      "version": "0.2.0",
+      "file": "upstream-notices/gpu-descriptor-types-0.2.0/COPYING",
+      "url": "https://raw.githubusercontent.com/zakarumych/gpu-descriptor/9f2fb9546591322e7b77ee1e79385e01effd85e4/COPYING",
+      "revision": "9f2fb9546591322e7b77ee1e79385e01effd85e4",
+      "sha256": "f72143f7e9d9fb8bd336b139fa22f825a299591c29f2f7338c5566347b137613"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "harfrust",
+      "version": "0.5.2",
+      "file": "upstream-notices/harfrust-0.5.2/LICENSE",
+      "url": "https://raw.githubusercontent.com/harfbuzz/harfrust/efdae3142ab76a2f1524d72cff9e3dfdc5afd7ca/LICENSE",
+      "revision": "efdae3142ab76a2f1524d72cff9e3dfdc5afd7ca",
+      "sha256": "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon",
+      "version": "1.0.19",
+      "file": "upstream-notices/lyon-1.0.19/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-APACHE",
+      "revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon",
+      "version": "1.0.19",
+      "file": "upstream-notices/lyon-1.0.19/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT",
+      "revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_algorithms",
+      "version": "1.0.21",
+      "file": "upstream-notices/lyon_algorithms-1.0.21/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/nical/lyon/994526f2766c7e9bc5bb16687232fd7e8999dbdf/LICENSE-APACHE",
+      "revision": "994526f2766c7e9bc5bb16687232fd7e8999dbdf",
+      "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_algorithms",
+      "version": "1.0.21",
+      "file": "upstream-notices/lyon_algorithms-1.0.21/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/nical/lyon/994526f2766c7e9bc5bb16687232fd7e8999dbdf/LICENSE-MIT",
+      "revision": "994526f2766c7e9bc5bb16687232fd7e8999dbdf",
+      "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_geom",
+      "version": "1.0.19",
+      "file": "upstream-notices/lyon_geom-1.0.19/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-APACHE",
+      "revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_geom",
+      "version": "1.0.19",
+      "file": "upstream-notices/lyon_geom-1.0.19/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT",
+      "revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_path",
+      "version": "1.0.19",
+      "file": "upstream-notices/lyon_path-1.0.19/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-APACHE",
+      "revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_path",
+      "version": "1.0.19",
+      "file": "upstream-notices/lyon_path-1.0.19/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT",
+      "revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_tessellation",
+      "version": "1.0.22",
+      "file": "upstream-notices/lyon_tessellation-1.0.22/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/nical/lyon/b456b143215a1942a617c4672776b68b9a30feee/LICENSE-APACHE",
+      "revision": "b456b143215a1942a617c4672776b68b9a30feee",
+      "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "lyon_tessellation",
+      "version": "1.0.22",
+      "file": "upstream-notices/lyon_tessellation-1.0.22/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/nical/lyon/b456b143215a1942a617c4672776b68b9a30feee/LICENSE-MIT",
+      "revision": "b456b143215a1942a617c4672776b68b9a30feee",
+      "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "pathfinder_simd",
+      "version": "0.5.6",
+      "file": "upstream-notices/pathfinder_simd-0.5.6/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/servo/pathfinder/6c3c0466f451c5bd2007087728cd168798cd64e8/LICENSE-APACHE",
+      "revision": "6c3c0466f451c5bd2007087728cd168798cd64e8",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "pathfinder_simd",
+      "version": "0.5.6",
+      "file": "upstream-notices/pathfinder_simd-0.5.6/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/servo/pathfinder/6c3c0466f451c5bd2007087728cd168798cd64e8/LICENSE-MIT",
+      "revision": "6c3c0466f451c5bd2007087728cd168798cd64e8",
+      "sha256": "0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "profiling",
+      "version": "1.0.18",
+      "file": "upstream-notices/profiling-1.0.18/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+      "revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "sha256": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "profiling",
+      "version": "1.0.18",
+      "file": "upstream-notices/profiling-1.0.18/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT",
+      "revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "profiling-procmacros",
+      "version": "1.0.18",
+      "file": "upstream-notices/profiling-procmacros-1.0.18/LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+      "revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "sha256": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "profiling-procmacros",
+      "version": "1.0.18",
+      "file": "upstream-notices/profiling-procmacros-1.0.18/LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT",
+      "revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "pulp-wasm-simd-flag",
+      "version": "0.1.1",
+      "file": "upstream-notices/pulp-wasm-simd-flag-0.1.1/LICENSE",
+      "url": "https://raw.githubusercontent.com/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE",
+      "revision": "5eb07fd7b68edf0a5e19f71737d315f72a510295",
+      "sha256": "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "spirv",
+      "version": "0.4.0+sdk-1.4.341.0",
+      "file": "upstream-notices/spirv-0.4.0+sdk-1.4.341.0/LICENSE",
+      "url": "https://raw.githubusercontent.com/gfx-rs/rspirv/8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4/LICENSE",
+      "revision": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "svg_fmt",
+      "version": "0.4.5",
+      "file": "upstream-notices/svg_fmt-0.4.5/LICENSE",
+      "url": "https://raw.githubusercontent.com/nical/rust_debug/93f414cd572b5c2781df93dbdc068ed13443d05a/LICENSE",
+      "revision": "93f414cd572b5c2781df93dbdc068ed13443d05a",
+      "sha256": "7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1"
+    },
+    {
+      "ecosystem": "rust",
+      "name": "taffy",
+      "version": "0.13.0",
+      "file": "upstream-notices/taffy-0.13.0/LICENSE",
+      "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/45a56299d366ddb383e593a1f0372158d00e8530/LICENSE",
+      "revision": "45a56299d366ddb383e593a1f0372158d00e8530",
+      "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a"
+    }
+  ]
+}

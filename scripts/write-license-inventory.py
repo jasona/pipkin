@@ -19,6 +19,8 @@ if OUT.exists():
     shutil.rmtree(OUT)
 OUT.mkdir(parents=True, exist_ok=True)
 records = []
+supplemental_path = ROOT / 'packaging/upstream-notices.json'
+supplemental = json.loads(supplemental_path.read_text())['notices'] if supplemental_path.exists() else []
 
 
 def notice_files(directory):
@@ -36,6 +38,18 @@ def notice_files(directory):
 def collect(ecosystem, name, version, declared, source, directory, inherited=None):
     files = notice_files(directory)
     provenance = 'package files'
+    recovered = []
+    if not files:
+        recovered = [n for n in supplemental if (n['ecosystem'], n['name'], n['version']) == (ecosystem, name, version)]
+        for notice in recovered:
+            path = ROOT / 'packaging' / notice['file']
+            if not path.resolve().is_relative_to((ROOT / 'packaging/upstream-notices').resolve()):
+                raise RuntimeError('supplemental notice path escapes its input directory')
+            if hashlib.sha256(path.read_bytes()).hexdigest() != notice['sha256']:
+                raise RuntimeError('supplemental notice checksum mismatch')
+            files.append(path)
+        if files:
+            provenance = 'immutable upstream notices; applicability requires review'
     if not files and inherited:
         files = inherited
         provenance = 'ancestor/repository notices; applicability requires review'
@@ -60,6 +74,7 @@ def collect(ecosystem, name, version, declared, source, directory, inherited=Non
                     'selectedAlternative': selected,
                     'declaredLicense': declared, 'source': source,
                     'noticeProvenance': provenance, 'notices': entries,
+                    'supplementalProvenance': recovered,
                     'reviewRequired': not declared or not entries or provenance != 'package files'})
 
 

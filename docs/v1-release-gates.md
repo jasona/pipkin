@@ -293,6 +293,27 @@ or modifying the owner's desktop. Another observed green run is still required.
 Logs: `/tmp/pipkin-second-ci-failed.log`, `/tmp/pipkin-license-inventory.log` and
 `/tmp/pipkin-licenses-{workspace,clippy,package,verify,installer}.log`.
 
+## Phase 2: immutable upstream notice recovery (2026-10-06)
+
+Recovered **33 upstream notice files for 20 Rust package versions**, anchored to the exact Git revisions in the
+published crates' VCS metadata. `packaging/upstream-notices.json` retains commit URLs and content SHA-256 hashes;
+packaging verifies them and uses the cached files without network access. These supplemental repository notices
+remain flagged for applicability review, not automatically cleared.
+
+The actual staged inventory still has **552 Rust / 155 npm-workspace records and 59 review flags**, but entries
+with no copied notice decreased from **32 to 12**. Five Rust and seven npm versions still lack notice files in the
+inventory. License/data/runtime provenance review remains open. Details are in `docs/bundled-licenses.md`.
+
+On app base `528457c`, **531 workspace tests passed (40 ignored)**, Clippy/fmt clean; notice provenance/fixture tests,
+**37 packaged-engine suite tests**, and local scratch-prefix installer checks passed. The unsigned working-delta
+0.0.1 package SHA-256 is `eb8fecee4a4d2c8f7c6ba39262a8085cbabdb6331fe81d7883e66f5efd216924`.
+Logs: `/tmp/pipkin-notices-{workspace,clippy,package,verify,installer}.log`.
+
+Remote CI run [37421406544](https://github.com/last-refuge/pipkin/actions/runs/37421406544) is still in progress; it is
+not yet a green gate. CI concurrency now lets an identified run finish while queuing the latest update, rather than
+repeatedly cancelling qualification as release-hardening commits arrive. Changed candidates still require their
+own pass. No native acceptance, legal clearance, signing or v1 publication is claimed.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

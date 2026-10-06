@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Inventory fixture tests; no owner cache/profile or live dependency fetches."""
+import hashlib
 import json
 from pathlib import Path
 import runpy
@@ -8,6 +9,13 @@ import tempfile
 from unittest.mock import patch
 
 script = Path(__file__).resolve().parent / 'write-license-inventory.py'
+catalog = script.parent.parent / 'packaging/upstream-notices.json'
+if catalog.exists():
+    for entry in json.loads(catalog.read_text())['notices']:
+        source = catalog.parent / entry['file']
+        assert source.resolve().is_relative_to((catalog.parent / 'upstream-notices').resolve())
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == entry['sha256']
+        assert len(entry['revision']) == 40 and entry['revision'] in entry['url']
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
     stage = root / 'stage'

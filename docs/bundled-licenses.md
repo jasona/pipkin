@@ -47,6 +47,18 @@ Open findings include:
 - Complete generated-provider-data provenance review (`packaging/engine-model-data.md`), asset provenance, external
   runtime dependency inventory, and any Apache NOTICE/source-offer requirements.
 
+### Immutable notice recovery
+
+`packaging/upstream-notices.json` records supplemental notice inputs with exact upstream commit URLs and SHA-256
+hashes. The initial recovery obtained 33 notice files for 20 Rust package versions using the published crates'
+`.cargo_vcs_info.json` revisions. Inventory generation verifies those hashes before copying the files. No network
+fetch is needed during packaging. Recovered repository notices remain explicitly flagged for applicability review;
+downloading a notice is not an automatic legal-clearance decision.
+
+This reduced packages with no copied notice from 32 to 12, while the total review flags remain 59. Remaining
+missing-notice cases include five Rust package versions and seven npm package versions. Their provenance and
+applicability still require follow-up; do not replace immutable inputs with unreviewed current upstream text.
+
 The inventory's `reviewRequired` entries are the machine-readable follow-up list. Do not mark the release-plan
 license/provenance task complete until those findings are resolved or an explicit acceptable review decision is
 recorded. Regenerate/review the inventory for every changed candidate; a prior snapshot is not clearance of a new
