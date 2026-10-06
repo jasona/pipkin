@@ -669,6 +669,8 @@ struct Current {
     busy: bool,
     /// A new, untouched session must not inherit the project's already-dirty diff.
     workspace_ready: bool,
+    /// Last scan published for this attachment; unchanged background results do not repaint.
+    last_workspace: Option<Workspace>,
     /// The oldest entry the live view held last time, to notice a compaction or reset moving it.
     oldest_entry: Option<u64>,
 }
@@ -989,6 +991,14 @@ impl Live {
                     // An explicit refresh may scan even an untouched session. Automatic scans
                     // still wait until work starts so a fresh conversation keeps its calm state.
                     current.workspace_ready = true;
+                    // Only explicit refreshes expose progress. Routine scans keep the current
+                    // inspector body mounted, including its empty state.
+                    current.last_workspace = None;
+                    worker.emit(
+                        conversation,
+                        generation,
+                        EventKind::ChangesScanState(ChangesState::Loading),
+                    );
                     self.schedule_changes(worker);
                 } else {
                     worker.emit(
@@ -1792,11 +1802,6 @@ impl Live {
         }
         self.scanning = true;
         let (conversation, generation) = (current.conversation, current.generation);
-        worker.emit(
-            conversation,
-            generation,
-            EventKind::ChangesScanState(ChangesState::Loading),
-        );
         let tx = worker.tx.clone();
         thread::spawn(move || {
             let workspace = workspace::collect(Path::new(&cwd));
@@ -1817,11 +1822,18 @@ impl Live {
     ) {
         self.scanning = false;
         // Only the conversation that is still open may show the result.
-        let still_open = self
+        let changed = self
             .current
-            .as_ref()
-            .is_some_and(|c| c.conversation == conversation && c.generation == generation);
-        if still_open {
+            .as_mut()
+            .filter(|c| c.conversation == conversation && c.generation == generation)
+            .is_some_and(|current| {
+                if current.last_workspace.as_ref() == Some(&workspace) {
+                    return false;
+                }
+                current.last_workspace = Some(workspace.clone());
+                true
+            });
+        if changed {
             let kind = match workspace {
                 Workspace::Changes { files, .. } => EventKind::ChangesSynced(files),
                 Workspace::NotARepository => {
@@ -2012,6 +2024,7 @@ impl Live {
             tools_done,
             busy,
             workspace_ready,
+            last_workspace: None,
             oldest_entry,
         });
         self.schedule_changes(worker);

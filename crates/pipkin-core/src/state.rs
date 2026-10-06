@@ -1979,8 +1979,11 @@ impl AppState {
                 }
             }
             EventKind::ChangesScanState(state) => {
-                if c.opened {
-                    if state == ChangesState::NotARepository {
+                if c.opened
+                    && (c.changes_state != state
+                        || (state == ChangesState::NotARepository && !c.changes.is_empty()))
+                {
+                    if state == ChangesState::NotARepository && !c.changes.is_empty() {
                         c.changes.clear();
                         c.selected_change = None;
                         c.changes_revision += 1;
@@ -1990,15 +1993,19 @@ impl AppState {
                 }
             }
             EventKind::ChangesSynced(changes) => {
-                if c.opened {
+                if c.opened && (c.changes_state != ChangesState::Ready || c.changes != changes) {
                     c.changes_state = ChangesState::Ready;
-                    c.changes_revision += 1;
-                    c.selected_change = c
-                        .selected_change
-                        .and_then(|i| c.changes.get(i))
-                        .and_then(|previous| changes.iter().position(|f| f.path == previous.path))
-                        .or((!changes.is_empty()).then_some(0));
-                    c.changes = changes;
+                    if c.changes != changes {
+                        c.changes_revision += 1;
+                        c.selected_change = c
+                            .selected_change
+                            .and_then(|i| c.changes.get(i))
+                            .and_then(|previous| {
+                                changes.iter().position(|f| f.path == previous.path)
+                            })
+                            .or((!changes.is_empty()).then_some(0));
+                        c.changes = changes;
+                    }
                     out.notes.push(Note::Other);
                 }
             }

@@ -1759,6 +1759,94 @@ fn explicit_changes_refresh_reports_failure_non_git_and_recovers_without_engine_
 }
 
 #[test]
+fn automatic_empty_scans_are_quiet_but_file_changes_and_explicit_refresh_are_published() {
+    let repo = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repo.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (pi, _, _) = agent_mock(&[], vec![("s", view(&[]))]);
+    pi.publish("pi.session-directory", vec![Op::Replace(json!({ "revision": 2, "sessions": [{
+        "serverId": SERVER_ID, "sessionId": "s", "createdAt": 5, "cwd": repo.path().to_str().unwrap(),
+    }]}))]);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    event_where(&env, |kind| matches!(kind, EventKind::ThinkingState { .. }));
+    let refresh = || {
+        env.backend.request(BackendRequest::RefreshChanges {
+            conversation: conv,
+            generation: 1,
+        })
+    };
+    refresh();
+    event_where(&env, |kind| {
+        matches!(kind, EventKind::ChangesScanState(ChangesState::Loading))
+    });
+    let first = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    assert!(matches!(first.kind, EventKind::ChangesSynced(ref files) if files.is_empty()));
+    let finish_tools = |count: usize| {
+        let entries: Vec<_> = (0..count).flat_map(|i| {
+            let call_id = format!("c{i}");
+            [json!({ "id": 2*i+1, "kind": "pi.assistant", "model": [{
+                "role": "assistant", "stopReason": "toolUse", "timestamp": 0,
+                "content": [{ "type": "toolCall", "id": call_id, "name": "write", "arguments": {} }],
+            }] }), json!({ "id": 2*i+2, "kind": "pi.tool-result", "model": [{
+                "role": "toolResult", "toolCallId": call_id, "toolName": "write", "isError": false,
+                "timestamp": 0, "content": [{ "type": "text", "text": "done" }],
+            }] })]
+        }).collect();
+        env.pi.publish(
+            "pi.transcript",
+            vec![Op::Replace(
+                json!({ "conversation": { "id": 1 }, "docs": {}, "entries": entries }),
+            )],
+        );
+    };
+    for count in 1..=3 {
+        finish_tools(count);
+        event_where(&env, |kind| matches!(kind, EventKind::Synced { .. }));
+        std::thread::sleep(Duration::from_millis(250));
+        while let Ok(event) = env.events.try_recv() {
+            assert!(
+                !matches!(
+                    event.kind,
+                    EventKind::ChangesScanState(_) | EventKind::ChangesSynced(_)
+                ),
+                "unchanged background scan must not replace the empty inspector: {:?}",
+                event.kind
+            );
+        }
+    }
+    // A genuine filesystem change must still reach the inspector automatically, without Loading.
+    std::fs::write(repo.path().join("new.txt"), "hello\n").unwrap();
+    finish_tools(4);
+    let changed = loop {
+        let event = env.next_event();
+        assert!(!matches!(
+            event.kind,
+            EventKind::ChangesScanState(ChangesState::Loading)
+        ));
+        if let EventKind::ChangesSynced(files) = event.kind {
+            break files;
+        }
+    };
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].path, "new.txt");
+    refresh();
+    event_where(&env, |kind| {
+        matches!(kind, EventKind::ChangesScanState(ChangesState::Loading))
+    });
+    let same = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    assert!(matches!(same.kind, EventKind::ChangesSynced(files) if files == changed));
+}
+
+#[test]
 fn workspace_changes_follow_the_session_directory_and_update_when_a_tool_finishes() {
     let repo = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {

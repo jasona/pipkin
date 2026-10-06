@@ -1357,6 +1357,63 @@ fn scanned_change(path: &str) -> FileChange {
 }
 
 #[test]
+fn unchanged_scans_preserve_diff_revision_selection_and_emit_no_change_note() {
+    for files in [vec![], vec![scanned_change("a.rs")]] {
+        let mut s = state();
+        s.mode = Mode::Real;
+        s.apply_event(scan_event(
+            &s,
+            EventKind::Opened {
+                items: vec![],
+                has_older: false,
+                changes: vec![],
+            },
+        ));
+        s.apply_event(scan_event(&s, EventKind::ChangesSynced(files.clone())));
+        let rev = s.current().unwrap().changes_revision;
+        let selected = s.current().unwrap().selected_change;
+        for _ in 0..3 {
+            let out = s.apply_event(scan_event(&s, EventKind::ChangesSynced(files.clone())));
+            assert!(out.notes.is_empty());
+            assert_eq!(s.current().unwrap().changes_revision, rev);
+            assert_eq!(s.current().unwrap().selected_change, selected);
+        }
+        s.dispatch(Command::RefreshChanges);
+        let out = s.apply_event(scan_event(&s, EventKind::ChangesSynced(files.clone())));
+        assert!(
+            !out.notes.is_empty(),
+            "explicit refresh must settle its progress state"
+        );
+        assert_eq!(s.current().unwrap().changes_state, ChangesState::Ready);
+        assert_eq!(s.current().unwrap().changes_revision, rev);
+        assert_eq!(s.current().unwrap().selected_change, selected);
+        assert!(s.availability().refresh_changes);
+        let failure = ChangesState::Unavailable("git failed".into());
+        s.apply_event(scan_event(&s, EventKind::ChangesScanState(failure.clone())));
+        assert!(
+            s.apply_event(scan_event(&s, EventKind::ChangesScanState(failure)))
+                .notes
+                .is_empty()
+        );
+        assert_eq!(s.current().unwrap().changes, files);
+        s.apply_event(scan_event(
+            &s,
+            EventKind::ChangesScanState(ChangesState::NotARepository),
+        ));
+        let cleared_rev = s.current().unwrap().changes_revision;
+        assert!(
+            s.apply_event(scan_event(
+                &s,
+                EventKind::ChangesScanState(ChangesState::NotARepository)
+            ))
+            .notes
+            .is_empty()
+        );
+        assert_eq!(s.current().unwrap().changes_revision, cleared_rev);
+    }
+}
+
+#[test]
 fn failed_scans_preserve_the_last_diff_and_retry_is_read_only_and_single_flight() {
     let mut s = state();
     s.mode = Mode::Real;
