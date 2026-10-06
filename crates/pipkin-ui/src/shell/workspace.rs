@@ -301,6 +301,12 @@ impl Workspace {
                 c.map(|c| (c.id, c.selected_change)),
             )
         };
+        let project_root = self
+            .state(cx)
+            .current_project()
+            .map(|p| PathBuf::from(&p.path));
+        self.composer
+            .update(cx, |e, cx| e.set_project_root(project_root, cx));
         let wanted = Theme::new(prefs.theme, prefs.text_size, prefs.reduced_motion);
         let differs = cx
             .try_global::<Theme>()

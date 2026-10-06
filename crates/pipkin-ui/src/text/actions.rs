@@ -42,5 +42,6 @@ actions!(
         /// Shift+Enter: insert a newline.
         Newline,
         Escape,
+        CompletePath,
     ]
 );

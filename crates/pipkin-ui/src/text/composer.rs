@@ -15,8 +15,10 @@ use gpui::{
 };
 
 use super::actions::*;
+use super::mentions::{self, PathMention};
 use super::model::EditorModel;
 use crate::theme::ActiveTheme;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposerEvent {
@@ -154,6 +156,13 @@ pub struct ComposerEditor {
     ime_caret: Option<Bounds<Pixels>>,
     blink_visible: bool,
     blink_task: Option<Task<()>>,
+    project_root: Option<PathBuf>,
+    path_index: Vec<String>,
+    path_task: Option<Task<()>>,
+    path_query: Option<PathMention>,
+    path_matches: Vec<String>,
+    path_selected: usize,
+    path_links: Vec<PathMention>,
 }
 
 impl EventEmitter<ComposerEvent> for ComposerEditor {}
@@ -195,10 +204,89 @@ impl ComposerEditor {
             ime_caret: None,
             blink_visible: true,
             blink_task: None,
+            project_root: None,
+            path_index: Vec::new(),
+            path_task: None,
+            path_query: None,
+            path_matches: Vec::new(),
+            path_selected: 0,
+            path_links: Vec::new(),
         }
     }
 
     // ------------------------------------------------------------- public API
+
+    /// Index off the UI thread. Dropping the task and checking the root prevents
+    /// an old project's results from appearing after a conversation switch.
+    pub fn set_project_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.project_root == root {
+            return;
+        }
+        self.project_root = root.clone();
+        self.path_task = None;
+        self.path_index.clear();
+        self.refresh_paths();
+        if let Some(root) = root {
+            self.path_task = Some(cx.spawn(async move |this, cx| {
+                let scan_root = root.clone();
+                let paths = cx
+                    .background_spawn(async move { mentions::collect(&scan_root) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    if this.project_root.as_ref() == Some(&root) {
+                        this.path_index = paths;
+                        this.refresh_paths();
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }));
+        }
+        cx.notify();
+    }
+
+    fn refresh_paths(&mut self) {
+        self.path_links = mentions::tokens(self.model.text())
+            .into_iter()
+            .filter(|t| self.path_index.binary_search(&t.path).is_ok())
+            .collect();
+        self.path_query =
+            if self.disabled || self.model.is_composing() || self.model.has_selection() {
+                None
+            } else {
+                mentions::query(self.model.text(), self.model.head())
+            };
+        self.path_matches = self
+            .path_query
+            .as_ref()
+            .map(|q| mentions::matching(&self.path_index, &q.path))
+            .unwrap_or_default();
+        self.path_selected = 0;
+        self.layout = None;
+    }
+
+    fn complete_path(&mut self, i: usize, cx: &mut Context<Self>) -> bool {
+        if self.disabled || self.model.is_composing() {
+            return false;
+        }
+        let Some(query) = self.path_query.clone() else {
+            return false;
+        };
+        let Some(path) = self.path_matches.get(i).cloned() else {
+            return false;
+        };
+        self.model.move_to(query.range.start, false);
+        self.model.move_to(query.range.end, true);
+        let changed = self.model.insert(&mentions::insertion(&path));
+        self.after_edit(changed, cx);
+        true
+    }
+
+    fn on_complete_path(&mut self, _: &CompletePath, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.complete_path(self.path_selected, cx) {
+            cx.propagate();
+        }
+    }
 
     pub fn text(&self) -> String {
         self.model.text().to_string()
@@ -209,6 +297,7 @@ impl ComposerEditor {
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let text = self.sanitize(text);
         self.model.set_text(&text);
+        self.refresh_paths();
         self.scroll_y = px(0.);
         self.scroll_x = px(0.);
         self.scroll_to_caret = true;
@@ -254,6 +343,7 @@ impl ComposerEditor {
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         if self.disabled != disabled {
             self.disabled = disabled;
+            self.refresh_paths();
             self.selecting = false;
             self.reset_blink(cx);
             cx.notify();
@@ -357,6 +447,36 @@ impl ComposerEditor {
             .into_iter()
             .filter(|r| r.len > 0)
             .collect::<Vec<_>>(),
+            None if !placeholder && !self.path_links.is_empty() => {
+                let mut runs = Vec::new();
+                let mut start = 0;
+                for link in &self.path_links {
+                    if link.range.start > start {
+                        runs.push(TextRun {
+                            len: link.range.start - start,
+                            ..run.clone()
+                        });
+                    }
+                    runs.push(TextRun {
+                        len: link.range.len(),
+                        color: theme.colors.accent,
+                        underline: Some(UnderlineStyle {
+                            color: Some(theme.colors.accent),
+                            thickness: px(1.0),
+                            wavy: false,
+                        }),
+                        ..run.clone()
+                    });
+                    start = link.range.end;
+                }
+                if start < text.len() {
+                    runs.push(TextRun {
+                        len: text.len() - start,
+                        ..run
+                    });
+                }
+                runs
+            }
             None => vec![run],
         };
         let lines: Vec<WrappedLine> = window
@@ -448,6 +568,7 @@ impl ComposerEditor {
 
     fn after_edit(&mut self, changed: bool, cx: &mut Context<Self>) {
         if changed {
+            self.refresh_paths();
             self.goal_x = None;
             self.scroll_to_caret = true;
             self.reset_blink(cx);
@@ -457,6 +578,7 @@ impl ComposerEditor {
     }
 
     fn after_motion(&mut self, keep_goal: bool, cx: &mut Context<Self>) {
+        self.refresh_paths();
         if !keep_goal {
             self.goal_x = None;
         }
@@ -508,6 +630,13 @@ impl ComposerEditor {
 
     fn vertical(&mut self, dir: f32, extend: bool, page: bool, cx: &mut Context<Self>) {
         if self.disabled {
+            return;
+        }
+        if !page && !extend && !self.model.is_composing() && !self.path_matches.is_empty() {
+            self.path_selected = (self.path_selected as i32 + if dir < 0.0 { -1 } else { 1 })
+                .rem_euclid(self.path_matches.len() as i32)
+                as usize;
+            cx.notify();
             return;
         }
         if self.single_line {
@@ -698,7 +827,9 @@ impl ComposerEditor {
         if self.disabled || self.model.is_composing() {
             return;
         }
-        cx.emit(ComposerEvent::Submit);
+        if !self.complete_path(self.path_selected, cx) {
+            cx.emit(ComposerEvent::Submit);
+        }
     }
 
     fn on_newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
@@ -709,6 +840,11 @@ impl ComposerEditor {
     }
 
     fn on_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        if self.path_query.take().is_some() {
+            self.path_matches.clear();
+            cx.notify();
+            return;
+        }
         cx.emit(ComposerEvent::Escape);
     }
 
@@ -725,6 +861,13 @@ impl ComposerEditor {
             return;
         }
         let offset = self.offset_at(event.position);
+        if event.modifiers.control
+            && let Some(link) = self.path_links.iter().find(|l| l.range.contains(&offset))
+            && let Some(root) = &self.project_root
+        {
+            cx.open_url(&mentions::file_url(&root.join(&link.path)));
+            return;
+        }
         match event.click_count {
             0 | 1 => {
                 self.model.move_to(offset, event.modifiers.shift);
@@ -1185,7 +1328,7 @@ pub(crate) fn a11y_text(text: &str, anchor: usize, head: usize) -> A11yText {
 }
 
 impl Render for ComposerEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let a11y = a11y_text(self.model.text(), self.model.anchor(), self.model.head());
         let mut root = gpui::div()
             .id("composer-editor")
@@ -1257,6 +1400,7 @@ impl Render for ComposerEditor {
             .on_action(cx.listener(Self::on_enter))
             .on_action(cx.listener(Self::on_newline))
             .on_action(cx.listener(Self::on_escape))
+            .on_action(cx.listener(Self::on_complete_path))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1265,9 +1409,88 @@ impl Render for ComposerEditor {
         if self.model.is_empty() && !self.placeholder.is_empty() {
             root = root.aria_placeholder(self.placeholder.clone());
         }
+        let matches = self.path_matches.clone();
+        let selected = self.path_selected;
+        let theme = cx.theme().clone();
+        let popup = if self.path_query.is_some()
+            && self.project_root.is_some()
+            && self.focus_handle.is_focused(_window)
+        {
+            self.last_bounds.map(|bounds| {
+                let mut menu = gpui::div()
+                    .id("path-completions")
+                    .max_h((_window.viewport_size().height - px(16.0)).max(px(0.0)))
+                    .overflow_y_scroll()
+                    .role(Role::ListBox)
+                    .aria_label("Project paths")
+                    .w(px(420.0).min(_window.viewport_size().width - px(16.0)))
+                    .bg(theme.colors.bg_elevated)
+                    .border_1()
+                    .border_color(theme.colors.border_strong)
+                    .rounded(px(8.0))
+                    .shadow_lg()
+                    .p(px(6.0))
+                    .flex()
+                    .flex_col()
+                    .occlude();
+                if matches.is_empty() {
+                    menu = menu.child(
+                        gpui::div()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .text_color(theme.colors.text_muted)
+                            .child("No matching project paths"),
+                    );
+                }
+                for (i, path) in matches.into_iter().enumerate() {
+                    let editor = cx.entity();
+                    menu = menu.child(
+                        gpui::div()
+                            .id(("path", i))
+                            .role(Role::ListBoxOption)
+                            .aria_label(path.clone())
+                            .aria_selected(i == selected)
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .truncate()
+                            .text_color(theme.colors.text)
+                            .when(i == selected, |r| r.bg(theme.colors.bg_selected))
+                            .hover(|r| r.bg(theme.colors.bg_hover))
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cx.stop_propagation();
+                                editor.update(cx, |e, cx| {
+                                    e.complete_path(i, cx);
+                                    window.focus(&e.focus_handle, cx);
+                                });
+                            })
+                            .child(path),
+                    );
+                }
+                menu = menu.child(
+                    gpui::div()
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .text_size(theme.small_size())
+                        .text_color(theme.colors.text_muted)
+                        .child("Tab to complete · Ctrl-click a linked path to open"),
+                );
+                gpui::deferred(
+                    gpui::anchored()
+                        .anchor(gpui::Anchor::BottomLeft)
+                        .position(point(bounds.origin.x, bounds.origin.y - px(8.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(menu),
+                )
+                .with_priority(4)
+            })
+        } else {
+            None
+        };
         root.child(ComposerElement {
             editor: cx.entity(),
         })
+        .children(popup)
     }
 }
 
@@ -1342,6 +1565,51 @@ mod tests {
 
     fn text_of(h: &Harness, cx: &mut VisualTestContext) -> String {
         h.editor.read_with(cx, |e, _| e.text())
+    }
+
+    #[gpui::test]
+    fn path_completion_inserts_links_and_undo_restores_the_query(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        h.editor.update(cx, |e, _| {
+            e.project_root = Some(PathBuf::from("/project"));
+            e.path_index = vec!["src/lib.rs".into(), "src/main.rs".into()];
+        });
+        cx.simulate_input("look at @src/m");
+        assert_eq!(
+            h.editor.read_with(cx, |e, _| e.path_matches.clone()),
+            ["src/main.rs"]
+        );
+        cx.simulate_keystrokes("tab");
+        assert_eq!(text_of(&h, cx), "look at @src/main.rs ");
+        assert_eq!(h.editor.read_with(cx, |e, _| e.path_links.len()), 1);
+        assert!(!h.events.borrow().contains(&ComposerEvent::Submit));
+        cx.simulate_keystrokes("ctrl-z");
+        assert_eq!(text_of(&h, cx), "look at @src/m");
+        cx.simulate_keystrokes("ctrl-shift-z");
+        assert_eq!(text_of(&h, cx), "look at @src/main.rs ");
+        h.editor.update(cx, |e, cx| e.set_text("@src/", cx));
+        cx.simulate_keystrokes("down tab");
+        assert_eq!(text_of(&h, cx), "@src/main.rs ");
+    }
+
+    #[gpui::test]
+    fn path_completion_handles_spaces_and_is_disabled_during_ime(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        h.editor.update(cx, |e, _| {
+            e.project_root = Some(PathBuf::from("/project"));
+            e.path_index = vec!["my file.rs".into()];
+        });
+        cx.simulate_input("@my");
+        h.editor.update(cx, |e, cx| {
+            assert!(e.complete_path(0, cx));
+        });
+        assert_eq!(text_of(&h, cx), "@\"my file.rs\" ");
+        h.editor.update_in(cx, |e, w, cx| {
+            e.set_text("@", cx);
+            e.replace_and_mark_text_in_range(None, "日", None, w, cx);
+            assert!(e.path_matches.is_empty());
+            assert!(!e.complete_path(0, cx));
+        });
     }
 
     #[gpui::test]

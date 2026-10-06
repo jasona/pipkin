@@ -7,6 +7,7 @@
 pub mod actions;
 mod composer;
 pub mod latency;
+mod mentions;
 mod model;
 
 use gpui::{App, KeyBinding};
@@ -57,5 +58,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", Enter, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
         KeyBinding::new("escape", Escape, ctx),
+        KeyBinding::new("tab", CompletePath, ctx),
     ]);
 }
