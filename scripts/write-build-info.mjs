@@ -29,7 +29,8 @@ const info = {
     modelDataArchiveSha256: manifest.development ? null : hash(join(root, 'packaging', `pi-model-data-${manifest.sourceRevision}.tar.zst`)),
     rustToolchainSha256: hash(join(root, 'rust-toolchain.toml')),
     rustc: run('rustc', ['-vV']), cargo: run('cargo', ['--version']), node: process.version,
-    npm: run('npm', ['--version']), platform: process.platform, architecture: process.arch,
+    npm: run('npm', ['--version']), python: run('python3', ['--version']),
+    platform: process.platform, architecture: process.arch,
     customRustFlags: Boolean(process.env.RUSTFLAGS || process.env.CARGO_ENCODED_RUSTFLAGS) },
 };
 writeFileSync(join(stage, 'usr/share/doc/pipkin/build-info.json'), `${JSON.stringify(info, null, 2)}\n`);

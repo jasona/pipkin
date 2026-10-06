@@ -264,6 +264,35 @@ dependency provenance, complete diagnostics privacy auditing, native acceptance,
 qualification remain open. Logs: `/tmp/pipkin-first-ci-failed.log` and
 `/tmp/pipkin-identify-{workspace,clippy,package,verify,installer}.log`.
 
+## Phase 2: dependency/notice inventory and bare-runtime CI failure (2026-10-06)
+
+Added conservative locked Linux Rust and actual staged npm/workspace inventory generation. Packages now retain
+found package/vendored notices and provide the unmodified registry source of the current MPL-2.0 `option-ext`
+dependency. GPL-or-permissive alternatives for `self_cell` and `node-forge` are recorded as Apache-2.0 and BSD-3-Clause,
+respectively. The inventory omits host cache paths, rejects npm package links outside the engine, and marks missing
+or inherited notices/declarations for review. Fixture tests cover retained notices, workspace deduplication,
+embedded-fixture exclusion, source provision, stale generated-output removal and external-link rejection.
+Python is now declared as a build dependency; it is not an installed-app runtime requirement.
+
+The actual tree produced **552 Rust** and **155 npm/workspace** records with **59 review flags**. Several published
+crates/npm packages omit notices or declarations. **The license/provenance gate remains open**; findings and scope
+are documented in `docs/bundled-licenses.md`. This is notice retention and triage, not automatic legal clearance.
+
+On app base `985e0c6`, **531 workspace tests passed (40 ignored)**, Clippy/fmt clean, inventory/build-info fixtures
+passed, and the rebuilt package passed **37 packaged-engine suite tests** plus local scratch-prefix installer
+checks. Local unsigned 0.0.1 artifact SHA-256:
+`9fb555aec6dfca84e4c9e03ccb923c39449d24a2ad23a873139bae8f088c2f06`.
+Qualification covers the tested working delta, not a clean approved candidate.
+
+Remote retry [37419027177](https://github.com/last-refuge/pipkin/actions/runs/37419027177) **failed** the bare-environment
+probe: `setup-node` installed Node in the tool cache, outside the verifier's intentionally minimal `/usr/bin:/bin`
+PATH. Rust/policy checks and development-engine qualification passed; **37 packaged-engine suite tests also passed**,
+but the bare probe did not, so neither installation nor overall CI is green. The CI installer step was not reached.
+The runner now exposes only the declared Node runtime in `/usr/bin`, without weakening the verifier's environment
+or modifying the owner's desktop. Another observed green run is still required.
+Logs: `/tmp/pipkin-second-ci-failed.log`, `/tmp/pipkin-license-inventory.log` and
+`/tmp/pipkin-licenses-{workspace,clippy,package,verify,installer}.log`.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

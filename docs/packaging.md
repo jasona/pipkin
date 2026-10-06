@@ -8,6 +8,7 @@
 /usr/share/applications/pipkin.desktop  launcher entry (StartupWMClass=pipkin)
 /usr/share/licenses/pipkin/             MIT licence for Pipkin, plus the font and icon licences
 /usr/share/doc/pipkin/build-info.json   source/binary identity, compatibility and public build inputs
+/usr/share/doc/pipkin/third-party/      conservative dependency inventory, notices and MPL source
 /usr/share/icons/hicolor/{128,256,512}x…/apps/pipkin.png
 ```
 
@@ -41,6 +42,11 @@ output. It separately restores/validates pinned generated provider JSON and copi
 then prunes dev dependencies offline. The manifest records the full source revision, generated-data manifest hash,
 protocol, minimum client and whether the development override was used. It does not yet identify every build input
 or certify third-party dependency provenance; those audits and CI qualification remain release gates.
+
+Packaging generates a conservative Linux Rust/staged npm inventory and copies found package/vendored notices.
+It also provides the current MPL-2.0 dependency's source. Missing declarations/notices and inherited-license
+applicability are explicitly flagged. See [bundled-licenses.md](bundled-licenses.md): this is a partial audit, not
+release clearance. Python 3 is required for building/qualification, not for running the installed app.
 
 `pipkin --version` and `--diagnose` report the compiled full app revision and explicit dirty/unknown state.
 `build-info.json` records app version/revision/dirty state and binary hash, protocol/schema, full engine revision,
