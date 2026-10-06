@@ -136,8 +136,14 @@ fn version_less(a: &str, b: &str) -> bool {
 }
 
 /// `node --version` as `(major, minor, patch)`.
-pub fn node_version() -> Result<(u32, u32, u32), String> {
-    let output = Command::new("node")
+pub fn node_version(engine: Option<&Path>) -> Result<(u32, u32, u32), String> {
+    let bundled = engine
+        .map(crate::adapters::pi::engine::bundled_runtime_bin)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let node = bundled.map_or_else(|| PathBuf::from("node"), |bin| bin.join("node"));
+    let output = Command::new(node)
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -256,7 +262,9 @@ pub fn report(input: &ReportInput) -> String {
     }
     line(format!(
         "display: {}",
-        if input.wayland_display {
+        if cfg!(target_os = "macos") {
+            "macOS native (display not probed)"
+        } else if input.wayland_display {
             "Wayland"
         } else {
             "no WAYLAND_DISPLAY (a window cannot open here)"
@@ -298,13 +306,14 @@ pub fn diagnose(data_dir: &Path, engine_override: Option<&Path>, probe: bool) ->
         Ok((dir, _)) => probe_engine(dir),
         Err(_) => Err("no engine to probe".into()),
     });
+    let node = node_version(engine.as_ref().ok().map(|(dir, _)| dir.as_path()));
     let input = ReportInput {
         exe,
         data_dir: data_dir.to_path_buf(),
         schema_version: crate::storage::SCHEMA_VERSION,
         engine,
         engine_override: engine_override.map(Path::to_path_buf),
-        node: node_version(),
+        node,
         wayland_display: std::env::var_os("WAYLAND_DISPLAY").is_some(),
         display_vars: ["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"]
             .iter()

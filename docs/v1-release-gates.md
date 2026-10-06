@@ -728,6 +728,37 @@ Logs: `/tmp/pipkin-onboarding-{policy-tests,workspace,clippy}.log`. No native vi
 new credential storage, owner-profile modification or system/package installation was performed in this foundation
 pass. Prototype-era product-context statements were noted, not silently rewritten as an unrelated side effect.
 
+## Onboarding: self-contained Mac engine/runtime implementation (2026-10-06)
+
+Implemented the next onboarding foundation: Mac packaging stages the clean pinned Pi engine plus a minimal
+architecture-matched **Node 22.23.3 LTS** runtime. Immutable archive URLs/checksums in `packaging/node-runtime.json`
+were recorded from the official versioned Node manifest (HTTPS/checksum evidence, not an independent signature
+or security audit). Only `bin/node` and the full Node/dependency LICENSE are extracted from exact regular archive
+members; no global Node/npm installation is changed. Runtime provenance and hashes are retained separately from
+Rust/npm engine notices. Node's copied executable is not rewritten; final app signing/archive checks remain required.
+
+The app's existing relative engine discovery resolves `Contents/lib/pipkin/engine`; the paired runtime lives next
+to it. A `requiresBundledNode` manifest flag explicitly selects that runtime, prepending only the owned child PATH
+and preserving tool search paths. Missing declared payload is an error, never a silent fallback to global Node.
+Development/external engines and Linux packages without that flag keep their existing runtime behavior. CLI
+diagnostics use the selected runtime and no longer misreport missing Wayland as a Mac display requirement.
+
+Mac CI now provisions Node 22.23.3, stages/prunes Pi, collects actual Rust/npm notices, runs lifecycle and
+file-edit/history smoke checks against the staged engine/runtime, packages/signs it and extracts the archive.
+It then requires the **actual extracted Pipkin CLI** to discover/start/stop the bundled engine with a bare system
+PATH and a private short temporary HOME/agent profile, without source overrides or provider credentials.
+This is an implemented qualification gate, **not yet a passing native result**. Finder/UI and auth remain separate.
+
+Local validation: **557 workspace tests passed (40 ignored)**, Clippy/fmt clean; Node archive hash/minimal-payload/
+notice/safe-extraction fixtures and bundle signing/extraction/bare-environment fixtures passed. Runtime tests cover
+explicit discovery, missing-runtime refusal, path ordering/spaces and selected-runtime diagnostic version. **37
+development and 37 unpacked Linux packaged-engine tests**, installer and 26 installed-guide/input checks passed.
+Logs: `/tmp/pipkin-bundled-node-{workspace,clippy,engine,package,verify,installer}.log`. Working-delta unsigned Linux
+archive SHA-256: `5ca22fcd153340c61ea8a054956c65282783b3eab1be38f40a8e58d875a8e3a3` (before this journal entry).
+No native Mac bundle/runtime success, implemented provider login, setup UI, credential reuse consent or first-reply
+observation is claimed. The full onboarding plan remains open; no owner profile or desktop/runtime configuration
+was modified. Signing trust, notices/provenance review and provider integration remain explicit workstreams.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bundle policy fixture tests, not a native macOS compilation/launch claim."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -25,6 +26,11 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
              'assets/fonts/example-OFL.txt': 'font fixture',
              'docs/macos-first-pass.md': 'experimental instructions',
              'packaging/pi-engine-revision': 'a' * 40,
+             'dist/macos-notices/usr/lib/pipkin/engine/engine.json': json.dumps({'sourceRevision': 'a' * 40, 'development': False, 'productionPruneSucceeded': True}),
+             'dist/macos-notices/usr/lib/pipkin/engine/pi-test.sh': 'fixture launcher',
+             'dist/macos-notices/usr/lib/pipkin/runtime/bin/node': 'fixture node',
+             'dist/macos-notices/usr/lib/pipkin/runtime/LICENSE': 'full Node notice',
+             'dist/macos-notices/usr/lib/pipkin/runtime/runtime.json': json.dumps({'target': 'aarch64-apple-darwin', 'version': '22.23.3', 'binarySha256': hashlib.sha256(b'fixture node').hexdigest()}),
              'dist/macos-notices/usr/share/doc/pipkin/third-party/inventory.json': '{}',
              'dist/macos-notices/usr/share/doc/pipkin/third-party/sources/mpl/src/lib.rs': 'exact source'}
     for relative, text in files.items():
@@ -83,6 +89,13 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
                 archive.extractall(args[4])
             if corrupt_extraction:
                 (Path(args[4]) / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered resource')
+        elif '--diagnose' in args:
+            assert '--probe' in args
+            assert kwargs['env']['PATH'] == '/usr/bin:/bin:/usr/sbin:/sbin'
+            assert set(kwargs['env']) == {'PATH', 'HOME', 'TMPDIR', 'PI_OFFLINE'}
+            contents = Path(args[0]).parent.parent
+            assert json.loads((contents / 'lib/pipkin/engine/engine.json').read_text())['requiresBundledNode']
+            assert (contents / 'lib/pipkin/runtime/LICENSE').read_text() == 'full Node notice'
         else:
             raise AssertionError(args)
 
@@ -90,12 +103,13 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         module.main()
         out = root / 'dist/macos'
         info = json.loads((out / 'build-info.json').read_text())
-        assert info['experimental'] and not info['engine']['bundled']
+        assert info['experimental'] and info['engine']['bundled']
+        assert info['nodeRuntime']['version'] == '22.23.3'
         assert info['app']['target'] == 'aarch64-apple-darwin'
         assert info['app']['revision'] == 'b' * 40 and info['app']['dirty'] is False
         assert info['app']['preBundleSigningBinarySha256'] == module.sha256(root / 'target/release/pipkin')
         assert info['app']['binarySha256'] != info['app']['preBundleSigningBinarySha256']
-        assert sum(args[:2] == ['codesign', '--verify'] for args in calls) == 2
+        assert sum(args[:2] == ['codesign', '--verify'] for args in calls) == 3
         assert 'Developer ID' in info['signing']
         assert temporary not in (out / 'build-info.json').read_text()
         assert '/private/fixture' not in (out / 'build-info.json').read_text()

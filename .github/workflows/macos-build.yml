@@ -41,11 +41,12 @@ jobs:
           xcodebuild -version > qualification-logs/xcode.txt
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22.19.0"
+          node-version: "22.23.3"
       - name: Provision a separate pinned engine on the disposable runner
         run: |
-          brew install coreutils gnu-tar zstd
+          brew install coreutils gnu-tar findutils zstd
           echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix findutils)/libexec/gnubin" >> "$GITHUB_PATH"
           revision=$(<packaging/pi-engine-revision)
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           engine="$TMPDIR/pi-engine"
@@ -63,6 +64,7 @@ jobs:
           set -o pipefail
           cargo test -p pipkin-core -p pi-client --locked 2>&1 | tee qualification-logs/core-transport.log
           cargo test -p pipkin-app --locked macos_processes -- --test-threads=1 2>&1 | tee qualification-logs/ownership.log
+          cargo test -p pipkin-app --locked runtime_tests 2>&1 | tee qualification-logs/runtime-policy.log
           cargo test -p pipkin-app --locked fresh_ids_are_distinct_canonical_protocol_uuid_v4 2>&1 | tee qualification-logs/identity.log
           cargo test -p pipkin-app --locked managed_engine_remembers_a_portable_id 2>&1 | tee qualification-logs/managed-identity.log
           cargo fmt --all --check
@@ -76,11 +78,23 @@ jobs:
           # Metadata includes workspace-unified feature dependencies not necessarily compiled
           # by the limited smoke checks. Populate the exact locked target graph before offline audit.
           cargo fetch --locked --target "$target" 2>&1 | tee qualification-logs/notice-inputs.log
+          stage="$PWD/dist/macos-notices/usr/lib/pipkin"
+          scripts/build-engine.sh "$PIPKIN_PI_REPO" "$stage/engine" 2>&1 | tee qualification-logs/staged-engine.log
+          python3 scripts/stage-node-runtime.py "$target" "$stage/runtime" 2>&1 | tee qualification-logs/node-runtime.log
+          python3 - "$stage/engine/engine.json" <<'PY'
+          import json, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          manifest = json.loads(path.read_text())
+          manifest['requiresBundledNode'] = True
+          path.write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+          PIPKIN_PI_REPO="$stage/engine" cargo test -p pipkin-app --release --locked the_engine_starts_serves_and_stops_without_leaving_processes -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/bundled-lifecycle.log
+          PIPKIN_PI_REPO="$stage/engine" cargo test -p pipkin-app --release --locked a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/bundled-work.log
           python3 scripts/write-license-inventory.py dist/macos-notices "$target" 2>&1 | tee qualification-logs/notices.log
           python3 scripts/package-macos.py "$target" 2>&1 | tee qualification-logs/package.log
           cp dist/macos/build-info.json qualification-logs/
           cp dist/macos/SHA256SUMS qualification-logs/
-      - name: Retain experimental app (not signed/notarized or a release)
+      - name: Retain experimental app (ad-hoc only, not notarized or a release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pipkin-macos-${{ runner.arch }}-${{ github.sha }}

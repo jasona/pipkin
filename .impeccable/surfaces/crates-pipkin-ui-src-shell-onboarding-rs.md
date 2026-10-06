@@ -53,8 +53,8 @@ DESIGN.md, and every shipping raster carrying its provenance.
 
 ## Engine contract findings and required implementation work
 
-The current Mac `.app` does not bundle Pi/Node. Existing managed launch assumes a system Node PATH; Finder
-startup cannot rely on Terminal's shell configuration. Ship a pinned, verified architecture-matched runtime
+The initial Mac `.app` did not bundle Pi/Node. A self-contained packaging/runtime path is now implemented,
+with native artifact qualification pending; Finder startup cannot rely on Terminal's shell configuration. Ship a pinned, verified architecture-matched runtime
 and engine with retained notices, then qualify that actual pair in a bare PATH/disposable profile. Do not
 mutate an owner's global Node installation or download executable updates without an explicit setup policy.
 
@@ -78,7 +78,14 @@ Ad-hoc signing fixes bundle integrity, not normal Gatekeeper trust; Developer ID
 
 ## Current delivery status
 
-The design/flow direction is approved. The foundational policy can be unit-tested independently of GPUI.
-No implemented credential UI, bundled runtime, setup completion observation or native visual review is claimed
-by this document. Product/design context contains prototype-era statements; use current source and release-gate
+- [x] Owner-approved design/flow contract and tested first-run/attempt-scoped readiness policy.
+- [ ] Self-contained Mac package qualification: pinned Node 22.23.3 archive inputs, minimal runtime with full
+  notices, bundled engine/runtime layout, explicit runtime PATH and bare-PATH extracted-app probe implemented;
+  actual native CI/artifact results must be recorded before closing this step.
+- [ ] Provider capability/authentication boundary and secret-safe synthetic tests.
+- [ ] Branded native screens, persistent progress and real acknowledgement wiring.
+- [ ] Native visual/error/interruption review and owner first reply.
+
+No implemented credential UI, successful bundled Mac runtime qualification, setup completion observation or
+native visual review is claimed by this document. Product/design context contains prototype-era statements; use current source and release-gate
 evidence for capabilities rather than silently repairing unrelated context as part of this feature.

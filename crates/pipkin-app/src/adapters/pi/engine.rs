@@ -24,6 +24,10 @@ use pi_client::unix;
 #[path = "macos_processes.rs"]
 mod macos_processes;
 
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod runtime_tests;
+
 /// Restarts allowed within `RESTART_WINDOW` before giving up.
 const MAX_RESTARTS: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
@@ -83,6 +87,47 @@ pub struct Engine {
     config: EngineConfig,
 }
 
+/// Only a package explicitly declaring its bundled runtime changes PATH. Development/external
+/// engines retain their existing environment; missing declared runtime never falls back silently.
+pub(crate) fn bundled_runtime_bin(repo: &Path) -> Result<Option<PathBuf>, EngineError> {
+    let manifest = repo.join("engine.json");
+    if !manifest.is_file() {
+        return Ok(None);
+    }
+    let data = fs::read(&manifest).map_err(EngineError::Spawn)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&data)
+        .map_err(|_| EngineError::Missing("invalid bundled engine manifest".into()))?;
+    match manifest.get("requiresBundledNode") {
+        None | Some(serde_json::Value::Bool(false)) => return Ok(None),
+        Some(serde_json::Value::Bool(true)) => {}
+        _ => {
+            return Err(EngineError::Missing(
+                "invalid bundled runtime declaration".into(),
+            ));
+        }
+    }
+    let runtime = repo
+        .parent()
+        .ok_or_else(|| EngineError::Missing("missing runtime location".into()))?
+        .join("runtime");
+    if !runtime.join("runtime.json").is_file() || !runtime.join("bin/node").is_file() {
+        return Err(EngineError::Missing(
+            "Pipkin's bundled Node runtime is missing; reinstall this app".into(),
+        ));
+    }
+    Ok(Some(runtime.join("bin")))
+}
+
+fn runtime_path(
+    bin: &Path,
+    current: Option<&std::ffi::OsStr>,
+) -> Result<std::ffi::OsString, EngineError> {
+    let paths = std::iter::once(bin.to_path_buf())
+        .chain(current.into_iter().flat_map(std::env::split_paths));
+    std::env::join_paths(paths)
+        .map_err(|_| EngineError::Missing("invalid runtime search path".into()))
+}
+
 fn socket_path(config: &EngineConfig) -> PathBuf {
     config.server_dir.join(format!("{}.sock", config.server_id))
 }
@@ -114,6 +159,7 @@ impl Engine {
                 config.pi_repo.display()
             )));
         }
+        let runtime = bundled_runtime_bin(&config.pi_repo)?;
         fs::create_dir_all(&config.server_dir).map_err(EngineError::Spawn)?;
         // The socket directory must be private; Pi enforces it too, but fail with our own message.
         use std::os::unix::fs::PermissionsExt;
@@ -154,6 +200,16 @@ impl Engine {
         }
         for (key, value) in &config.env {
             command.env(key, value);
+        }
+        if let Some(bin) = runtime {
+            let custom = config
+                .env
+                .iter()
+                .rev()
+                .find(|(key, _)| key == "PATH")
+                .map(|(_, value)| std::ffi::OsStr::new(value));
+            let inherited = std::env::var_os("PATH");
+            command.env("PATH", runtime_path(&bin, custom.or(inherited.as_deref()))?);
         }
         let child = command.spawn().map_err(EngineError::Spawn)?;
         log::info!("started the Pi engine launcher (pid {})", child.id());
