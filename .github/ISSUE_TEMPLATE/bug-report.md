@@ -10,8 +10,9 @@ Do not attach auth.json, whole databases, process environments, full private ses
 
 ## Build and environment
 
-- `pipkin --version`:
-- Engine revision/protocol (from the installed engine manifest or reviewed diagnostics):
+- App/engine metadata: use **Ctrl K → Copy diagnostics** (metadata only; review before sharing):
+- If the engine is unidentified, say whether it is an external server or development checkout:
+- Additional reviewed CLI/version details, only if needed:
 - Artifact: installed package / source build / demo; clean or dirty; signed or unsigned:
 - Distribution, architecture, desktop/compositor, Wayland or X11, actual scale:
 - Provider/model (no key, token, account ID or private endpoint):

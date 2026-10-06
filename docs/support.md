@@ -69,8 +69,18 @@ names. **Review and redact the report before sharing it.** Never upload `auth.js
 environments or provider headers merely because someone requests “diagnostics”.
 
 `--probe` starts an offline throwaway profile and checks a trusted handshake; it does not send a paid model request,
-validate provider authentication, test every tool, or qualify the native desktop. The in-app share-safe **Copy
-diagnostics** action and its redaction audit are still a release-plan task; do not claim they exist yet.
+validate provider authentication, test every tool, or qualify the native desktop.
+
+For an intentionally limited report, use **Ctrl K → Copy diagnostics**. The palette labels this as metadata only;
+it copies app version/revision/dirty state, supported protocol/schema, build platform, real-versus-demo mode and the
+configured launch-source manifest revision/protocol. It does not collect logs, arbitrary errors, paths, session IDs,
+conversation/attachment text, credentials or environment values. This allowlist has automated hostile-manifest and
+headless clipboard tests; native clipboard observation on the installed candidate remains separate.
+
+The report is a launch-source snapshot, **not an attestation of the running server**. A development checkout without
+an identified manifest, an external server, a missing source or a rejected source is marked unidentified rather than
+guessed. It does not test database health, Node installation or provider authentication. Review even this minimal
+report before sharing; use reviewed detailed CLI output only when the metadata report is insufficient.
 
 ## Reporting a bug or security concern
 

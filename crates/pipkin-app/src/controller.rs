@@ -557,10 +557,14 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
             },
         ))
     });
+    let launch_source = (options.mode == Mode::Real)
+        .then(|| engine_to_launch(&options))
+        .flatten();
+    let support_report = crate::diagnostics::prepare(options.mode, launch_source.as_deref());
     let backend: Arc<dyn Backend> = match &demo {
         Some(demo) => demo.clone(),
         None => {
-            let config = match engine_to_launch(&options) {
+            let config = match launch_source {
                 Some(repo) => match managed_engine(&options, &repo) {
                     Ok(engine) => PiConfig::managed(engine),
                     Err(error) => {
@@ -654,6 +658,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
         let storage = storage.clone();
         let (cache_saver, search_runner) = (cache_saver.clone(), search_runner.clone());
         model.update(cx, |m, _| {
+            m.set_support_report(support_report);
             m.set_effect_handler(Box::new(move |effect, cx| match effect {
                 Effect::Backend(request) => backend.request(request),
                 Effect::SaveDraft {

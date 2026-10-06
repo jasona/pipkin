@@ -4,6 +4,7 @@ use gpui_platform::application;
 mod adapters;
 mod cache;
 mod controller;
+mod diagnostics;
 mod install;
 mod launch;
 mod platform;

@@ -8,6 +8,7 @@ pub type EffectHandler = Box<dyn FnMut(Effect, &mut Context<Model>)>;
 pub struct Model {
     pub state: AppState,
     handler: Option<EffectHandler>,
+    support_report: Option<String>,
 }
 
 impl EventEmitter<Note> for Model {}
@@ -17,12 +18,22 @@ impl Model {
         Model {
             state,
             handler: None,
+            support_report: None,
         }
     }
 
     /// Installed by the controller (pipkin-app). Effects are executed outside render.
     pub fn set_effect_handler(&mut self, handler: EffectHandler) {
         self.handler = Some(handler);
+    }
+
+    /// Prepared by the controller outside render; never composed from conversation/error text.
+    pub fn set_support_report(&mut self, report: String) {
+        self.support_report = Some(report);
+    }
+
+    pub fn support_report(&self) -> Option<&str> {
+        self.support_report.as_deref()
     }
 
     pub fn dispatch(&mut self, command: Command, cx: &mut Context<Self>) {

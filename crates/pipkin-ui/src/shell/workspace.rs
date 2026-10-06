@@ -753,6 +753,18 @@ impl Workspace {
                 window.dispatch_action(a, cx);
             }
             Run::Dispatch(c) => self.dispatch(c.clone(), cx),
+            Run::CopyDiagnostics => {
+                let report = self.model.read(cx).support_report().map(str::to_owned);
+                if let Some(report) = report {
+                    cx.write_to_clipboard(ClipboardItem::new_string(report));
+                    self.show_toast(
+                        "Copied support metadata only — no logs, paths or conversation text. Review before sharing.",
+                        cx,
+                    );
+                } else {
+                    self.show_toast("Support metadata is unavailable in this session", cx);
+                }
+            }
             Run::DemoScenario(name) => {
                 if let Some(d) = cx.try_global::<DemoControls>().cloned() {
                     (d.set_scenario)(name);
@@ -1129,6 +1141,60 @@ impl Workspace {
             .hover(move |s| s.bg(accent.opacity(0.25)))
             .on_drag(DragMarker(marker), |_, _, _, cx| cx.new(|_| DragGhost))
             .child(div().w(px(1.0)).h_full().bg(border))
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use gpui::{TestAppContext, VisualTestContext};
+
+    use super::*;
+
+    #[gpui::test]
+    fn copies_controller_metadata_only_and_reports_unavailable_without_overwriting_clipboard(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::text::init);
+        let window = cx.add_window(|window, cx| {
+            let mut state = AppState::new(
+                Bootstrap {
+                    projects: vec![],
+                    models: vec![],
+                    conversations: vec![],
+                    now: 0,
+                },
+                Prefs::default(),
+            );
+            state.set_storage_issue("sk-secret private error /private/project".into());
+            let model = cx.new(|_| Model::new(state));
+            Workspace::new(model, PathBuf::new(), window, cx)
+        });
+        let root = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+        root.update_in(cx, |workspace, window, cx| {
+            workspace.run_command(&Run::CopyDiagnostics, window, cx);
+            assert!(workspace.toast.as_deref().unwrap().contains("unavailable"));
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("sentinel")
+            )
+        });
+        root.update_in(cx, |workspace, window, cx| {
+            workspace.model.update(cx, |model, _| {
+                model.set_support_report("public metadata only".into())
+            });
+            workspace.run_command(&Run::CopyDiagnostics, window, cx);
+            assert!(workspace.toast.as_deref().unwrap().contains("no logs"));
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("public metadata only")
+            )
+        });
     }
 }
 

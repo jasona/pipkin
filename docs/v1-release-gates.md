@@ -343,6 +343,35 @@ and redaction tests remain open. First-run/new-user/clean-desktop results are no
 Documentation working-delta checks on app base `12c9dba`: **531 workspace tests passed (40 ignored)**, Clippy/fmt clean.
 Logs: `/tmp/pipkin-onboarding-{workspace,clippy}.log`. No destructive owner-profile testing or desktop changes.
 
+## Phase 5: metadata-only Copy diagnostics (2026-10-06)
+
+Added **Ctrl K → Copy diagnostics**, available without a selected conversation and in real/demo/offline states. The
+controller prepares an allowlisted launch-source snapshot outside render: app version/full revision/dirty state,
+client protocol/supported schema, build platform/mode and configured engine manifest revision/protocol. Only a
+40-hex revision is retained from manifest identity; arbitrary manifest names, version/error strings and paths are
+not copied. External/missing/rejected/unmanifested sources are explicitly unidentified; demo remains simulated.
+The snapshot does not claim running-server identity, database health, Node availability or provider authentication.
+
+No log tails, credentials, environment values, private errors, session IDs, prompts or attachment/project paths enter
+the report. Palette grouping, copied-report footer and feedback explain the scope/privacy. When controller metadata
+is unavailable, the action explains that and leaves the clipboard unchanged rather than claiming success.
+Automated tests cover hostile manifest/build strings, missing/broken source files, known/unknown/demo identity,
+registry availability and a headless GPUI clipboard copy/unavailable path with private state present. **No owner
+clipboard or desktop was touched; native clipboard observation on the installed candidate remains unverified.**
+Detailed CLI diagnostics remain potentially sensitive and review-before-sharing.
+
+On app base `b66f7e7`, **536 workspace tests passed (40 ignored)**, Clippy/fmt clean, **37 development-engine and
+37 packaged-engine suite tests passed**, and scratch-prefix installer checks passed. A first attempt failed 36
+engine tests because the previously saved `/tmp` checkout pointer no longer existed; no packaging ran. A fresh
+public clean checkout at the pinned Pi revision was provisioned with `npm ci` and the validated snapshot; the retry
+passed. The owner's Pi source/profile was not changed. Logs: `/tmp/pipkin-copy-diagnostics-{workspace,clippy,ui,
+provision,engine,engine-retry,package,verify,installer}.log`.
+
+Unsigned 0.0.1 working-delta package SHA-256:
+`9eb633740fef82037f6c1b0d1f2351c4b011d2d5b5f5a8c43ea21f55df5214f5`.
+Remote [37440342638](https://github.com/last-refuge/pipkin/actions/runs/37440342638) passed for clean full app revision
+`b66f7e7cd1b3fa89f853f8a207e8641d435eaf75` (before this feature). This changed candidate still needs its own green run.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.
@@ -370,7 +399,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 | Picker/drop/clipboard/links/launching | 4 | Partial; not fully walked on installed candidate | Owner performs real interactions; engineering fixes findings |
 | Engine-unavailable native state | 4 | Automated behavior covered; native installed observation open | Owner/engineering check actionable error, cached history, and disabled dispatch |
 | Cold reboot/start | 4 | Unverified | Owner records recovery and usable startup, not just window mapping |
-| Onboarding/diagnostics/compatibility docs | 5 | Partial: setup/support/recovery guides, extension exclusions and report template published in source | Add share-safe Copy diagnostics/redaction tests; finalize support after native acceptance; observe new users where possible |
+| Onboarding/diagnostics/compatibility docs | 5 | Partial: setup/support/recovery guides, extension exclusions and report template published in source | Metadata-only Copy diagnostics/privacy tests passed; native installed clipboard check, final support acceptance and new-user observations remain |
 | Extended soak + real-window day | 6 | Open; 40-prompt baseline tripwire passed, historical 1500-prompt measurement exists | Engineering + owner run documented longer workloads and record app/engine resources |
 | Real signing key and independently verifiable candidate | 6 | Open; signature tooling previously exercised with throwaway key | Owner manages real key; engineering builds/verifies candidate |
 | RC stabilization and final release | 6/7 | Not started | Owner approves gates; engineering publishes identified signed artifacts and update/recovery policy |
@@ -378,7 +407,7 @@ Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open
 ## Immediate execution queue
 
 1. Audit interrupted-tool and unresolved-stop messaging/recovery.
-2. Resolve dependency/license/provenance findings and implement share-safe in-app Copy diagnostics; pinned builds and remote CI are established.
+2. Resolve dependency/license/provenance findings; metadata-only Copy diagnostics and pinned builds/remote CI are established.
 3. Schedule owner-run clean-install and native gates while onboarding/support work proceeds.
 
 For step details and exit criteria, use the sequenced plan. `docs/native-gate-testing.md` remains the manual procedure reference; unrecorded owner use must not be assumed to have passed a particular gate.

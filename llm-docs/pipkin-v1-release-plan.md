@@ -208,7 +208,7 @@ The supported desktop workflow passes the agreed native gates. Every remaining l
 ### Tasks
 
 - [x] Document first-run provider setup, missing credentials, expired authentication, and model refresh. `docs/getting-started.md` describes the current workflow; clean-desktop/new-user observation remains open.
-- [ ] Add an in-app **Copy diagnostics** action with clear privacy expectations. Audit redaction before encouraging users to share reports.
+- [x] Add an in-app **Copy diagnostics** action with clear privacy expectations. Ctrl K copies an allowlisted metadata snapshot, never logs/errors/paths/session text; hostile-manifest and headless clipboard tests passed. Detailed CLI diagnostics remain review-before-sharing; native installed clipboard observation remains separate.
 - [x] Document locations and ownership of drafts, sessions, credentials, caches, backups, and logs. `docs/support.md` distinguishes app cache/journal, engine profile and agent credentials; `--data-dir` alone does not isolate the engine.
 - [x] Document what quitting does to active engine work and how to recover after interruption. Owned versus external engines and possible repeated partial tool effects are explicit; recovery tests/native gates remain separate.
 - [x] Explain workspace-wide Changes semantics, partial cached-history search coverage, and `@` references versus attachments. `docs/getting-started.md` publishes these boundaries.

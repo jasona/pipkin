@@ -10,6 +10,7 @@ use crate::model::DemoControls;
 pub enum Run {
     Action(Box<dyn Action>),
     Dispatch(Command),
+    CopyDiagnostics,
     DemoScenario(&'static str),
     ToggleSaveFailure,
 }
@@ -211,6 +212,13 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Some("Ctrl+I"),
             true,
             Run::Action(Box::new(ToggleInspector)),
+        ),
+        cmd(
+            "Copy diagnostics",
+            "Support (metadata only; no logs, paths or conversation text)",
+            None,
+            true,
+            Run::CopyDiagnostics,
         ),
         cmd(
             "Preferences…",
@@ -505,6 +513,21 @@ mod removal_tests {
             .iter()
             .find(|c| c.title == title)
             .unwrap_or_else(|| panic!("no command {title:?}"))
+    }
+
+    #[test]
+    fn diagnostics_is_available_in_real_demo_and_offline_states_without_a_conversation() {
+        let mut state = state_with_queue_and_attachments();
+        state.conversations.clear();
+        state.selected = None;
+        for mode in [Mode::Real, Mode::Demo] {
+            state.mode = mode;
+            let commands = build(&state, None);
+            let command = find(&commands, "Copy diagnostics");
+            assert!(command.enabled);
+            assert!(matches!(command.run, Run::CopyDiagnostics));
+            assert!(command.group.contains("metadata only"));
+        }
     }
 
     #[test]
