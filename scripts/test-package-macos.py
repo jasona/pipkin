@@ -48,6 +48,10 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             return b''
         if args[0] == 'otool':
             return '/private/fixture/executable:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n'
+        if args[:3] == ['xcrun', 'GetFileInfo', '-a']:
+            assert kwargs['text'] is True
+            assert (Path(args[3]) / '.VolumeIcon.icns').exists()
+            return 'C\n' if image_state['has_custom_icon'] and not hide_volume_flag else '-\n'
         raise AssertionError(args)
 
     calls = []
@@ -56,6 +60,10 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
     corrupt_dmg = False
     fail_attach = False
     dmg_payload = None
+    image_state = {'writable': None, 'has_custom_icon': False}
+    corrupt_volume_icon = False
+    hide_volume_flag = False
+    fail_setfile = False
 
     def seal(contents):
         return {str(p.relative_to(contents)): module.sha256(p) for p in contents.rglob('*')
@@ -104,23 +112,44 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
                 (Path(args[4]) / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered resource')
         elif args[:2] == ['hdiutil', 'create']:
             assert args[2:5] == ['-volname', 'Pipkin', '-srcfolder']
-            assert args[6:9] == ['-format', 'UDZO', '-ov']
+            assert args[6:9] == ['-format', 'UDRW', '-ov']
             payload = Path(args[5])
             assert sorted(p.name for p in payload.iterdir()) == ['Applications', 'Pipkin.app']
             assert (payload / 'Applications').is_symlink()
             assert (payload / 'Applications').readlink() == Path('/Applications')
             dmg_payload = payload
-            Path(args[-1]).write_bytes(b'fixture disk image')
+            image_state['has_custom_icon'] = False
+            Path(args[-1]).write_bytes(b'fixture writable disk image')
+        elif args[:2] == ['hdiutil', 'convert']:
+            assert Path(args[2]).read_bytes() == b'fixture writable disk image'
+            assert args[3:6] == ['-format', 'UDZO', '-o']
+            assert image_state['has_custom_icon']
+            assert calls[-2][:2] == ['hdiutil', 'detach']
+            Path(args[-1]).write_bytes(b'fixture compressed disk image')
         elif args[:2] == ['hdiutil', 'attach']:
-            assert args[2:6] == ['-readonly', '-nobrowse', '-mountpoint', args[5]]
-            assert Path(args[-1]).read_bytes() == b'fixture disk image'
+            writable = args[2] == '-readwrite'
+            assert args[2:6] == ['-readwrite' if writable else '-readonly', '-nobrowse', '-mountpoint', args[5]]
+            assert Path(args[-1]).read_bytes() == (b'fixture writable disk image' if writable else b'fixture compressed disk image')
             mount = Path(args[5])
             shutil.copytree(dmg_payload / 'Pipkin.app', mount / 'Pipkin.app', symlinks=True)
             (mount / 'Applications').symlink_to('/Applications', target_is_directory=True)
-            if corrupt_dmg:
+            if writable:
+                image_state['writable'] = mount
+            else:
+                shutil.copy2(image_state['writable'] / '.VolumeIcon.icns', mount / '.VolumeIcon.icns')
+                if corrupt_volume_icon:
+                    (mount / '.VolumeIcon.icns').write_text('tampered volume icon')
+            if corrupt_dmg and not writable:
                 (mount / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered image')
             if fail_attach:
                 raise subprocess.CalledProcessError(1, args)
+        elif args[:2] == ['xcrun', 'SetFile']:
+            assert args[2:4] == ['-a', 'C']
+            assert Path(args[4]) == image_state['writable']
+            assert (image_state['writable'] / '.VolumeIcon.icns').read_text() == 'fixture app icon'
+            if fail_setfile:
+                raise subprocess.CalledProcessError(1, args)
+            image_state['has_custom_icon'] = True
         elif args[:2] == ['hdiutil', 'detach']:
             assert Path(args[2]).is_dir()
         elif '--diagnose' in args:
@@ -159,6 +188,7 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         assert (out / 'SHA256SUMS').read_text() == (
             f'{module.sha256(package)}  {package.name}\n{module.sha256(dmg)}  {dmg.name}\n')
         assert sum('--probe' in args for args in calls) == 2  # Extracted ZIP and copied DMG app.
+        assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == 2
         assert len(probe_profiles) == 2
         # Regression: the prior longer pk-dmg- prefix crossed Pi's private socket budget.
         try:
@@ -173,7 +203,7 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             module.main()
             raise AssertionError('tampered mounted app was accepted')
         except subprocess.CalledProcessError:
-            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 1
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 2
             assert not (out / 'SHA256SUMS').exists()
         corrupt_dmg = False
         fail_attach = True
@@ -185,6 +215,35 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 1
             assert not (out / 'SHA256SUMS').exists()
         fail_attach = False
+        corrupt_volume_icon = True
+        before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+        try:
+            module.main()
+            raise AssertionError('altered volume icon was accepted')
+        except RuntimeError as error:
+            assert 'volume icon' in str(error)
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 2
+            assert not (out / 'SHA256SUMS').exists()
+        corrupt_volume_icon = False
+        hide_volume_flag = True
+        before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+        try:
+            module.main()
+            raise AssertionError('missing volume icon flag was accepted')
+        except RuntimeError as error:
+            assert 'custom volume icon flag' in str(error)
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 2
+            assert not (out / 'SHA256SUMS').exists()
+        hide_volume_flag = False
+        fail_setfile = True
+        before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+        try:
+            module.main()
+            raise AssertionError('failed custom icon operation was accepted')
+        except subprocess.CalledProcessError:
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 1
+            assert not (out / 'SHA256SUMS').exists()
+        fail_setfile = False
         corrupt_extraction = True
         try:
             module.main()

@@ -570,27 +570,42 @@ impl Workspace {
             // The engine has no model Pipkin can offer: say what to do about it.
             // Only when connected: offline, which models exist is not known.
             RunState::Idle if real && no_models && read_only.is_none() && avail.refresh_models => {
+                let can_connect = self.model.read(cx).sign_in.available;
+                let action = if can_connect {
+                    Btn::new("connect-account")
+                        .label("Connect account")
+                        .kind(BtnKind::Primary)
+                        .compact()
+                        .on_click({
+                            let model = self.model.clone();
+                            move |_, cx| model.update(cx, |m, cx| m.open_account_setup(cx))
+                        })
+                        .into_any_element()
+                } else {
+                    Btn::new("refresh-models")
+                        .icon("refresh-cw")
+                        .label("Refresh models")
+                        .kind(BtnKind::Subtle)
+                        .compact()
+                        .on_click({
+                            let this = this.clone();
+                            move |_, cx| {
+                                this.update(cx, |t, cx| t.dispatch(Command::RefreshModels, cx))
+                            }
+                        })
+                        .into_any_element()
+                };
                 Some(strip(
                     cx,
                     "circle-help",
                     c.warning,
                     "No model is ready",
-                    "Pi has no model it can use. Sign in or add an API key with Pi (run `pi`, then /login), then refresh the models.",
-                    vec![
-                        Btn::new("refresh-models")
-                            .icon("refresh-cw")
-                            .label("Refresh models")
-                            .kind(BtnKind::Subtle)
-                            .compact()
-                            .disabled(!avail.refresh_models)
-                            .on_click({
-                                let this = this.clone();
-                                move |_, cx| {
-                                    this.update(cx, |t, cx| t.dispatch(Command::RefreshModels, cx))
-                                }
-                            })
-                            .into_any_element(),
-                    ],
+                    if can_connect {
+                        MODEL_SETUP_DETAIL
+                    } else {
+                        MODEL_UNAVAILABLE_DETAIL
+                    },
+                    vec![action],
                 ))
             }
             // This build can read sessions but not run them: say so where sending is offered.
@@ -1063,6 +1078,8 @@ impl Workspace {
     }
 }
 
+const MODEL_SETUP_DETAIL: &str = "Connect a Claude or ChatGPT subscription in Pipkin to choose a model. Your existing conversations stay here.";
+const MODEL_UNAVAILABLE_DETAIL: &str = "No model is available. This engine does not offer in-app subscription sign-in; use an updated bundled engine, then refresh models.";
 const RECOVERY_DETAIL: &str = "Pipkin does not resend the prompt. Pi recovery may repeat a partially executed tool. Review tool output, project Changes and external effects before sending more work. If unresolved, Check status reconciles with Pi; copy metadata-only diagnostics for support. Detailed CLI diagnostics may contain sensitive logs.";
 const UNKNOWN_DETAIL: &str = "The app or connection stopped before acknowledgement. This does not prove the prompt or its tools never ran. Check status asks Pi what happened without resending; sending stays disabled until reconciled. Review project and external effects before repeating work.";
 
@@ -1122,6 +1139,15 @@ pub(super) fn strip(
 #[cfg(test)]
 mod recovery_copy_tests {
     use super::*;
+
+    #[test]
+    fn model_recovery_uses_gui_sign_in_without_sending_users_to_terminal_login() {
+        assert!(MODEL_SETUP_DETAIL.contains("in Pipkin"));
+        assert!(MODEL_SETUP_DETAIL.contains("existing conversations stay"));
+        assert!(MODEL_UNAVAILABLE_DETAIL.contains("updated bundled engine"));
+        assert!(!MODEL_SETUP_DETAIL.contains("/login"));
+        assert!(!MODEL_UNAVAILABLE_DETAIL.contains("/login"));
+    }
 
     #[test]
     fn unknown_and_recovery_guidance_explain_partial_effects_and_safe_support() {

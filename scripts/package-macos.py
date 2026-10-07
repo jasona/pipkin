@@ -137,8 +137,28 @@ def main():
         payload.mkdir()
         shutil.copytree(bundle, payload / 'Pipkin.app', symlinks=True)
         (payload / 'Applications').symlink_to('/Applications', target_is_directory=True)
+        # Finder's mounted-volume icon is a root-level .VolumeIcon.icns plus the volume's
+        # custom-icon Finder flag. Set it on a writable image, then convert to the read-only
+        # distributable; do not modify the already signed app or rely on upload xattrs.
+        editable = scratch / 'editable.dmg'
         subprocess.run(['hdiutil', 'create', '-volname', 'Pipkin', '-srcfolder', str(payload),
-                        '-format', 'UDZO', '-ov', str(dmg)], check=True)
+                        '-format', 'UDRW', '-ov', str(editable)], check=True)
+        writable = scratch / 'writable'
+        writable.mkdir()
+        try:
+            subprocess.run(['hdiutil', 'attach', '-readwrite', '-nobrowse', '-mountpoint',
+                            str(writable), str(editable)], check=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(['hdiutil', 'detach', str(writable)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            raise
+        try:
+            shutil.copy2(ROOT / 'packaging/pipkin.icns', writable / '.VolumeIcon.icns')
+            subprocess.run(['xcrun', 'SetFile', '-a', 'C', str(writable)], check=True)
+        finally:
+            subprocess.run(['hdiutil', 'detach', str(writable)], check=True)
+        subprocess.run(['hdiutil', 'convert', str(editable), '-format', 'UDZO', '-o',
+                        str(dmg)], check=True)
         mount = scratch / 'mount'
         mount.mkdir()
         try:
@@ -150,6 +170,11 @@ def main():
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             raise
         try:
+            if sha256(mount / '.VolumeIcon.icns') != sha256(ROOT / 'packaging/pipkin.icns'):
+                raise RuntimeError('mounted DMG volume icon does not match Pipkin')
+            flags = subprocess.check_output(['xcrun', 'GetFileInfo', '-a', str(mount)], text=True)
+            if 'C' not in flags:
+                raise RuntimeError('mounted DMG does not have the custom volume icon flag')
             if not (mount / 'Applications').is_symlink() or (mount / 'Applications').readlink() != Path('/Applications'):
                 raise RuntimeError('mounted DMG is missing the Applications shortcut')
             copied = scratch / 'installed/Pipkin.app'

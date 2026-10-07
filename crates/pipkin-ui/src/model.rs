@@ -125,6 +125,16 @@ impl Model {
         cx.notify();
     }
 
+    /// Let a returning user with no usable model connect a subscription in the GUI. Keep all
+    /// existing projects, conversations and drafts; opening setup does not mark it complete.
+    pub fn open_account_setup(&mut self, cx: &mut Context<Self>) {
+        self.entry = onboarding::EntrySurface::Welcome;
+        self.ever_started_setup = true;
+        self.setup.begin();
+        self.reconcile_setup();
+        cx.notify();
+    }
+
     pub fn accept_existing_provider(
         &mut self,
         provider: onboarding::SignInProvider,
@@ -287,3 +297,62 @@ pub struct DemoControls {
 }
 
 impl gpui::Global for DemoControls {}
+
+#[cfg(test)]
+mod account_setup_tests {
+    use gpui::{AppContext as _, TestAppContext};
+
+    use super::*;
+
+    #[gpui::test]
+    fn a_returning_user_can_open_setup_without_losing_saved_work_or_restarting_on_discovery(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.update(|cx| {
+            let mut state = AppState::new(
+                Bootstrap {
+                    projects: vec![],
+                    models: vec![],
+                    conversations: vec![],
+                    now: 0,
+                },
+                Prefs::default(),
+            );
+            state.restore_project("/tmp/existing-project");
+            state.connection = Connection::Ready;
+            cx.new(|_| Model::new(state))
+        });
+        model.update(cx, |m, cx| {
+            assert_eq!(m.entry, onboarding::EntrySurface::Workspace);
+            m.set_sign_in(
+                onboarding::SignInSnapshot {
+                    available: true,
+                    credentials_known: true,
+                    has_existing_credentials: true,
+                    ..Default::default()
+                },
+                cx,
+            );
+            m.open_account_setup(cx);
+            assert_eq!(m.entry, onboarding::EntrySurface::Welcome);
+            assert_eq!(m.setup.stage(), onboarding::SetupStage::ConnectProvider);
+            assert!(!m.state.prefs.setup_completed);
+            assert_eq!(m.state.projects.len(), 1);
+            // A late credential discovery must not undo an explicit return to setup.
+            m.set_sign_in(
+                onboarding::SignInSnapshot {
+                    available: true,
+                    credentials_known: true,
+                    has_existing_credentials: true,
+                    ..Default::default()
+                },
+                cx,
+            );
+            assert_eq!(m.entry, onboarding::EntrySurface::Welcome);
+            m.explore_workspace(cx);
+            assert_eq!(m.entry, onboarding::EntrySurface::Workspace);
+            assert!(!m.state.prefs.setup_completed);
+            assert_eq!(m.state.projects.len(), 1);
+        });
+    }
+}

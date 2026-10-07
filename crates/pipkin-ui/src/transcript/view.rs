@@ -1910,6 +1910,12 @@ impl Render for TranscriptView {
         let mut empty = true;
         let mut run_label = "Idle";
         let read_only = self.model.read(cx).state.read_only.clone();
+        let no_model = {
+            let model = self.model.read(cx);
+            model.state.mode == pipkin_core::Mode::Real
+                && model.state.connection.is_ready()
+                && model.state.models.is_empty()
+        };
         self.resolved = None;
         if let Some(id) = self.current {
             self.ensure_conv(id, cx);
@@ -1980,6 +1986,10 @@ impl Render for TranscriptView {
                 } else {
                     match &read_only {
                         Some(reason) => ("No messages in this session", reason.clone()),
+                        None if no_model => (
+                            "No model is ready.",
+                            "Use the account or model controls below to get started.".into(),
+                        ),
                         None => ("Ready when you are.", "Connect. Prompt. Build.".into()),
                     }
                 };

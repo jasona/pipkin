@@ -66,14 +66,22 @@ server socket path was 108 bytes in that run versus 104 for the successful ZIP p
 above Darwin's Unix-socket limit. The log retained only the engine tail, not the bind syscall
 error, so this is a strongly supported diagnosis, not direct bind-error evidence. Both probes
 now use private short profiles and check Pi's *internal* socket-path budget before launching.
-A new macOS CI pass is required; the first failed run produced no downloadable DMG artifact.
+Corrected run [37624278297](https://github.com/last-refuge/pipkin/actions/runs/37624278297)
+on clean `962fba3` **passed**: the ZIP and copied DMG app both passed strict signature checks and
+offline engine probes (2.0s and 2.1s). The first failed run produced no downloadable DMG.
+This pass predates the custom volume icon below, which requires another macOS run.
 
 The packaging workflow now also builds `pipkin-<version>-<target>-experimental.dmg` from the **same
-signed app** as the ZIP. The disk image contains `Pipkin.app` and a shortcut to `/Applications`.
-The macOS runner mounts it read-only, copies the app to a disposable destination, checks its
-signature and app/Node/icon hashes, and runs an offline engine handshake from the copied app.
-`SHA256SUMS` lists both formats. This describes the new checks, **not a passing remote run or a
-Finder installation**; examine the run for the exact revision before relying on its artifact.
+signed app** as the ZIP. The disk image contains `Pipkin.app`, a shortcut to `/Applications`,
+and a hidden `.VolumeIcon.icns` made from Pipkin's supplied icon. Packaging sets the mounted
+volume's custom-icon flag on a writable image before compressing it. The macOS runner then
+mounts the final image read-only, checks the volume-icon bytes and Finder flag, copies the app
+to a disposable destination, checks its signature and app/Node/icon hashes, and runs an offline
+engine handshake from the copied app. The icon of the **downloaded `.dmg` file** is separate
+Finder metadata, not established by this mounted-volume check or guaranteed by artifact upload.
+`SHA256SUMS` lists both formats. The icon checks are newly implemented and **not yet a
+passing remote result**; examine the run for the exact revision before relying on its artifact.
+The owner observed a downloaded DMG launch on Mac, but GUI onboarding/provider acceptance remains open.
 
 For an owner evaluation, download both the DMG and `SHA256SUMS` from one identified Actions
 artifact, run `shasum -a 256 -c SHA256SUMS` in their directory (the ZIP must also be present),
@@ -89,6 +97,34 @@ The initial CI checks the pure core, Unix transport (including kernel peer uid),
 identification and native compilation. It also checks owned engine startup/stop and one real
 scripted-provider file-edit/history round trip. No paid/provider-authenticated request is required.
 See the actual run logs: workflow existence alone is not a passing result.
+
+## If an earlier Pipkin profile skips setup
+
+Installing a new `.app` does **not** reset existing Pipkin projects, conversations or Pi
+credentials. The owner observed a workspace with older sessions, an empty model list and an
+outdated terminal-login instruction after opening a DMG-installed app. Saved work intentionally
+opens the workspace rather than replaying the first-run welcome; that behavior alone does not
+prove the package is damaged or that a model is connected. The old no-model instruction was wrong for
+the bundled OAuth flow. A subsequent build offers **Connect account** in the no-model banner,
+which opens Claude/ChatGPT setup in Pipkin without deleting saved work. That GUI fix still needs
+owner macOS evaluation; it is not present in earlier downloaded DMGs. If the bundled engine
+cannot offer OAuth, the banner reports that limitation instead of showing a dead sign-in action.
+
+To evaluate the first-run wizard **with the currently installed app** while keeping the usual
+profiles untouched, close Pipkin and launch an isolated one from Terminal:
+
+```sh
+scratch=$(mktemp -d /tmp/pk-XXXXXX)
+PI_SERVER_DIR="$scratch/server" \
+  "/Applications/Pipkin.app/Contents/MacOS/pipkin" \
+  --pi-agent-dir "$scratch/agent" --data-dir "$scratch/app"
+```
+
+This uses a private scratch app database, server directory and Pi agent directory; it does not
+repair the normal profile or remove any existing sessions. Do not share its logs without review.
+If the app is installed in `~/Applications`, use that path instead. For everyday use, launch the
+normal Applications copy without these overrides. Real provider sign-in and a first reply remain
+owner tests.
 
 ## Launch for evaluation
 
