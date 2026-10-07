@@ -237,7 +237,9 @@ docs/                the plan, architecture, packaging, platforms, beta and gate
 
 Useful reading: [`docs/architecture.md`](docs/architecture.md), [`docs/packaging.md`](docs/packaging.md),
 [`docs/platforms.md`](docs/platforms.md), [`docs/beta.md`](docs/beta.md), [`docs/extensions.md`](docs/extensions.md),
-[`docs/scorecard.md`](docs/scorecard.md). `AGENTS.md` lists the project's non-negotiables, including the safe way to
+[`docs/scorecard.md`](docs/scorecard.md). The proposed Pi-to-native-engine replatform is in
+[`llm-docs/pipkin-rust-engine-plan.md`](llm-docs/pipkin-rust-engine-plan.md); it is a plan, not a shipped replacement.
+`AGENTS.md` lists the project's non-negotiables, including the safe way to
 drive the real window in native tests (`scripts/guard.sh`).
 
 ## Credits
