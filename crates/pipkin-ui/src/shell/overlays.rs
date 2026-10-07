@@ -1074,6 +1074,11 @@ impl Workspace {
         let t = cx.theme().clone();
         let c = &t.colors;
         let prefs = self.state(cx).prefs.clone();
+        let subagent_setting = self
+            .state(cx)
+            .current()
+            .and_then(|conv| conv.subagents.enabled);
+        let subagent_ready = self.state(cx).connection.is_ready();
         let this = cx.entity();
         let seg = |id: &'static str,
                    label: &'static str,
@@ -1127,6 +1132,33 @@ impl Workspace {
                         }
                     }),
             )
+            .child(div().flex().flex_col().gap(px(4.0))
+                .child(row("Allow subagents", vec![
+                    Btn::new("subagents-off").label("Off")
+                        .aria("Block new subagent calls in this session")
+                        .selected(subagent_setting == Some(false))
+                        .disabled(subagent_setting.is_none() || !subagent_ready)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, cx| this.update(cx, |w, cx| w.dispatch(Command::SetSubagentsEnabled(false), cx))
+                        }),
+                    Btn::new("subagents-on").label("On")
+                        .aria("Allow new subagent calls in this session")
+                        .selected(subagent_setting == Some(true))
+                        .disabled(subagent_setting.is_none() || !subagent_ready)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, cx| this.update(cx, |w, cx| w.dispatch(Command::SetSubagentsEnabled(true), cx))
+                        }),
+                ]))
+                .child(div().text_size(t.small_size()).text_color(c.text_muted)
+                    .child(if subagent_setting.is_none() {
+                        "Unavailable in this session or engine."
+                    } else if !subagent_ready {
+                        "Reconnect to change this session's engine setting."
+                    } else {
+                        "Per session. Turning off blocks new calls; running children continue."
+                    })))
             .child(row(
                 "Theme",
                 vec![

@@ -51,6 +51,42 @@ impl SessionUsage {
     }
 }
 
+/// A durable child of a subagent tool call in one Pi session, never a top-level conversation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentInfo {
+    pub id: u64,
+    pub task_id: u64,
+    pub call_id: String,
+    pub task: String,
+    pub status: String,
+}
+
+/// Bounded, plain-text child entry prepared outside GPUI rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentPreview {
+    pub id: ItemId,
+    pub speaker: &'static str,
+    pub text: String,
+    pub clipped: bool,
+}
+
+/// Pi is authoritative for this session's setting and child directory. `None` means the
+/// attached engine has no subagent service; it is not an empty child list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SubagentState {
+    pub enabled: Option<bool>,
+    pub children: Vec<SubagentInfo>,
+    pub selected: Option<u64>,
+    pub items: Vec<TranscriptItem>,
+    pub previews: Vec<SubagentPreview>,
+    pub error: Option<String>,
+    pub live: bool,
+    /// One in-flight read per selected child; cleared on detach and failure.
+    pub loading: bool,
+    /// Avoid remounting a successfully read but empty child on each activity update.
+    pub viewed: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attachment {
     pub path: String,

@@ -25,6 +25,7 @@ pub mod attach;
 mod auth;
 pub mod engine;
 pub mod session;
+mod subagents;
 pub mod transcript;
 pub mod workspace;
 
@@ -429,7 +430,20 @@ impl Worker {
                     reason: OFFLINE.into(),
                 },
             ),
-            BackendRequest::RemoveSignIn(_)
+            BackendRequest::OpenSubagent {
+                conversation,
+                generation,
+                child,
+            } => self.emit(
+                conversation,
+                generation,
+                EventKind::SubagentViewFailed {
+                    child,
+                    reason: OFFLINE.into(),
+                },
+            ),
+            BackendRequest::SetSubagentsEnabled { .. }
+            | BackendRequest::RemoveSignIn(_)
             | BackendRequest::StartSignIn(_)
             | BackendRequest::ReuseSignIn(_)
             | BackendRequest::AnswerSignIn { .. }
@@ -661,6 +675,8 @@ struct Dirty {
     transcript: bool,
     models: bool,
     ui: bool,
+    subagents: bool,
+    child: bool,
 }
 
 struct Current {
@@ -672,6 +688,10 @@ struct Current {
     models: Option<Subscription>,
     /// Questions extensions ask, if the engine has the service.
     ui: Option<Subscription>,
+    /// Child directory and effective enable setting, only on a qualified Pi worker.
+    subagents: Option<Subscription>,
+    /// The live, read-only keyed transcript selected in this session.
+    child: Option<(u64, Subscription)>,
     /// The session's working directory, for workspace changes.
     cwd: Option<String>,
     /// What the last transcript showed, to notice when tools finish or a run ends.
@@ -1055,6 +1075,33 @@ impl Live {
             } => {
                 worker.last_open = Some((conversation, generation));
                 self.open(worker, conversation, generation, true);
+            }
+            BackendRequest::OpenSubagent {
+                conversation,
+                generation,
+                child,
+            } => {
+                self.open_subagent(worker, conversation, generation, child);
+            }
+            BackendRequest::SetSubagentsEnabled {
+                conversation,
+                generation,
+                enabled,
+            } => {
+                if let Some(current) = &self.current
+                    && current.conversation == conversation
+                    && current.generation == generation
+                    && current.subagents.is_some()
+                {
+                    let target = current.target.clone();
+                    if let Err(error) =
+                        self.call(&target, "pi.subagents", "setEnabled", vec![json!(enabled)])
+                    {
+                        worker.notice(format!("Could not change the subagent setting: {error}"));
+                    }
+                    // Wait for the replicated configuration; a method ack can precede its
+                    // publication. Never display the requested value as if it were effective.
+                }
             }
             BackendRequest::Submit {
                 conversation,
@@ -2090,6 +2137,11 @@ impl Live {
             .client
             .subscribe(&target, "pi.ui-requests", Mode::Singleton, CALL_TIMEOUT)
             .ok();
+        // Older/external engines are supported: unavailable is not an empty directory.
+        let subagents = self
+            .client
+            .subscribe(&target, "pi.subagents", Mode::Singleton, CALL_TIMEOUT)
+            .ok();
         let Some(view) = transcript.read(|r| r.state("state").cloned()).flatten() else {
             return fail(worker, "The session has no transcript.".into());
         };
@@ -2156,6 +2208,8 @@ impl Live {
             transcript,
             models,
             ui,
+            subagents,
+            child: None,
             cwd: session.cwd,
             tools_done,
             busy,
@@ -2163,9 +2217,128 @@ impl Live {
             last_workspace: None,
             oldest_entry,
         });
+        self.refresh_subagents(worker);
         self.schedule_changes(worker, conversation, generation);
         // Prompts accepted earlier may have finished while this conversation was not attached.
         self.poll_runs(worker);
+    }
+
+    /// Reconcile the engine-owned session policy and durable directory, including terminal children.
+    fn refresh_subagents(&self, worker: &Worker) {
+        let Some(current) = &self.current else { return };
+        let (conversation, generation) = (current.conversation, current.generation);
+        let Some(service) = &current.subagents else {
+            // An older engine has no child capability. The core defaults to unavailable;
+            // injecting an extra attach event would perturb ordinary transcript ordering.
+            return;
+        };
+        let enabled = service
+            .read(|r| r.state("configuration").and_then(subagents::parse_enabled))
+            .flatten();
+        let result = self.call(&current.target, "pi.subagents", "list", vec![]);
+        match (enabled, result) {
+            (Some(enabled), Ok(Some(value))) => match subagents::parse_directory(&value) {
+                Ok(children) => worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::SubagentsSynced { enabled, children },
+                ),
+                Err(reason) => worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::SubagentsUnavailable(reason),
+                ),
+            },
+            _ => worker.emit(
+                conversation,
+                generation,
+                EventKind::SubagentsUnavailable(
+                    "Could not read this session's subagent state. Reconnect to retry.".into(),
+                ),
+            ),
+        }
+    }
+
+    fn open_subagent(
+        &mut self,
+        worker: &Worker,
+        conversation: ConversationId,
+        generation: u64,
+        child: u64,
+    ) {
+        let Some(current) = self.current.as_ref().filter(|c| {
+            c.conversation == conversation && c.generation == generation && c.subagents.is_some()
+        }) else {
+            worker.emit(
+                conversation,
+                generation,
+                EventKind::SubagentViewFailed {
+                    child,
+                    reason: "The session is no longer attached or does not support subagents."
+                        .into(),
+                },
+            );
+            return;
+        };
+        let target = current.target.clone();
+        // Retire the previous child's subscription before admitting another child view.
+        if let Some(current) = self.current.as_mut() {
+            current.child = None;
+        }
+        let live = self
+            .call(&target, "pi.subagents", "open", vec![json!(child)])
+            .is_ok();
+        if live
+            && let Ok(subscription) =
+                self.client
+                    .subscribe(&target, "pi.subagent-transcript", Mode::Keyed, CALL_TIMEOUT)
+        {
+            let view = subscription
+                .read(|r| {
+                    r.instances()
+                        .into_iter()
+                        .flatten()
+                        .find(|address| address.key == child.to_string())
+                        .and_then(|address| r.instance_state(&Some(address), "state").cloned())
+                })
+                .flatten();
+            if let Some(view) = view {
+                worker.emit(
+                    conversation,
+                    generation,
+                    EventKind::SubagentView {
+                        child,
+                        items: transcript::map_view(&view).items,
+                        live: true,
+                    },
+                );
+                if let Some(current) = self.current.as_mut() {
+                    current.child = Some((child, subscription));
+                }
+                return;
+            }
+        }
+        // A mount limit or older worker can still serve a read-only snapshot. Never call this live.
+        match self.call(&target, "pi.subagents", "view", vec![json!(child)]) {
+            Ok(Some(view)) => worker.emit(
+                conversation,
+                generation,
+                EventKind::SubagentView {
+                    child,
+                    items: transcript::map_view(&view).items,
+                    live: false,
+                },
+            ),
+            _ => worker.emit(
+                conversation,
+                generation,
+                EventKind::SubagentViewFailed {
+                    child,
+                    reason: "Could not read the subagent transcript. Try selecting it again."
+                        .into(),
+                },
+            ),
+        }
     }
 
     fn handle_event(
@@ -2192,6 +2365,18 @@ impl Live {
                         dirty.models = true;
                     } else if current.ui.as_ref().is_some_and(|u| u.id() == subscription) {
                         dirty.ui = true;
+                    } else if current
+                        .subagents
+                        .as_ref()
+                        .is_some_and(|s| s.id() == subscription)
+                    {
+                        dirty.subagents = true;
+                    } else if current
+                        .child
+                        .as_ref()
+                        .is_some_and(|(_, s)| s.id() == subscription)
+                    {
+                        dirty.child = true;
                     }
                 }
             }
@@ -2203,7 +2388,36 @@ impl Live {
                     c.transcript.id() == subscription
                         || c.models.as_ref().is_some_and(|m| m.id() == subscription)
                 });
-                if self.auth.as_ref().is_some_and(|a| a.id() == subscription) {
+                if let Some(current) = self.current.as_mut()
+                    && current
+                        .child
+                        .as_ref()
+                        .is_some_and(|(_, s)| s.id() == subscription)
+                {
+                    let child = current.child.take().unwrap().0;
+                    worker.emit(
+                        current.conversation,
+                        current.generation,
+                        EventKind::SubagentViewFailed {
+                            child,
+                            reason: format!("The live subagent view disconnected: {error}"),
+                        },
+                    );
+                } else if let Some(current) = self.current.as_mut()
+                    && current
+                        .subagents
+                        .as_ref()
+                        .is_some_and(|s| s.id() == subscription)
+                {
+                    current.subagents = None;
+                    worker.emit(
+                        current.conversation,
+                        current.generation,
+                        EventKind::SubagentsUnavailable(
+                            "The subagent service disconnected. Reconnect to retry.".into(),
+                        ),
+                    );
+                } else if self.auth.as_ref().is_some_and(|a| a.id() == subscription) {
                     self.auth = None;
                     (worker.sink)(LifecycleEvent::SignIn(SignInSnapshot::default()));
                 } else if subscription == self.dir.id() || is_current {
@@ -2263,6 +2477,34 @@ impl Live {
         }
         if dirty.directory {
             self.refresh_directory();
+        }
+        if dirty.subagents {
+            self.refresh_subagents(worker);
+        }
+        if dirty.child
+            && let Some(current) = &self.current
+            && let Some((child, subscription)) = &current.child
+        {
+            let view = subscription
+                .read(|r| {
+                    r.instances()
+                        .into_iter()
+                        .flatten()
+                        .find(|address| address.key == child.to_string())
+                        .and_then(|address| r.instance_state(&Some(address), "state").cloned())
+                })
+                .flatten();
+            if let Some(view) = view {
+                worker.emit(
+                    current.conversation,
+                    current.generation,
+                    EventKind::SubagentView {
+                        child: *child,
+                        items: transcript::map_view(&view).items,
+                        live: true,
+                    },
+                );
+            }
         }
         if dirty.models
             && let Some(current) = &self.current

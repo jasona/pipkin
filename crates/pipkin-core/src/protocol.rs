@@ -18,6 +18,10 @@ pub enum Command {
     },
     SelectProject(ProjectId),
     SelectConversation(ConversationId),
+    /// Navigate the selected session's read-only child transcript, or back to its parent.
+    SelectSubagent(Option<u64>),
+    /// This session's engine setting, not an app-local visibility preference.
+    SetSubagentsEnabled(bool),
     NewConversation,
     RenameConversation(ConversationId, String),
     SetSearch(String),
@@ -132,6 +136,16 @@ pub enum BackendRequest {
     Open {
         conversation: ConversationId,
         generation: u64,
+    },
+    OpenSubagent {
+        conversation: ConversationId,
+        generation: u64,
+        child: u64,
+    },
+    SetSubagentsEnabled {
+        conversation: ConversationId,
+        generation: u64,
+        enabled: bool,
     },
     LoadOlder {
         conversation: ConversationId,
@@ -256,6 +270,23 @@ pub enum EventKind {
     /// Ignored until the conversation has been opened.
     Synced {
         items: Vec<TranscriptItem>,
+    },
+    /// Current session's authoritative child directory and effective tool setting.
+    SubagentsSynced {
+        enabled: bool,
+        children: Vec<SubagentInfo>,
+    },
+    /// No supported child service, or a read failed; never show this as an empty list.
+    SubagentsUnavailable(String),
+    /// A selected child view, tagged so a late response cannot replace another child.
+    SubagentView {
+        child: u64,
+        items: Vec<TranscriptItem>,
+        live: bool,
+    },
+    SubagentViewFailed {
+        child: u64,
+        reason: String,
     },
     /// The engine's authoritative per-session ledger, independent of the displayed history.
     UsageSynced(SessionUsage),

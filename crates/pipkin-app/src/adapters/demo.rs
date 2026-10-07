@@ -440,6 +440,8 @@ impl Worker {
             }
             // Real-mode requests: the demo's core never issues them.
             BackendRequest::Queue { .. }
+            | BackendRequest::OpenSubagent { .. }
+            | BackendRequest::SetSubagentsEnabled { .. }
             | BackendRequest::RemoveSignIn(_)
             | BackendRequest::StartSignIn(_)
             | BackendRequest::ReuseSignIn(_)

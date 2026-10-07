@@ -45,6 +45,9 @@ editing, selection and accessibility tree.
 - **Steer** a run in progress, **queue** a follow-up, **stop** it, and pick it back up after a restart. The engine
   owns the queue, so what you see is what will run.
 - Attach files by picker or by dropping them on the window; choose the model from the engine's catalog.
+- The bundled Pi engine allows native subagents by default. See child task status and a read-only transcript preview in
+  the current session's inspector; Preferences → Allow subagents blocks **new** calls without cancelling ongoing work.
+  Child history and the native UI still have [known limitations](packaging/pi-subagents/README.md).
 - Experimental Pi remote plugins can ask you questions through dialogs (choices, yes/no, text), with decline and a
   banner if you put one aside. Stable Pi `ctx.ui.*` and terminal widgets are not bridged; see
   [extension compatibility](docs/extensions.md).
