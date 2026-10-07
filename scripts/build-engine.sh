@@ -46,10 +46,20 @@ if [ "${PIPKIN_ENGINE_DEV:-0}" = 1 ]; then
     }
   done
 else
+  # git apply searches for a parent Git worktree. A macOS staging path under dist/
+  # would otherwise silently patch the Pipkin checkout instead of the engine copy.
+  # Give the staged copy its own temporary Git boundary, then remove it before packaging.
+  git -C "$out" init -q
   (cd "$out" && git apply --check "$bridge" && git apply "$bridge")
+  rm -rf "$out/.git"
   install -m 0644 "$bridge_src/provider-auth.ts" "$bridge_dest/provider-auth.ts"
   install -m 0644 "$bridge_src/provider-auth-provider.ts" "$bridge_dest/provider-auth-provider.ts"
 fi
+# Ensure the patch really affected the staged worktree, not a parent checkout.
+grep -Fq 'providerAuth: {' "$out/packages/coding-agent/src/experimental/server.ts" &&
+  grep -Fq 'service: ProviderAuth,' "$bridge_dest/server.ts" || {
+    echo "OAuth bridge was not applied to the staged engine" >&2; exit 1;
+  }
 bridge_hash=$(cat "$bridge" "$bridge_src/provider-auth.ts" "$bridge_src/provider-auth-provider.ts" | sha256sum | cut -d' ' -f1)
 # Installed dependencies are build inputs; preserve workspace links within the staged tree.
 cp -a "$pi/node_modules" "$out/node_modules"
