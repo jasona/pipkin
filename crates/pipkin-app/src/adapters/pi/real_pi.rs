@@ -80,11 +80,14 @@ fn real_server_provider_auth_boundary() {
         .expect("handshake a");
     let (b, _b_events) = unix::connect(&dir.join(format!("{id}.sock")), ClientOptions::new(&id))
         .expect("handshake b");
+    let catalogue = a.catalogue(&server(&id), WAIT).expect("auth catalogue");
+    let service_ids: Vec<_> = catalogue
+        .iter()
+        .map(|entry| entry.service_id.as_str())
+        .collect();
     assert!(
-        a.catalogue(&server(&id), WAIT)
-            .unwrap()
-            .iter()
-            .any(|e| e.service_id == "pi.provider-auth")
+        service_ids.contains(&"pi.provider-auth"),
+        "staged server lacks OAuth service: {service_ids:?}"
     );
     let sa = a
         .subscribe(&server(&id), "pi.provider-auth", Mode::Singleton, WAIT)
