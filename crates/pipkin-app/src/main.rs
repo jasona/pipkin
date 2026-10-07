@@ -7,6 +7,9 @@ mod controller;
 mod diagnostics;
 mod install;
 mod launch;
+#[cfg(any(target_os = "macos", test))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod native_menu;
 mod platform;
 mod storage;
 
@@ -43,10 +46,13 @@ fn main() {
         }
     }
     let data_dir = platform::data_dir(options.data_dir.as_deref());
-    application()
-        .with_assets(pipkin_ui::assets::Assets)
-        .run(|cx: &mut App| {
-            let model = controller::start(cx, options);
-            pipkin_ui::shell::open_main_window(cx, model, data_dir);
-        });
+    let app = application().with_assets(pipkin_ui::assets::Assets);
+    #[cfg(target_os = "macos")]
+    app.on_reopen(native_menu::show_main_window);
+    app.run(move |cx: &mut App| {
+        let model = controller::start(cx, options);
+        pipkin_ui::shell::open_main_window(cx, model.clone(), data_dir.clone());
+        #[cfg(target_os = "macos")]
+        native_menu::install(cx, model, data_dir);
+    });
 }

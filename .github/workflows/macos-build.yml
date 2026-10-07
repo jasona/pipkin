@@ -65,6 +65,7 @@ jobs:
           cargo test -p pipkin-core -p pi-client --locked 2>&1 | tee qualification-logs/core-transport.log
           cargo test -p pipkin-app --locked macos_processes -- --test-threads=1 2>&1 | tee qualification-logs/ownership.log
           cargo test -p pipkin-app --locked runtime_tests 2>&1 | tee qualification-logs/runtime-policy.log
+          cargo test -p pipkin-app --locked native_menu 2>&1 | tee qualification-logs/native-menu.log
           cargo test -p pipkin-app --locked fresh_ids_are_distinct_canonical_protocol_uuid_v4 2>&1 | tee qualification-logs/identity.log
           cargo test -p pipkin-app --locked managed_engine_remembers_a_portable_id 2>&1 | tee qualification-logs/managed-identity.log
           cargo fmt --all --check

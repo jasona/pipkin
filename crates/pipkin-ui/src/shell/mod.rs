@@ -39,6 +39,11 @@ pub fn init(cx: &mut App, model: &Entity<Model>) {
 /// Open the main Pipkin window.
 pub fn open_main_window(cx: &mut App, model: Entity<Model>, data_dir: std::path::PathBuf) {
     init(cx, &model);
+    reopen_main_window(cx, model, data_dir);
+}
+
+/// Recreate a closed Mac window without reinitializing fonts, shortcuts or the model.
+pub fn reopen_main_window(cx: &mut App, model: Entity<Model>, data_dir: std::path::PathBuf) {
     // The size it was last left at, else the default.
     let (w, h) = model
         .read(cx)
