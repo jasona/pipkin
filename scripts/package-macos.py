@@ -51,6 +51,7 @@ def main():
     shutil.copy2(binary, executable)
     resources = app / 'Resources'
     resources.mkdir()
+    shutil.copy2(ROOT / 'packaging/pipkin.icns', resources / 'pipkin.icns')
     components = app / 'lib/pipkin'
     components.mkdir(parents=True)
     shutil.copytree(engine, components / 'engine', symlinks=True)
@@ -68,6 +69,7 @@ def main():
     with (app / 'Info.plist').open('wb') as stream:
         plistlib.dump({'CFBundleExecutable': 'pipkin', 'CFBundleIdentifier': 'org.last-refuge.pipkin',
                        'CFBundleName': 'Pipkin', 'CFBundlePackageType': 'APPL',
+                       'CFBundleIconFile': 'pipkin.icns',
                        'CFBundleShortVersionString': version, 'CFBundleVersion': version,
                        'NSHighResolutionCapable': True}, stream)
     dependencies = subprocess.check_output(['otool', '-L', str(executable)], text=True).splitlines()[1:]
@@ -101,6 +103,8 @@ def main():
             raise RuntimeError('extracted signed executable checksum mismatch')
         if sha256(restored / 'Contents/lib/pipkin/runtime/bin/node') != runtime_info['binarySha256']:
             raise RuntimeError('extracted Node checksum mismatch')
+        if sha256(restored / 'Contents/Resources/pipkin.icns') != sha256(ROOT / 'packaging/pipkin.icns'):
+            raise RuntimeError('extracted app icon checksum mismatch')
         # A real packaged CLI, not source-only tests: offline private profile, no provider calls.
         # Finder-like bare PATH excludes setup-node/Homebrew and the source checkout.
         with tempfile.TemporaryDirectory(prefix='pk-', dir='/tmp') as profile:

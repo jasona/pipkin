@@ -61,6 +61,7 @@ jobs:
           scripts/test-build-stamp.sh
           python3 scripts/test-license-inventory.py
           python3 scripts/test-package-macos.py
+          python3 scripts/test-app-icons.py
           python3 scripts/test-node-runtime.py
           python3 scripts/test-runtime-inventory.py
           scripts/test-guard.sh

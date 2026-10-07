@@ -23,6 +23,7 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
     files = {'Cargo.toml': '[workspace.package]\nversion = "0.0.1"\n',
              'target/release/pipkin': 'fixture binary', 'LICENSE': 'MIT fixture',
              'SECURITY.md': 'security fixture', 'assets/PROVENANCE.md': 'asset fixture',
+             'packaging/pipkin.icns': 'fixture app icon',
              'assets/fonts/example-OFL.txt': 'font fixture',
              'docs/macos-first-pass.md': 'experimental instructions',
              'packaging/pi-engine-revision': 'a' * 40,
@@ -74,7 +75,10 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         elif args[:5] == ['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent']:
             bundle = Path(args[-2]); contents = bundle / 'Contents'
             assert (contents / 'MacOS/pipkin').stat().st_mode & 0o111
-            assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'pipkin'
+            plist = plistlib.loads((contents / 'Info.plist').read_bytes())
+            assert plist['CFBundleExecutable'] == 'pipkin'
+            assert plist['CFBundleIconFile'] == 'pipkin.icns'
+            assert (contents / 'Resources/pipkin.icns').read_text() == 'fixture app icon'
             assert (contents / 'Resources/third-party/sources/mpl/src/lib.rs').read_text() == 'exact source'
             assert (contents / 'Resources/font-notices/example-OFL.txt').exists()
             embedded = json.loads((contents / 'Resources/build-info.json').read_text())
