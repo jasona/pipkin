@@ -4,6 +4,13 @@ Owner-approved direction: self-contained local app, a warm Pipkin-branded welcom
 choose a model/project, then enter a useful conversation. Windows follows Mac evaluation. This extends
 our existing desktop visual identity, not a rebrand. No completion-rate or setup-time claims exist yet.
 
+**v1.0 sign-in scope (owner decision):** Claude Pro/Max and OpenAI ChatGPT Plus/Pro via Pi's OAuth
+methods only. No API-key collection or provider setup for other services in the first-run wizard;
+API-key onboarding is deferred. Pi calls the latter provider `openai-codex` (its catalog currently
+labels it legacy), not `openai` (the API-key provider). Make that distinction explicit in the UI
+and verify availability rather than promising generic OpenAI account access. Returning users with
+other existing credentials retain the workspace, without forcing them through this wizard.
+
 ## Direction contract
 
 **THESIS:** first use feels like entering Pipkin, not administering a daemon. Keep engine work backstage;
@@ -51,11 +58,14 @@ CI and an extracted-app bare-PATH probe; actual Finder/UI/provider setup still n
 and engine with retained notices, then qualify that actual pair in a bare PATH/disposable profile. Do not
 mutate an owner's global Node installation or download executable updates without an explicit setup policy.
 
-The pinned experimental Pi service currently exposes model/status/refresh operations, **not a provider
-login or API-key-write RPC**. `auth-storage.ts` says auth orchestration belongs to ModelRuntime/pi-ai Models.
-A beautiful credential screen cannot paper over that missing contract. Implement/test an owned-engine auth
-boundary, backed by Pi's credential mechanism, before enabling connection actions. OAuth methods differ by
-provider; no universal “sign in with your subscription” promise. Never collect a key in a normal composer.
+The upstream pinned Pi revision exposes model/status/refresh operations, **not a provider
+login RPC** by itself. `auth-storage.ts` says auth orchestration belongs to ModelRuntime/pi-ai Models.
+A beautiful credential screen cannot paper over that missing contract. Implement/test an owned-engine OAuth
+boundary, backed by Pi's credential mechanism, before enabling connection actions. Scope the service to
+`anthropic` and `openai-codex`; pass browser/device links and manual-code challenges without logging or
+persisting redirect URLs or responses in the app. Cancel/retry must invalidate earlier challenges. Treat
+credentials as acknowledged only after Pi's runtime confirms them and refreshes available models; never
+mark the wizard done merely because a browser opened. Never collect a key in a normal composer.
 
 ## Delivery sequence
 
@@ -76,10 +86,9 @@ Ad-hoc signing fixes bundle integrity, not normal Gatekeeper trust; Developer ID
   [37507592573](https://github.com/last-refuge/pipkin/actions/runs/37507592573), pinned Node 22.23.3,
   actual staged engine lifecycle/file-edit/history tests, signed archive extraction and bare-PATH owned
   engine probe. See `docs/macos-first-pass.md` for exact artifact/hash. Not Finder/UI/auth acceptance.
-- [ ] Provider capability/authentication boundary and secret-safe synthetic tests.
-- [ ] Branded native screens, persistent progress and real acknowledgement wiring.
-- [ ] Native visual/error/interruption review and owner first reply.
+- [x] Per-client Pi OAuth service (`anthropic` and `openai-codex` only), credential metadata and explicit verified reuse, cancellable attempts, challenge relaying, error redaction, synthetic tests and real Unix-transport capability test. The pinned source remains unchanged in Git; `scripts/build-engine.sh` applies the reviewed bridge to the staged copy and records `pipkinAuthBridgeSha256` in its manifest.
+- [x] Branded GPUI welcome/provider/project/model flow, capability gating, volatile response input, authoritative Pi credentials/model selection, persisted setup completion only after an acknowledged SQLite write, and returning-workspace policy. No working-looking sign-in button is shown against an engine without the service.
+- [ ] Native Mac visual/error/interruption review and owner authorization through a first real reply. Linux Wayland guarded keyboard/AT-SPI checks covered welcome → provider, including the light 720×800 large-text provider screen; dark 1440×960 and light captures and interruption-before-completion (`setup_completed=false`) were observed. Actual account OAuth and paid model requests were not exercised. The updated Mac workflow stages and tests the bridge, but a new Mac artifact has not been built from these uncommitted sources.
 
-No implemented credential UI, setup completion observation, native visual review or owner first real reply
-is claimed by this document. The successful bundled runtime qualification is automated native CI evidence. Product/design context contains prototype-era statements; use current source and release-gate
+No owner first real reply, Finder launch or live account authorization is claimed by this document. The successful bundled runtime qualification is automated native CI evidence. Product/design context contains prototype-era statements; use current source and release-gate
 evidence for capabilities rather than silently repairing unrelated context as part of this feature.

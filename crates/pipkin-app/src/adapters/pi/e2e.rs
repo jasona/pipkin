@@ -203,6 +203,7 @@ impl Harness {
                     self.state.draft_saved(conversation, rev, result);
                 }
                 Effect::SavePrefs(prefs) => self.storage.save_prefs(&prefs),
+                Effect::CompleteSetup(prefs) => self.storage.save_prefs(&prefs),
                 Effect::SaveGoal {
                     conversation,
                     text,
@@ -297,6 +298,7 @@ impl Harness {
                     out
                 }
                 LifecycleEvent::ModelSelected(m) => self.state.set_engine_model(m),
+                LifecycleEvent::SignIn(_) | LifecycleEvent::SetupSaved(_) => Outcome::default(),
                 LifecycleEvent::Notice(message) => {
                     self.notices.push(message.clone());
                     self.state.set_notice(message)

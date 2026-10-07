@@ -11,6 +11,7 @@ use pi_client::testing::{ConnHandle, MockPi, SERVER_ID, install_session_manageme
 use pipkin_core::{
     Backend, BackendEvent, BackendRequest, Bootstrap, ChangesState, Connection, ConversationId,
     EventKind, ItemKind, LifecycleEvent, OperationId, RequestId,
+    onboarding::{SignInAnswer, SignInProvider},
 };
 use serde_json::{Value, json};
 
@@ -306,6 +307,8 @@ fn connects_then_publishes_the_catalog_and_ready() {
             LifecycleEvent::Connection(Connection::Ready) => "ready",
             LifecycleEvent::Connection(_) => "state",
             LifecycleEvent::ModelSelected(_)
+            | LifecycleEvent::SignIn(_)
+            | LifecycleEvent::SetupSaved(_)
             | LifecycleEvent::Notice(_)
             | LifecycleEvent::StorageIssue(_) => "other",
         })
@@ -313,6 +316,85 @@ fn connects_then_publishes_the_catalog_and_ready() {
     let catalog_at = order.iter().position(|e| *e == "catalog").unwrap();
     let ready_at = order.iter().position(|e| *e == "ready").unwrap();
     assert!(catalog_at < ready_at);
+}
+
+#[test]
+fn subscription_oauth_calls_are_scoped_to_the_server_without_exposing_answers_in_events() {
+    let pi = mock(&[], vec![]);
+    pi.add_service(
+        "pi.provider-auth",
+        &["start", "reuse", "answer", "cancel"],
+        Some(json!({
+            "credentialsKnown": true, "hasExistingCredentials": false, "existingProviders": [],
+            "attempt": null, "provider": null, "status": "idle", "message": "", "url": null,
+            "deviceCode": null, "challenge": null,
+        })),
+    );
+    pi.set_handler("pi.provider-auth", "start", |pi, _, call| {
+        assert_eq!(call.args[0], "anthropic");
+        pi.publish(
+            "pi.provider-auth",
+            vec![Op::Set(vec![key("attempt")], json!("try-1"))],
+        );
+        Ok(Some(json!("try-1")))
+    });
+    pi.set_handler("pi.provider-auth", "reuse", |_, _, call| {
+        assert_eq!(call.args[0], "openai-codex");
+        Ok(Some(json!("reused-attempt")))
+    });
+    pi.set_handler("pi.provider-auth", "answer", |_, _, call| {
+        assert_eq!(call.args[0], "try-1");
+        assert_eq!(call.args[1], "challenge-1");
+        assert_eq!(call.args[2], "synthetic-code");
+        Ok(None)
+    });
+    pi.set_handler("pi.provider-auth", "cancel", |_, _, _| Ok(None));
+    let env = start(pi, true);
+    env.wait_ready();
+    wait_until("OAuth service subscribed", || {
+        env.lifecycle.lock().unwrap().iter().any(|event| {
+            matches!(event,
+        LifecycleEvent::SignIn(s) if s.available && s.credentials_known)
+        })
+    });
+    env.backend
+        .request(BackendRequest::StartSignIn(SignInProvider::Claude));
+    wait_until("start RPC", || {
+        env.pi
+            .requests()
+            .iter()
+            .any(|(_, r)| r.service_id == "pi.provider-auth" && r.member == "start")
+    });
+    env.backend
+        .request(BackendRequest::ReuseSignIn(SignInProvider::ChatGpt));
+    wait_until("reuse RPC", || {
+        env.pi
+            .requests()
+            .iter()
+            .any(|(_, r)| r.service_id == "pi.provider-auth" && r.member == "reuse")
+    });
+    env.backend.request(BackendRequest::AnswerSignIn {
+        attempt: "try-1".into(),
+        challenge: "challenge-1".into(),
+        response: SignInAnswer::new("synthetic-code".into()),
+    });
+    wait_until("answer RPC", || {
+        env.pi
+            .requests()
+            .iter()
+            .any(|(_, r)| r.service_id == "pi.provider-auth" && r.member == "answer")
+    });
+    env.backend.request(BackendRequest::CancelSignIn {
+        attempt: "try-1".into(),
+    });
+    wait_until("cancel RPC", || {
+        env.pi
+            .requests()
+            .iter()
+            .any(|(_, r)| r.service_id == "pi.provider-auth" && r.member == "cancel")
+    });
+    assert!(!format!("{:?}", env.lifecycle.lock().unwrap().as_slice()).contains("synthetic-code"));
+    env.backend.shutdown();
 }
 
 #[test]

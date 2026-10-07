@@ -22,6 +22,7 @@
 //! refreshes what is shown; anything that mutates stays the user's explicit decision.
 
 pub mod attach;
+mod auth;
 pub mod engine;
 pub mod session;
 pub mod transcript;
@@ -44,6 +45,7 @@ use pipkin_core::{
     Attachment, Backend, BackendEvent, BackendRequest, CancelOutcome, ChangesState, Connection,
     ConversationId, EventKind, ItemId, LifecycleEvent, LifecycleSink, ModelInfo, OperationId,
     QueueId, QueueMode, RequestId, UiAnswer,
+    onboarding::{SignInSnapshot, SignInStatus},
 };
 use serde_json::{Value, json};
 
@@ -427,7 +429,11 @@ impl Worker {
                     reason: OFFLINE.into(),
                 },
             ),
-            BackendRequest::CreateConversation { .. }
+            BackendRequest::StartSignIn(_)
+            | BackendRequest::ReuseSignIn(_)
+            | BackendRequest::AnswerSignIn { .. }
+            | BackendRequest::CancelSignIn { .. }
+            | BackendRequest::CreateConversation { .. }
             | BackendRequest::SetModel { .. }
             | BackendRequest::SetThinkingLevel { .. } => self.notice(OFFLINE.into()),
             // These need the engine; the user can try again.
@@ -525,6 +531,7 @@ impl Worker {
     }
 
     fn connect_and_serve(&mut self) -> Outcome {
+        (self.sink)(LifecycleEvent::SignIn(SignInSnapshot::default()));
         self.report(if self.ever_connected {
             Connection::Reconnecting
         } else {
@@ -577,6 +584,7 @@ impl Worker {
         };
         self.ever_connected = true;
         (self.sink)(LifecycleEvent::Catalog(live.catalog()));
+        live.publish_auth(self);
         self.report(Connection::Ready);
         // After a reconnect, refresh what is on screen instead of leaving it stale.
         if let Some((conversation, generation)) = self.last_open {
@@ -647,6 +655,7 @@ impl Worker {
 
 #[derive(Default)]
 struct Dirty {
+    auth: bool,
     directory: bool,
     transcript: bool,
     models: bool,
@@ -680,6 +689,8 @@ struct Live {
     route: ServerRoute,
     location: String,
     dir: Subscription,
+    auth: Option<Subscription>,
+    auth_done: Option<String>,
     sessions: Vec<(ConversationId, Session)>,
     index: HashMap<ConversationId, Session>,
     models: Vec<ModelInfo>,
@@ -872,11 +883,20 @@ impl Live {
                 CALL_TIMEOUT,
             )
             .map_err(|e| Connection::Offline(e.to_string()))?;
+        let auth = if catalogue.iter().any(|e| e.service_id == "pi.provider-auth") {
+            client
+                .subscribe(&target, "pi.provider-auth", Mode::Singleton, CALL_TIMEOUT)
+                .ok()
+        } else {
+            None
+        };
         let mut live = Live {
             client: client.clone(),
             route: route.clone(),
             location: display_path(&config.directory),
             dir,
+            auth,
+            auth_done: None,
             sessions: Vec::new(),
             index: HashMap::new(),
             models: Vec::new(),
@@ -887,6 +907,22 @@ impl Live {
         };
         live.refresh_directory();
         Ok(live)
+    }
+
+    fn auth_state(&self) -> Option<SignInSnapshot> {
+        let value = self
+            .auth
+            .as_ref()?
+            .read(|r| r.state("state").cloned())
+            .flatten()?;
+        let state = auth::parse(&value);
+        state.available.then_some(state)
+    }
+
+    fn publish_auth(&self, worker: &Worker) {
+        (worker.sink)(LifecycleEvent::SignIn(
+            self.auth_state().unwrap_or_default(),
+        ));
     }
 
     fn refresh_directory(&mut self) {
@@ -930,6 +966,69 @@ impl Live {
 
     fn handle_request(&mut self, worker: &mut Worker, request: BackendRequest) {
         match request {
+            BackendRequest::StartSignIn(provider) => {
+                if self.auth.is_none() {
+                    worker.notice("This Pi engine does not support subscription sign-in. Update the bundled engine and try again.".into());
+                } else if self
+                    .call(
+                        &self.server(),
+                        "pi.provider-auth",
+                        "start",
+                        vec![json!(provider.pi_id())],
+                    )
+                    .is_err()
+                {
+                    worker.notice(
+                        "Could not start sign-in. Check the engine connection and try again."
+                            .into(),
+                    );
+                }
+            }
+            BackendRequest::ReuseSignIn(provider) => {
+                if self.auth.is_some()
+                    && self
+                        .call(
+                            &self.server(),
+                            "pi.provider-auth",
+                            "reuse",
+                            vec![json!(provider.pi_id())],
+                        )
+                        .is_err()
+                {
+                    worker.notice(
+                        "Could not check your saved connection. Sign in again to continue.".into(),
+                    );
+                }
+            }
+            BackendRequest::AnswerSignIn {
+                attempt,
+                challenge,
+                response,
+            } => {
+                if self.auth.is_some()
+                    && self
+                        .call(
+                            &self.server(),
+                            "pi.provider-auth",
+                            "answer",
+                            vec![json!(attempt), json!(challenge), json!(response.expose())],
+                        )
+                        .is_err()
+                {
+                    worker.notice("The sign-in question expired. Try signing in again.".into());
+                }
+            }
+            BackendRequest::CancelSignIn { attempt } => {
+                if self.auth.is_some() {
+                    // Cancellation is safe to repeat and a disconnected client is cancelled by Pi.
+                    let _ = self.call(
+                        &self.server(),
+                        "pi.provider-auth",
+                        "cancel",
+                        vec![json!(attempt)],
+                    );
+                }
+            }
             BackendRequest::Open {
                 conversation,
                 generation,
@@ -2059,6 +2158,8 @@ impl Live {
             ClientEvent::SubscriptionChanged { subscription, .. } => {
                 if subscription == self.dir.id() {
                     dirty.directory = true;
+                } else if self.auth.as_ref().is_some_and(|a| a.id() == subscription) {
+                    dirty.auth = true;
                 } else if let Some(current) = &self.current {
                     // Anything not from the live subscriptions is from an attachment we left.
                     if subscription == current.transcript.id() {
@@ -2082,7 +2183,10 @@ impl Live {
                     c.transcript.id() == subscription
                         || c.models.as_ref().is_some_and(|m| m.id() == subscription)
                 });
-                if subscription == self.dir.id() || is_current {
+                if self.auth.as_ref().is_some_and(|a| a.id() == subscription) {
+                    self.auth = None;
+                    (worker.sink)(LifecycleEvent::SignIn(SignInSnapshot::default()));
+                } else if subscription == self.dir.id() || is_current {
                     log::warn!("subscription {subscription} failed: {error}");
                     self.resubscribes += 1;
                     if self.resubscribes > MAX_RESUBSCRIBES {
@@ -2124,6 +2228,19 @@ impl Live {
 
     /// Turn the batch's changes into one refresh each.
     fn flush(&mut self, worker: &mut Worker, dirty: Dirty) {
+        if dirty.auth {
+            self.publish_auth(worker);
+            let done = self
+                .auth_state()
+                .filter(|s| s.status == SignInStatus::Done)
+                .and_then(|s| s.attempt);
+            if let Some(attempt) = done.filter(|id| self.auth_done.as_ref() != Some(id)) {
+                self.auth_done = Some(attempt);
+                if let Some(conversation) = self.current.as_ref().map(|c| c.conversation) {
+                    self.refresh_models(worker, conversation);
+                }
+            }
+        }
         if dirty.directory {
             self.refresh_directory();
         }

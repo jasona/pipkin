@@ -318,6 +318,8 @@ impl TextSize {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prefs {
+    /// Set only after the user enters a verified, usable first conversation.
+    pub setup_completed: bool,
     pub theme: Theme,
     pub text_size: TextSize,
     pub reduced_motion: bool,
@@ -334,6 +336,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
+            setup_completed: false,
             theme: Theme::Dark,
             text_size: TextSize::Normal,
             reduced_motion: false,

@@ -584,6 +584,38 @@ impl AppState {
     fn dispatch_inner(&mut self, cmd: Command) -> Outcome {
         let mut out = Outcome::default();
         match cmd {
+            Command::StartSignIn(provider)
+                if self.mode == Mode::Real && self.connection.is_ready() =>
+            {
+                out.effects
+                    .push(Effect::Backend(BackendRequest::StartSignIn(provider)));
+            }
+            Command::ReuseSignIn(provider)
+                if self.mode == Mode::Real && self.connection.is_ready() =>
+            {
+                out.effects
+                    .push(Effect::Backend(BackendRequest::ReuseSignIn(provider)));
+            }
+            Command::AnswerSignIn {
+                attempt,
+                challenge,
+                response,
+            } if self.mode == Mode::Real && self.connection.is_ready() => {
+                out.effects
+                    .push(Effect::Backend(BackendRequest::AnswerSignIn {
+                        attempt,
+                        challenge,
+                        response,
+                    }));
+            }
+            Command::CancelSignIn { attempt } if self.mode == Mode::Real => {
+                out.effects
+                    .push(Effect::Backend(BackendRequest::CancelSignIn { attempt }));
+            }
+            Command::StartSignIn(_)
+            | Command::ReuseSignIn(_)
+            | Command::AnswerSignIn { .. }
+            | Command::CancelSignIn { .. } => {}
             Command::SelectProject(p) => {
                 self.prefs.selected_project = Some(p);
                 let first = self.visible_conversations().first().map(|c| c.id);

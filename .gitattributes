@@ -1,0 +1,2 @@
+# Patch source embeds leading diff markers before upstream tab indentation.
+packaging/pi-onboarding.patch -whitespace

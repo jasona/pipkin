@@ -7,6 +7,7 @@ pub mod commands;
 pub mod controls;
 mod inspector;
 mod nav;
+mod onboarding;
 mod overlays;
 mod workspace;
 

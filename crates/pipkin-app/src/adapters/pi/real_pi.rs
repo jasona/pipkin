@@ -73,6 +73,63 @@ fn real_server_speaks_the_protocol_pipkin_implements() {
 }
 
 #[test]
+#[ignore = "needs a real Pi server with the OAuth bridge: see the module docs"]
+fn real_server_provider_auth_boundary() {
+    let (dir, id) = environment();
+    let (a, _a_events) = unix::connect(&dir.join(format!("{id}.sock")), ClientOptions::new(&id))
+        .expect("handshake a");
+    let (b, _b_events) = unix::connect(&dir.join(format!("{id}.sock")), ClientOptions::new(&id))
+        .expect("handshake b");
+    assert!(
+        a.catalogue(&server(&id), WAIT)
+            .unwrap()
+            .iter()
+            .any(|e| e.service_id == "pi.provider-auth")
+    );
+    let sa = a
+        .subscribe(&server(&id), "pi.provider-auth", Mode::Singleton, WAIT)
+        .expect("auth snapshot a");
+    let sb = b
+        .subscribe(&server(&id), "pi.provider-auth", Mode::Singleton, WAIT)
+        .expect("auth snapshot b");
+    let state_a = sa
+        .read(|r| r.state("state").cloned())
+        .flatten()
+        .expect("state a");
+    let state_b = sb
+        .read(|r| r.state("state").cloned())
+        .flatten()
+        .expect("state b");
+    assert!(super::auth::parse(&state_a).available);
+    assert!(super::auth::parse(&state_b).available);
+    wait_until("credential metadata", || {
+        sa.read(|r| r.state("state").cloned())
+            .flatten()
+            .is_some_and(|s| super::auth::parse(&s).credentials_known)
+    });
+    let metadata = sa.read(|r| r.state("state").cloned()).flatten().unwrap();
+    assert!(!super::auth::parse(&metadata).has_existing_credentials);
+    let invalid = a
+        .request(
+            &server(&id),
+            &ServiceCall::new("pi.provider-auth", "start", vec![json!("openai")]),
+        )
+        .expect("request sent")
+        .wait_timeout(WAIT);
+    assert!(
+        invalid.is_err(),
+        "API-key provider must not be offered as OAuth"
+    );
+    let again = sb
+        .read(|r| r.state("state").cloned())
+        .flatten()
+        .expect("state b intact");
+    assert_eq!(super::auth::parse(&again).attempt, None);
+    a.disconnect();
+    b.disconnect();
+}
+
+#[test]
 #[ignore = "needs a real Pi server: see the module docs"]
 fn real_server_session_lifecycle_through_the_adapter() {
     let (dir, id) = environment();

@@ -1,4 +1,5 @@
 use crate::model::Connection;
+use crate::onboarding::SignInSnapshot;
 use crate::protocol::BackendRequest;
 use crate::state::Bootstrap;
 
@@ -11,6 +12,9 @@ pub enum LifecycleEvent {
     Catalog(Bootstrap),
     /// The model the engine reports as selected (`provider/modelId`), which is authoritative.
     ModelSelected(Option<String>),
+    /// Volatile, per-client OAuth state. The URL and challenge must never be persisted or logged.
+    SignIn(SignInSnapshot),
+    SetupSaved(Result<(), String>),
     /// A background action failed and there is no conversation to attach the failure to.
     Notice(String),
     /// Saved state could not be read or written as usual (a failed background write, say).

@@ -141,6 +141,10 @@ pub struct Workspace {
     pub(super) composer: Entity<ComposerEditor>,
     pub(super) nav_search: Entity<ComposerEditor>,
     pub(super) overlay_input: Entity<ComposerEditor>,
+    pub(super) setup_input: Entity<ComposerEditor>,
+    pub(super) setup_challenge: Option<String>,
+    pub(super) setup_project_edit: bool,
+    pub(super) last_entry: onboarding::EntrySurface,
     pub(super) overlay: Overlay,
     pub(super) overlay_sel: usize,
     /// Questions the person put aside; they are not offered again on their own.
@@ -199,6 +203,11 @@ impl Workspace {
         let composer = cx.new(|cx| ComposerEditor::new(window, cx));
         let nav_search = cx.new(|cx| ComposerEditor::single_line(window, cx));
         let overlay_input = cx.new(|cx| ComposerEditor::single_line(window, cx));
+        let setup_input = cx.new(|cx| ComposerEditor::single_line(window, cx));
+        setup_input.update(cx, |e, cx| {
+            e.set_label("Sign-in response", cx);
+            e.set_placeholder("Paste your code or redirect here");
+        });
         nav_search.update(cx, |e, cx| {
             e.set_placeholder("Search conversations");
             e.set_label("Search conversations", cx);
@@ -211,12 +220,18 @@ impl Workspace {
         subs.push(cx.subscribe_in(&composer, window, Self::on_composer_event));
         subs.push(cx.subscribe_in(&nav_search, window, Self::on_search_event));
         subs.push(cx.subscribe_in(&overlay_input, window, Self::on_overlay_input_event));
+        subs.push(cx.subscribe_in(&setup_input, window, |this, _, ev, _, cx| {
+            if matches!(ev, ComposerEvent::Submit) {
+                this.submit_sign_in_answer(cx);
+            }
+        }));
         subs.push(
             cx.observe_window_bounds(window, |this, window, cx| this.on_window_bounds(window, cx)),
         );
         subs.push(cx.observe_in(&model, window, |this, _, window, cx| {
             this.on_model(window, cx)
         }));
+        let initial_entry = model.read(cx).entry;
         let mut ws = Workspace {
             model,
             pasted_image_dir: data_dir,
@@ -224,6 +239,10 @@ impl Workspace {
             composer,
             nav_search,
             overlay_input,
+            setup_input,
+            setup_challenge: None,
+            setup_project_edit: false,
+            last_entry: initial_entry,
             overlay: Overlay::None,
             overlay_sel: 0,
             question_dismissed: Vec::new(),
@@ -252,8 +271,12 @@ impl Workspace {
             _subs: subs,
         };
         ws.on_model(window, cx);
-        let composer_focus = ws.composer.read(cx).focus_handle(cx);
-        window.focus(&composer_focus, cx);
+        let initial_focus = if ws.model.read(cx).entry == onboarding::EntrySurface::Welcome {
+            ws.root_focus.clone()
+        } else {
+            ws.composer.read(cx).focus_handle(cx)
+        };
+        window.focus(&initial_focus, cx);
         ws
     }
 
@@ -291,6 +314,31 @@ impl Workspace {
     // ------------------------------------------------------------ model → view
 
     fn on_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entry = self.model.read(cx).entry;
+        let challenge = self
+            .model
+            .read(cx)
+            .sign_in
+            .challenge
+            .as_ref()
+            .map(|q| q.id.clone());
+        if self.setup_challenge != challenge {
+            self.setup_challenge = challenge.clone();
+            self.setup_input.update(cx, |e, cx| e.set_text("", cx));
+            if challenge.is_some() && entry == onboarding::EntrySurface::Welcome {
+                let focus = self.setup_input.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+        }
+        if entry != self.last_entry {
+            self.last_entry = entry;
+            let focus = if entry == onboarding::EntrySurface::Workspace {
+                self.composer.read(cx).focus_handle(cx)
+            } else {
+                self.root_focus.clone()
+            };
+            window.focus(&focus, cx);
+        }
         let (prefs, current, title, run, change_sel) = {
             let s = self.state(cx);
             let c = s.current();
@@ -927,7 +975,14 @@ impl Workspace {
                 .await;
             this.update(cx, |this, cx| match resolved {
                 Ok((_, real)) if real.is_dir() => {
-                    this.dispatch(Command::AddProject(real.display().to_string()), cx)
+                    this.dispatch(Command::AddProject(real.display().to_string()), cx);
+                    if this.model.read(cx).entry == onboarding::EntrySurface::Welcome
+                        && this.model.read(cx).setup.started()
+                        && this.model.read(cx).accepted_provider.is_some()
+                    {
+                        this.setup_project_edit = false;
+                        this.dispatch(Command::NewConversation, cx);
+                    }
                 }
                 Ok((chosen, _)) => {
                     this.show_toast(format!("{} is not a folder", chosen.display()), cx)
@@ -1203,6 +1258,9 @@ struct DragMarker(usize);
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.model.read(cx).entry == onboarding::EntrySurface::Welcome {
+            return self.render_setup(window, cx).into_any_element();
+        }
         self.offer_question(window, cx);
         let t = cx.theme().clone();
         let size = window.viewport_size();
@@ -1362,6 +1420,6 @@ impl Render for Workspace {
                 .with_priority(20),
             );
         }
-        root
+        root.into_any_element()
     }
 }

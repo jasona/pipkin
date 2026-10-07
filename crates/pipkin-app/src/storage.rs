@@ -202,6 +202,10 @@ enum Msg {
         ack: Ack,
     },
     Prefs(Prefs),
+    SetupCompletion {
+        prefs: Prefs,
+        ack: Ack,
+    },
     Goal {
         conversation: ConversationId,
         text: Option<String>,
@@ -676,6 +680,20 @@ impl Storage {
         }
     }
 
+    pub fn complete_setup(
+        &self,
+        prefs: Prefs,
+        ack: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let msg = Msg::SetupCompletion {
+            prefs,
+            ack: Box::new(ack),
+        };
+        if let Err(Msg::SetupCompletion { ack, .. }) = self.send(msg) {
+            ack(Err("storage is busy or closed".into()));
+        }
+    }
+
     /// Remember a project folder. Idempotent.
     pub fn save_project(&self, path: String) {
         if self.send(Msg::Project(path)).is_err() {
@@ -884,6 +902,9 @@ fn write(
         Msg::Prefs(prefs) => {
             let result = injected().unwrap_or_else(|| write_prefs(conn, ns, &prefs));
             reporter.settle("preferences", result, "your preferences");
+        }
+        Msg::SetupCompletion { prefs, ack } => {
+            ack(injected().unwrap_or_else(|| write_prefs(conn, ns, &prefs)));
         }
         Msg::Goal {
             conversation,
@@ -1262,6 +1283,7 @@ fn write_conversation(conn: &mut Connection, c: &DemoConversation) -> Result<(),
 
 fn write_prefs(conn: &mut Connection, ns: &str, p: &Prefs) -> Result<(), String> {
     let entries: Vec<(&str, Value)> = vec![
+        ("setup_completed", json!(p.setup_completed)),
         (
             "theme",
             json!(if p.theme == Theme::Light {
@@ -1312,6 +1334,7 @@ fn write_prefs(conn: &mut Connection, ns: &str, p: &Prefs) -> Result<(), String>
 
 fn apply_pref(p: &mut Prefs, key: &str, v: &Value) {
     match key {
+        "setup_completed" => p.setup_completed = v.as_bool().unwrap_or(p.setup_completed),
         "theme" => match v.as_str() {
             Some("light") => p.theme = Theme::Light,
             Some("dark") => p.theme = Theme::Dark,
@@ -1403,9 +1426,42 @@ mod tests {
     }
 
     #[test]
+    fn setup_completion_is_only_acknowledged_after_a_durable_write() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, "setup-test").unwrap();
+        let prefs = Prefs {
+            setup_completed: true,
+            ..Prefs::default()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.set_background_failure(true);
+        s.complete_setup(prefs.clone(), {
+            let tx = tx.clone();
+            move |result| tx.send(result).unwrap()
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .is_err()
+        );
+        assert!(!s.load_all().unwrap().prefs.setup_completed);
+        s.set_background_failure(false);
+        s.complete_setup(prefs, move |result| tx.send(result).unwrap());
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .is_ok()
+        );
+        s.shutdown();
+        let reopened = Storage::open(&path, "setup-test").unwrap();
+        assert!(reopened.load_all().unwrap().prefs.setup_completed);
+    }
+
+    #[test]
     fn round_trip_prefs_drafts_and_conversations() {
         let (_dir, path) = tmp_db();
         let prefs = Prefs {
+            setup_completed: true,
             theme: Theme::Light,
             text_size: TextSize::Large,
             reduced_motion: true,

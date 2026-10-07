@@ -7,6 +7,14 @@ pub type EffectHandler = Box<dyn FnMut(Effect, &mut Context<Model>)>;
 
 pub struct Model {
     pub state: AppState,
+    /// Ephemeral per-connection login prompts and links; never sent to SavePrefs or diagnostics.
+    pub sign_in: onboarding::SignInSnapshot,
+    pub entry: onboarding::EntrySurface,
+    pub setup: onboarding::SetupFlow,
+    ever_started_setup: bool,
+    pub accepted_provider: Option<onboarding::SignInProvider>,
+    pub engine_selected_model: Option<String>,
+    completing_setup: bool,
     handler: Option<EffectHandler>,
     support_report: Option<String>,
 }
@@ -17,6 +25,13 @@ impl Model {
     pub fn new(state: AppState) -> Self {
         Model {
             state,
+            sign_in: onboarding::SignInSnapshot::default(),
+            entry: onboarding::EntrySurface::Workspace,
+            setup: onboarding::SetupFlow::default(),
+            ever_started_setup: false,
+            accepted_provider: None,
+            engine_selected_model: None,
+            completing_setup: false,
             handler: None,
             support_report: None,
         }
@@ -53,8 +68,183 @@ impl Model {
     }
 
     pub fn set_connection(&mut self, connection: Connection, cx: &mut Context<Self>) {
+        if !connection.is_ready() && self.state.connection.is_ready() {
+            self.accepted_provider = None;
+            self.engine_selected_model = None;
+            self.setup.retry();
+        }
         let outcome = self.state.set_connection(connection);
         self.finish(outcome, cx);
+    }
+
+    pub fn set_sign_in(&mut self, state: onboarding::SignInSnapshot, cx: &mut Context<Self>) {
+        // A profile with any Pi credential is a returning user, even when Pipkin has no local
+        // conversations yet. Once the tour was deliberately started, do not silently skip it.
+        if self.entry == onboarding::EntrySurface::Welcome
+            && !self.ever_started_setup
+            && state.credentials_known
+            && state.has_existing_credentials
+        {
+            self.entry = onboarding::EntrySurface::Workspace;
+        }
+        if state.status == onboarding::SignInStatus::Done {
+            self.accepted_provider = state.provider;
+        }
+        self.sign_in = state;
+        self.reconcile_setup();
+        cx.notify();
+    }
+
+    pub fn begin_setup(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.state.connection,
+            Connection::Connecting | Connection::Reconnecting
+        ) || (self.state.connection.is_ready()
+            && self.sign_in.available
+            && !self.sign_in.credentials_known)
+        {
+            return;
+        }
+        self.ever_started_setup = true;
+        self.setup.begin();
+        self.reconcile_setup();
+        cx.notify();
+    }
+
+    pub fn back_to_welcome(&mut self, cx: &mut Context<Self>) {
+        if let Some(attempt) = self.sign_in.attempt.clone() {
+            self.dispatch(Command::CancelSignIn { attempt }, cx);
+        }
+        self.setup.back_to_welcome();
+        self.reconcile_setup();
+        cx.notify();
+    }
+
+    pub fn explore_workspace(&mut self, cx: &mut Context<Self>) {
+        self.entry = onboarding::EntrySurface::Workspace;
+        cx.notify();
+    }
+
+    pub fn accept_existing_provider(
+        &mut self,
+        provider: onboarding::SignInProvider,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sign_in.available
+            && self.state.connection.is_ready()
+            && self.sign_in.existing_providers.contains(&provider)
+        {
+            // Discovery metadata alone is not proof: Pi must acknowledge reuse after it checks
+            // the credential and its available model catalogue.
+            self.accepted_provider = None;
+            self.engine_selected_model = None;
+            self.dispatch(Command::ReuseSignIn(provider), cx);
+        }
+    }
+
+    pub fn start_sign_in(&mut self, provider: onboarding::SignInProvider, cx: &mut Context<Self>) {
+        if !self.sign_in.available || !self.state.connection.is_ready() {
+            return;
+        }
+        self.accepted_provider = None;
+        self.engine_selected_model = None;
+        self.dispatch(Command::StartSignIn(provider), cx);
+        self.reconcile_setup();
+    }
+
+    pub fn back_to_provider(&mut self, cx: &mut Context<Self>) {
+        self.accepted_provider = None;
+        self.engine_selected_model = None;
+        self.reconcile_setup();
+        cx.notify();
+    }
+
+    pub fn engine_model_selected(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        self.engine_selected_model = model.clone();
+        self.mutate(|state| state.set_engine_model(model), cx);
+        self.reconcile_setup();
+    }
+
+    pub fn reconcile_setup(&mut self) {
+        use onboarding::{EngineReadiness, ProviderReadiness, SetupFacts};
+        let engine = match self.state.connection {
+            Connection::Ready => EngineReadiness::Ready,
+            Connection::Connecting | Connection::Reconnecting => EngineReadiness::Preparing,
+            _ => EngineReadiness::Unavailable,
+        };
+        let provider = if self.accepted_provider.is_some() {
+            ProviderReadiness::Configured
+        } else {
+            match self.sign_in.status {
+                onboarding::SignInStatus::Connecting
+                | onboarding::SignInStatus::Waiting
+                | onboarding::SignInStatus::Prompt => ProviderReadiness::Connecting,
+                onboarding::SignInStatus::Failed => ProviderReadiness::Failed,
+                _ if !self.sign_in.existing_providers.is_empty() => {
+                    ProviderReadiness::ExistingConnectionAvailable
+                }
+                _ => ProviderReadiness::Unknown,
+            }
+        };
+        let model_ready = self
+            .engine_selected_model
+            .as_deref()
+            .is_some_and(|selected| {
+                self.state.models.iter().any(|m| m.id == selected)
+                    && self.accepted_provider.is_some_and(|p| {
+                        selected
+                            .split_once('/')
+                            .is_some_and(|(id, _)| id == p.pi_id())
+                    })
+            });
+        let facts = SetupFacts {
+            engine,
+            provider,
+            model_ready,
+            // A folder bookmark alone is not a usable conversation: wait for Pi to create
+            // and list the project session before advancing to its model catalogue.
+            project_ready: self.state.current_project().is_some() && self.state.current().is_some(),
+        };
+        self.setup.reconcile(self.setup.epoch(), facts);
+    }
+
+    pub fn enter_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.completing_setup || !self.setup.can_complete() || self.state.current().is_none() {
+            return;
+        }
+        self.completing_setup = true;
+        let mut prefs = self.state.prefs.clone();
+        prefs.setup_completed = true;
+        if let Some(mut handler) = self.handler.take() {
+            handler(Effect::CompleteSetup(prefs), cx);
+            self.handler = Some(handler);
+        }
+        cx.notify();
+    }
+
+    pub fn setup_saved(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        self.completing_setup = false;
+        match result {
+            Ok(()) if self.setup.can_complete() => {
+                self.state.prefs.setup_completed = true;
+                self.entry = onboarding::EntrySurface::Workspace;
+            }
+            Ok(()) => {
+                // The write succeeded, but the engine changed before the acknowledgement.
+                // Preserve the saved flag for a safe return, without implying setup is ready.
+                self.state.prefs.setup_completed = true;
+            }
+            Err(error) => {
+                self.mutate(
+                    |state| {
+                        state
+                            .set_storage_issue(format!("Could not save setup: {error}. Try again."))
+                    },
+                    cx,
+                );
+            }
+        }
+        cx.notify();
     }
 
     pub fn draft_saved(
@@ -79,6 +269,7 @@ impl Model {
         for note in notes {
             cx.emit(note);
         }
+        self.reconcile_setup();
         cx.notify();
     }
 }

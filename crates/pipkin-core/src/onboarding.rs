@@ -1,5 +1,119 @@
 //! First-run policy, independent of rendering, transport and credential values.
-//! This is a foundation for onboarding, not permission to send a prompt or write credentials.
+//! Only Pi's allowlisted OAuth service may accept a sign-in response. No response is held in
+//! setup facts, serialized to storage, or printed by Debug.
+
+/// The only account connections offered by the first-run wizard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignInProvider {
+    Claude,
+    ChatGpt,
+}
+
+impl SignInProvider {
+    pub fn pi_id(self) -> &'static str {
+        match self {
+            Self::Claude => "anthropic",
+            Self::ChatGpt => "openai-codex",
+        }
+    }
+}
+
+/// An entered answer is never printed by backend request diagnostics.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignInAnswer(String);
+
+impl SignInAnswer {
+    pub fn new(answer: String) -> Self {
+        Self(answer)
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SignInAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[sign-in answer redacted]")
+    }
+}
+
+/// Volatile data from Pi's per-client login service. Not saved to Pipkin's database.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignInSnapshot {
+    pub available: bool,
+    pub credentials_known: bool,
+    pub credential_lookup_failed: bool,
+    pub has_existing_credentials: bool,
+    /// Only pre-existing, allowlisted subscription OAuth providers may be reused in setup.
+    pub existing_providers: Vec<SignInProvider>,
+    pub attempt: Option<String>,
+    pub provider: Option<SignInProvider>,
+    pub status: SignInStatus,
+    pub message: String,
+    pub url: Option<String>,
+    pub device_code: Option<String>,
+    pub challenge: Option<SignInChallenge>,
+}
+
+impl Default for SignInSnapshot {
+    fn default() -> Self {
+        Self {
+            available: false,
+            credentials_known: false,
+            credential_lookup_failed: false,
+            has_existing_credentials: false,
+            existing_providers: vec![],
+            attempt: None,
+            provider: None,
+            status: SignInStatus::Idle,
+            message: String::new(),
+            url: None,
+            device_code: None,
+            challenge: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for SignInSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignInSnapshot")
+            .field("available", &self.available)
+            .field("credentials_known", &self.credentials_known)
+            .field("credential_lookup_failed", &self.credential_lookup_failed)
+            .field("provider", &self.provider)
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SignInStatus {
+    #[default]
+    Idle,
+    Connecting,
+    Waiting,
+    Prompt,
+    Done,
+    Failed,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignInChallenge {
+    pub id: String,
+    pub kind: String,
+    pub message: String,
+    pub placeholder: Option<String>,
+    pub options: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for SignInChallenge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignInChallenge")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntrySurface {
@@ -77,12 +191,21 @@ pub struct SetupFlow {
 }
 
 impl SetupFlow {
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
     pub fn begin(&mut self) {
         self.started = true;
+    }
+
+    /// Going back changes presentation, not engine acknowledgements or project choice.
+    pub fn back_to_welcome(&mut self) {
+        self.started = false;
     }
 
     /// A new engine/connection attempt invalidates old observations but preserves project choice.
@@ -119,8 +242,9 @@ impl SetupFlow {
             }
             ProviderReadiness::Connecting => SetupStage::ConnectingProvider,
             ProviderReadiness::Failed => SetupStage::ProviderFailed,
-            ProviderReadiness::Configured if !self.facts.model_ready => SetupStage::ChooseModel,
+            // Pi models belong to a project session. Open the folder before selecting one.
             ProviderReadiness::Configured if !self.facts.project_ready => SetupStage::ChooseProject,
+            ProviderReadiness::Configured if !self.facts.model_ready => SetupStage::ChooseModel,
             ProviderReadiness::Configured => SetupStage::Ready,
         }
     }
@@ -135,6 +259,17 @@ impl SetupFlow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entered_code_is_not_rendered_in_request_debug() {
+        let request = crate::protocol::BackendRequest::AnswerSignIn {
+            attempt: "new-attempt".into(),
+            challenge: "challenge".into(),
+            response: SignInAnswer::new("private-redirect-code".into()),
+        };
+        assert!(!format!("{request:?}").contains("private-redirect-code"));
+        assert!(format!("{request:?}").contains("[sign-in answer redacted]"));
+    }
 
     #[test]
     fn only_fresh_ordinary_real_launch_enters_welcome() {
@@ -159,6 +294,23 @@ mod tests {
         ] {
             assert_eq!(facts.surface(), EntrySurface::Workspace);
         }
+    }
+
+    #[test]
+    fn back_to_welcome_does_not_erase_acknowledged_choices() {
+        let mut flow = SetupFlow::default();
+        flow.begin();
+        let ready = SetupFacts {
+            engine: EngineReadiness::Ready,
+            provider: ProviderReadiness::Configured,
+            model_ready: true,
+            project_ready: true,
+        };
+        flow.reconcile(0, ready);
+        flow.back_to_welcome();
+        assert_eq!(flow.stage(), SetupStage::Welcome);
+        flow.begin();
+        assert!(flow.can_complete());
     }
 
     #[test]

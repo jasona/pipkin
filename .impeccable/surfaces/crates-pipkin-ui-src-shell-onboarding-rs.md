@@ -58,8 +58,8 @@ CI and an extracted-app bare-PATH probe; actual Finder/UI/provider setup still n
 and engine with retained notices, then qualify that actual pair in a bare PATH/disposable profile. Do not
 mutate an owner's global Node installation or download executable updates without an explicit setup policy.
 
-The pinned experimental Pi service currently exposes model/status/refresh operations, **not a provider
-login or API-key-write RPC**. `auth-storage.ts` says auth orchestration belongs to ModelRuntime/pi-ai Models.
+The upstream pinned Pi revision originally exposed model/status/refresh operations, **not a provider
+login RPC**. `auth-storage.ts` says auth orchestration belongs to ModelRuntime/pi-ai Models.
 A beautiful credential screen cannot paper over that missing contract. Implement/test an owned-engine auth
 boundary, backed by Pi's credential mechanism, before enabling connection actions. OAuth methods differ by
 provider; no universal “sign in with your subscription” promise. Never collect a key in a normal composer.
@@ -83,10 +83,9 @@ Ad-hoc signing fixes bundle integrity, not normal Gatekeeper trust; Developer ID
   [37507592573](https://github.com/last-refuge/pipkin/actions/runs/37507592573), pinned Node 22.23.3,
   actual staged engine lifecycle/file-edit/history tests, signed archive extraction and bare-PATH owned
   engine probe. See `docs/macos-first-pass.md` for exact artifact/hash. Not Finder/UI/auth acceptance.
-- [ ] Provider capability/authentication boundary and secret-safe synthetic tests.
-- [ ] Branded native screens, persistent progress and real acknowledgement wiring.
-- [ ] Native visual/error/interruption review and owner first reply.
+- [x] Tested, allowlisted per-client Pi OAuth bridge, bundled as a reviewed patch to the pinned engine.
+- [x] GPUI welcome/provider/project/model flow with credential metadata, authoritative acknowledgement and persisted completion.
+- [ ] Owner-authorized OAuth through a first real reply, native Mac UI/error/interruption review and a Mac artifact built from this worktree. See `llm-docs/pipkin-onboarding-plan.md` for the detailed current status and verification limits.
 
-No implemented credential UI, setup completion observation, native visual review or owner first real reply
-is claimed by this document. The successful bundled runtime qualification is automated native CI evidence. Product/design context contains prototype-era statements; use current source and release-gate
+No owner first real reply, Finder launch or live account authorization is claimed by this document. The successful bundled runtime qualification is automated native CI evidence. Product/design context contains prototype-era statements; use current source and release-gate
 evidence for capabilities rather than silently repairing unrelated context as part of this feature.

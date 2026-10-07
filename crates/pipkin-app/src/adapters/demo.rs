@@ -440,6 +440,10 @@ impl Worker {
             }
             // Real-mode requests: the demo's core never issues them.
             BackendRequest::Queue { .. }
+            | BackendRequest::StartSignIn(_)
+            | BackendRequest::ReuseSignIn(_)
+            | BackendRequest::AnswerSignIn { .. }
+            | BackendRequest::CancelSignIn { .. }
             | BackendRequest::CancelQueued { .. }
             | BackendRequest::RefreshModels { .. }
             | BackendRequest::RefreshChanges { .. }

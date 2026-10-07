@@ -1,0 +1,83 @@
+diff --git i/packages/coding-agent/src/experimental/server.ts w/packages/coding-agent/src/experimental/server.ts
+index 9f4157c25..1e1fd1057 100644
+--- i/packages/coding-agent/src/experimental/server.ts
++++ w/packages/coding-agent/src/experimental/server.ts
+@@ -18,6 +18,8 @@ import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/u
+ import lockfile from "proper-lockfile";
+ import type { AuthInput } from "../cli/experimental/command-options.ts";
+ import { getAgentDir } from "../config.ts";
++import { ModelRuntime } from "../core/model-runtime.ts";
++import { SettingsManager } from "../core/settings-manager.ts";
+ import { resolvePath } from "../utils/paths.ts";
+ import { CoordinatorConnection, type CoordinatorStartupLease, ensureCoordinator } from "./coordinator.ts";
+ import { createPresentationFacetData } from "./plugins/bundled.ts";
+@@ -422,7 +424,21 @@ async function startServerBackend(
+ 		createdAt: metadata.createdAt,
+ 		cwd: metadata.cwd,
+ 	});
++	// OAuth lives in Pi's credential runtime, never in the desktop process. Load credential
++	// metadata when a client connects; don't initiate provider sign-in on server startup.
++	let authRuntime: Promise<ModelRuntime> | undefined;
++	let authSettings: SettingsManager | undefined;
+ 	const serverServices = await createExperimentalServerServices({
++		providerAuth: {
++			getRuntime: () => {
++				authRuntime ??= ModelRuntime.create();
++				return authRuntime;
++			},
++			getDeviceId: () => {
++				authSettings ??= SettingsManager.create(process.cwd());
++				return authSettings.getOrCreateDeviceId();
++			},
++		},
+ 		list: async () =>
+ 			(await listSessions())
+ 				.map(summarize)
+diff --git i/packages/coding-agent/src/experimental/services/server.ts w/packages/coding-agent/src/experimental/services/server.ts
+index 3cc501cc4..649d8246d 100644
+--- i/packages/coding-agent/src/experimental/services/server.ts
++++ w/packages/coding-agent/src/experimental/services/server.ts
+@@ -8,6 +8,8 @@ import {
+ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+ import type { RoutedServerServiceAttachment, RoutedServerServiceHost } from "@earendil-works/pi-server";
+ import { PresentationPlugins } from "./plugins.ts";
++import { ProviderAuth } from "./provider-auth.ts";
++import { createProviderAuthService } from "./provider-auth-provider.ts";
+ import {
+ 	type SessionCreateOptions,
+ 	SessionDirectory,
+@@ -32,6 +34,7 @@ export async function createExperimentalServerServices(options: {
+ 		context: Context,
+ 	): Promise<{ readonly packagePaths: readonly string[]; readonly presentationPlugins: JsonValue }>;
+ 	reloadPresentationPlugins(packagePaths: readonly string[], context: Context): Promise<JsonValue>;
++	providerAuth?: Parameters<typeof createProviderAuthService>[0];
+ }): Promise<ExperimentalServerServices> {
+ 	let revision = 1;
+ 	const directory = replicatedState<SessionDirectoryState>({
+@@ -62,11 +65,14 @@ export async function createExperimentalServerServices(options: {
+ 		host: {
+ 			attachClient(presentation) {
+ 				let preparedPluginPackagePaths: readonly string[] | undefined;
++				const auth = options.providerAuth && createProviderAuthService(options.providerAuth);
+ 				const provider = new RemoteServiceProvider([
+ 					{ service: SessionDirectory, mode: "singleton" },
+ 					{ service: SessionManagement, mode: "singleton" },
+ 					{ service: PresentationPlugins, mode: "singleton" },
++					...(auth ? [{ service: ProviderAuth, mode: "singleton" as const }] : []),
+ 				]);
++				if (auth) provider.provide(ProviderAuth, auth.service);
+ 				provider.provide(SessionDirectory, { state: directory });
+ 				provider.provide(PresentationPlugins, {
+ 					prepareSession: ({ sessionId, packagePaths }, context) =>
+@@ -110,7 +116,10 @@ export async function createExperimentalServerServices(options: {
+ 							preparedPluginPackagePaths = undefined;
+ 						}),
+ 				});
+-				const attachment = createProviderAttachment(provider, () => attachments.delete(attachment));
++				const attachment = createProviderAttachment(provider, () => {
++					auth?.dispose();
++					attachments.delete(attachment);
++				});
+ 				attachments.add(attachment);
+ 				return attachment;
+ 			},

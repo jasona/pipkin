@@ -33,6 +33,24 @@ if [ "${PIPKIN_ENGINE_DEV:-0}" = 1 ]; then
 else
   git -C "$pi" archive "$commit" | tar -C "$out" -xf -
 fi
+# The pinned upstream engine predates Pipkin's tested OAuth service. Apply the reviewed,
+# first-party bridge to the staged copy only: never dirty the owner's Pi checkout or claim
+# this is the unmodified pinned revision. Exact-context git apply fails on source drift.
+bridge="$here/packaging/pi-onboarding.patch"
+bridge_src="$here/packaging/pi-onboarding"
+bridge_dest="$out/packages/coding-agent/src/experimental/services"
+if [ "${PIPKIN_ENGINE_DEV:-0}" = 1 ]; then
+  for file in provider-auth.ts provider-auth-provider.ts; do
+    cmp "$bridge_src/$file" "$bridge_dest/$file" >/dev/null || {
+      echo "development Pi checkout's $file differs from the reviewed packaging bridge" >&2; exit 1;
+    }
+  done
+else
+  (cd "$out" && git apply --check "$bridge" && git apply "$bridge")
+  install -m 0644 "$bridge_src/provider-auth.ts" "$bridge_dest/provider-auth.ts"
+  install -m 0644 "$bridge_src/provider-auth-provider.ts" "$bridge_dest/provider-auth-provider.ts"
+fi
+bridge_hash=$(cat "$bridge" "$bridge_src/provider-auth.ts" "$bridge_src/provider-auth-provider.ts" | sha256sum | cut -d' ' -f1)
 # Installed dependencies are build inputs; preserve workspace links within the staged tree.
 cp -a "$pi/node_modules" "$out/node_modules"
 while IFS= read -r -d '' dependencies; do
@@ -57,6 +75,6 @@ if [ "${PIPKIN_ENGINE_KEEP_DEV:-0}" != 1 ]; then
   fi
 fi
 cat > "$out/engine.json" <<JSON
-{"name":"pi","version":"$commit","sourceRevision":"$commit","modelDataManifestSha256":"$model_data_hash","productionPruneSucceeded":$pruned,"development":$([ "${PIPKIN_ENGINE_DEV:-0}" = 1 ] && echo true || echo false),"protocol":$protocol,"minClient":"0.0.1","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"name":"pi","version":"$commit","sourceRevision":"$commit","pipkinAuthBridgeSha256":"$bridge_hash","modelDataManifestSha256":"$model_data_hash","productionPruneSucceeded":$pruned,"development":$([ "${PIPKIN_ENGINE_DEV:-0}" = 1 ] && echo true || echo false),"protocol":$protocol,"minClient":"0.0.1","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 JSON
 echo "staged engine $commit at $out ($(du -sh "$out" | cut -f1))"

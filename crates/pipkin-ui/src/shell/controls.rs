@@ -157,7 +157,7 @@ impl RenderOnce for Btn {
             .when(disabled, |d| d.opacity(0.4).cursor_not_allowed())
             .when(!disabled, |d| {
                 d.cursor_pointer()
-                    .tab_stop(true)
+                    .tab_index(0)
                     .hover(move |s| s.bg(hover_bg))
                     .active(move |s| s.bg(active_bg))
                     .focus_visible(move |s| s.border_2().border_color(ring))

@@ -90,6 +90,21 @@ jobs:
           PY
           PIPKIN_PI_REPO="$stage/engine" cargo test -p pipkin-app --release --locked the_engine_starts_serves_and_stops_without_leaving_processes -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/bundled-lifecycle.log
           PIPKIN_PI_REPO="$stage/engine" cargo test -p pipkin-app --release --locked a_real_run_edits_files_shows_output_and_diff_and_reopens_the_same_history -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/bundled-work.log
+          # Test the patched staged engine's OAuth transport with no provider credentials.
+          auth_root="$TMPDIR/a" # Keep the Unix socket well inside Darwin's short path limit.
+          PI_REPO="$stage/engine" PI_SERVER_ID=5f0c7b1e-2d4a-4f6b-9a3e-1c8d7e6f5a40 scripts/pi-test-server.sh "$auth_root" >qualification-logs/auth-server.log 2>&1 &
+          auth_pid=$!
+          trap 'kill "$auth_pid" 2>/dev/null || true; wait "$auth_pid" 2>/dev/null || true' EXIT
+          for i in {1..300}; do
+            [[ -S "$auth_root/server/5f0c7b1e-2d4a-4f6b-9a3e-1c8d7e6f5a40.sock" ]] && break
+            kill -0 "$auth_pid" 2>/dev/null || { cat qualification-logs/auth-server.log; exit 1; }
+            sleep .1
+          done
+          test -S "$auth_root/server/5f0c7b1e-2d4a-4f6b-9a3e-1c8d7e6f5a40.sock"
+          PIPKIN_REAL_PI_DIR="$auth_root/server" PIPKIN_REAL_PI_SERVER_ID=5f0c7b1e-2d4a-4f6b-9a3e-1c8d7e6f5a40 cargo test -p pipkin-app --release --locked real_server_provider_auth_boundary -- --ignored --test-threads=1 --nocapture 2>&1 | tee qualification-logs/oauth-transport.log
+          kill "$auth_pid" 2>/dev/null || true
+          wait "$auth_pid" 2>/dev/null || true
+          trap - EXIT
           python3 scripts/write-license-inventory.py dist/macos-notices "$target" 2>&1 | tee qualification-logs/notices.log
           python3 scripts/package-macos.py "$target" 2>&1 | tee qualification-logs/package.log
           cp dist/macos/build-info.json qualification-logs/

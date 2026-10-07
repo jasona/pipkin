@@ -1,9 +1,20 @@
 use crate::ids::*;
 use crate::model::*;
+use crate::onboarding::{SignInAnswer, SignInProvider};
 
 /// User intents issued by the UI or command palette.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    StartSignIn(SignInProvider),
+    ReuseSignIn(SignInProvider),
+    AnswerSignIn {
+        attempt: String,
+        challenge: String,
+        response: SignInAnswer,
+    },
+    CancelSignIn {
+        attempt: String,
+    },
     SelectProject(ProjectId),
     SelectConversation(ConversationId),
     NewConversation,
@@ -105,6 +116,17 @@ pub struct Availability {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackendRequest {
+    /// V1 sign-in can only request Pi's allowlisted subscription OAuth methods.
+    StartSignIn(SignInProvider),
+    ReuseSignIn(SignInProvider),
+    AnswerSignIn {
+        attempt: String,
+        challenge: String,
+        response: SignInAnswer,
+    },
+    CancelSignIn {
+        attempt: String,
+    },
     Open {
         conversation: ConversationId,
         generation: u64,
@@ -355,6 +377,8 @@ pub enum Effect {
         rev: u64,
     },
     SavePrefs(Prefs),
+    /// Acknowledged write. Never show completion until the writer commits this preference.
+    CompleteSetup(Prefs),
     SaveGoal {
         conversation: ConversationId,
         text: Option<String>,

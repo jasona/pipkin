@@ -12,11 +12,17 @@ Surfaces `bg_app < bg_pane < bg_surface`, `bg_elevated` only for menus and dialo
 
 ## Type and spacing
 - 4 px rhythm. Compact controls 30 px (24 px compact). UI text 14 px, small 12 px, conversation 15.5 px / 1.55, code 13 px / 1.55, all × text scale (Small 0.92, Normal 1.0, Large 1.2).
-- Bundled fonts: IBM Plex Sans (UI/prose) and Lilex (code), both OFL; see `assets/PROVENANCE.md`. Icons: Lucide (ISC).
+- Bundled fonts: Poppins (UI/prose), IBM Plex Sans (italic fallback) and Lilex (code), all OFL; see `assets/PROVENANCE.md`. Icons: Lucide (ISC).
 - Known gap: inline code uses the prose size, so Lilex looks large against Plex Sans inside sentences (GPUI text runs cannot change size).
 
 ## Components (`shell/controls.rs`)
 `Btn` (kinds Ghost / Subtle / Primary / Danger, compact, icon-only, selected, disabled), `chip`, `kbd`, `elevated`, `menu_row`. States: hover, active, selected, disabled (40% opacity, not-allowed cursor), keyboard focus (`focus_visible` accent ring, tab stop), loading (static spinner icon), error (danger text + icon). Enter/Space activate focused buttons.
+
+## First-run surface
+- A full-window reading column (up to 510 px), not an overlay on the workspace. Existing `bg_app`, `text`, `text_muted`, warning and accent tokens and the shared keyboard-focusable `Btn` define every step.
+- The approved focused Pipkin mascot and Poppins wordmark precede the invitation. The short sequence is welcome → Claude Pro/Max or ChatGPT Plus/Pro sign-in → project folder → engine-available model → conversation. A provider-challenge response is temporary input, never a composer draft.
+- The primary action advances only on engine acknowledgements. Pending, failed and unavailable engine/provider states explain what has and has not happened; Explore opens the workspace without claiming setup completion. Provider links are HTTPS only; private prompts are not displayed as plain text.
+- `assets/brand/mascot.png` is existing approved artwork with provenance in `assets/PROVENANCE.md`. No new raster or icon has been introduced for onboarding.
 
 ## Conventions
 - Authorship: user prompt is the only card; Pi replies are plain flowing markdown; tool activity is compact expandable rows; notices are single lines.

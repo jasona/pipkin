@@ -641,9 +641,27 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     // Stored demo conversations must not leak into real mode. Drafts and unresolved requests
     // are namespaced per backend, so they are restored in either mode, as their conversations
     // appear. A real backend reports its own connection state through `start`.
+    let entry = onboarding::EntryFacts {
+        setup_completed: loaded.prefs.setup_completed,
+        has_saved_work: !loaded.conversations.is_empty()
+            || !loaded.drafts.is_empty()
+            || !loaded.open_requests.is_empty()
+            || !loaded.goals.is_empty()
+            || !loaded.projects.is_empty(),
+        demo: options.mode == Mode::Demo,
+        explicit_external_server: options.pi_server_id.is_some()
+            || options.pi_dir.is_some()
+            || options.pi_repo.is_some(),
+    }
+    .surface();
     let mut restore = Restore::new(loaded, options.mode == Mode::Demo);
 
-    let model = cx.new(|_| Model::new(state));
+    let model = cx.new(|_| {
+        let mut model = Model::new(state);
+        model.entry = entry;
+        model
+    });
+    let (life_tx, life_rx) = async_channel::unbounded::<LifecycleEvent>();
     let (ack_tx, ack_rx) = async_channel::unbounded::<(ConversationId, u64, Result<(), String>)>();
     let (intent_tx, intent_rx) =
         async_channel::unbounded::<(ConversationId, RequestId, Result<(), String>)>();
@@ -655,6 +673,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
         let backend = backend.clone();
         let storage = storage.clone();
         let (cache_saver, search_runner) = (cache_saver.clone(), search_runner.clone());
+        let setup_tx = life_tx.clone();
         model.update(cx, |m, _| {
             m.set_support_report(support_report);
             m.set_effect_handler(Box::new(move |effect, cx| match effect {
@@ -772,6 +791,12 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                     .detach();
                 }
                 Effect::SavePrefs(prefs) => storage.save_prefs(&prefs),
+                Effect::CompleteSetup(prefs) => {
+                    let tx = setup_tx.clone();
+                    storage.complete_setup(prefs, move |result| {
+                        let _ = tx.send_blocking(LifecycleEvent::SetupSaved(result));
+                    });
+                }
                 Effect::SaveGoal {
                     conversation,
                     text,
@@ -905,7 +930,6 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     }
 
     // Lifecycle updates: connection state and the catalog. The sink never drops an update.
-    let (life_tx, life_rx) = async_channel::unbounded::<LifecycleEvent>();
     {
         let tx = life_tx.clone();
         storage.set_error_sink(Arc::new(move |message| {
@@ -920,6 +944,12 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                 let alive = weak.update(cx, |m, cx| match event {
                     LifecycleEvent::Connection(c) => m.set_connection(c, cx),
                     LifecycleEvent::Catalog(boot) => {
+                        if m.entry == onboarding::EntrySurface::Welcome
+                            && !m.setup.started()
+                            && !boot.conversations.is_empty()
+                        {
+                            m.entry = onboarding::EntrySurface::Workspace;
+                        }
                         m.mutate(
                             |state| {
                                 let mut out = state.apply_catalog(boot);
@@ -930,9 +960,9 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                             cx,
                         );
                     }
-                    LifecycleEvent::ModelSelected(model) => {
-                        m.mutate(|state| state.set_engine_model(model), cx)
-                    }
+                    LifecycleEvent::ModelSelected(model) => m.engine_model_selected(model, cx),
+                    LifecycleEvent::SignIn(snapshot) => m.set_sign_in(snapshot, cx),
+                    LifecycleEvent::SetupSaved(result) => m.setup_saved(result, cx),
                     LifecycleEvent::Notice(message) => {
                         m.mutate(|state| state.set_notice(message), cx)
                     }
