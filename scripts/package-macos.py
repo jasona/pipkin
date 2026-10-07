@@ -2,6 +2,7 @@
 """Package/verify a self-contained ad-hoc signed macOS bundle; no Developer ID/notarization."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -15,6 +16,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_probe_socket_budget(profile):
+    # Pi creates a longer private server socket in addition to the public UUID socket.
+    # Reserve seven PID digits so a later runner cannot silently exceed Darwin's
+    # 104-byte sun_path field (including its terminator).
+    longest = (Path(profile) / 'pipkin-probe-9999999/server' /
+               ('server-00000000-0000-4000-8000-000000000000-' + '0' * 12 + '.sock'))
+    if len(os.fsencode(longest)) >= 104:
+        raise RuntimeError('offline probe profile would exceed the macOS Pi socket-path limit')
 
 
 def main():
@@ -107,7 +118,10 @@ def main():
             raise RuntimeError('extracted app icon checksum mismatch')
         # A real packaged CLI, not source-only tests: offline private profile, no provider calls.
         # Finder-like bare PATH excludes setup-node/Homebrew and the source checkout.
-        with tempfile.TemporaryDirectory(prefix='pk-', dir='/tmp') as profile:
+        # A private eight-character /tmp directory leaves room for Pi's longest socket.
+        # Keep HOME and TMPDIR together; never probe against the runner's real profile.
+        with tempfile.TemporaryDirectory(prefix='', dir='/tmp') as profile:
+            check_probe_socket_budget(profile)
             environment = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': profile,
                            'TMPDIR': profile, 'PI_OFFLINE': '1'}
             subprocess.run([str(restored / 'Contents/MacOS/pipkin'), '--diagnose', '--probe',
@@ -147,7 +161,8 @@ def main():
                 raise RuntimeError('DMG-installed Node checksum mismatch')
             if sha256(copied / 'Contents/Resources/pipkin.icns') != sha256(ROOT / 'packaging/pipkin.icns'):
                 raise RuntimeError('DMG-installed app icon checksum mismatch')
-            with tempfile.TemporaryDirectory(prefix='pk-dmg-', dir='/tmp') as profile:
+            with tempfile.TemporaryDirectory(prefix='', dir='/tmp') as profile:
+                check_probe_socket_budget(profile)
                 environment = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': profile,
                                'TMPDIR': profile, 'PI_OFFLINE': '1'}
                 subprocess.run([str(copied / 'Contents/MacOS/pipkin'), '--diagnose', '--probe',

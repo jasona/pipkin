@@ -51,6 +51,7 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         raise AssertionError(args)
 
     calls = []
+    probe_profiles = []
     corrupt_extraction = False
     corrupt_dmg = False
     fail_attach = False
@@ -126,6 +127,12 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             assert '--probe' in args
             assert kwargs['env']['PATH'] == '/usr/bin:/bin:/usr/sbin:/sbin'
             assert set(kwargs['env']) == {'PATH', 'HOME', 'TMPDIR', 'PI_OFFLINE'}
+            profile = Path(kwargs['env']['TMPDIR'])
+            assert profile == Path(kwargs['env']['HOME'])
+            assert profile.parent == Path('/tmp') and len(profile.name) == 8
+            assert profile.stat().st_mode & 0o077 == 0  # Disposable private profile.
+            module.check_probe_socket_budget(profile)
+            probe_profiles.append(profile)
             contents = Path(args[0]).parent.parent
             assert json.loads((contents / 'lib/pipkin/engine/engine.json').read_text())['requiresBundledNode']
             assert (contents / 'lib/pipkin/runtime/LICENSE').read_text() == 'full Node notice'
@@ -152,6 +159,13 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         assert (out / 'SHA256SUMS').read_text() == (
             f'{module.sha256(package)}  {package.name}\n{module.sha256(dmg)}  {dmg.name}\n')
         assert sum('--probe' in args for args in calls) == 2  # Extracted ZIP and copied DMG app.
+        assert len(probe_profiles) == 2
+        # Regression: the prior longer pk-dmg- prefix crossed Pi's private socket budget.
+        try:
+            module.check_probe_socket_budget('/tmp/pk-dmg-abcdefgh')
+            raise AssertionError('oversized Pi socket path accepted')
+        except RuntimeError as error:
+            assert 'socket-path limit' in str(error)
         module.main()  # An identified prior output can be replaced.
         corrupt_dmg = True
         before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)

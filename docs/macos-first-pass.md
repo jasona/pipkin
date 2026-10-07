@@ -58,6 +58,16 @@ The OAuth-only onboarding implementation was built on macOS 15 (Apple Silicon) i
 
 ## Experimental drag-to-Applications image
 
+The first DMG run [37618114190](https://github.com/last-refuge/pipkin/actions/runs/37618114190)
+**failed** after the image was created, mounted and copied: the copied app's signature and file
+hashes passed, but its offline engine probe timed out after 45 seconds. The ZIP probe passed.
+The DMG probe used a longer temporary profile prefix; the pinned Pi engine's longest internal
+server socket path was 108 bytes in that run versus 104 for the successful ZIP probe, near or
+above Darwin's Unix-socket limit. The log retained only the engine tail, not the bind syscall
+error, so this is a strongly supported diagnosis, not direct bind-error evidence. Both probes
+now use private short profiles and check Pi's *internal* socket-path budget before launching.
+A new macOS CI pass is required; the first failed run produced no downloadable DMG artifact.
+
 The packaging workflow now also builds `pipkin-<version>-<target>-experimental.dmg` from the **same
 signed app** as the ZIP. The disk image contains `Pipkin.app` and a shortcut to `/Applications`.
 The macOS runner mounts it read-only, copies the app to a disposable destination, checks its
