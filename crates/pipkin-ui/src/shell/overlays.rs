@@ -1113,6 +1113,20 @@ impl Workspace {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Preferences"),
             )
+            .child(
+                Btn::new("prefs-connections")
+                    .label("Model connections…")
+                    .kind(BtnKind::Subtle)
+                    .on_click({
+                        let this = this.clone();
+                        move |window, cx| {
+                            this.update(cx, |w, cx| {
+                                w.close_overlay(window, cx);
+                                w.model.update(cx, |m, cx| m.manage_connections(cx));
+                            });
+                        }
+                    }),
+            )
             .child(row(
                 "Theme",
                 vec![

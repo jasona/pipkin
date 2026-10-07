@@ -323,7 +323,7 @@ fn subscription_oauth_calls_are_scoped_to_the_server_without_exposing_answers_in
     let pi = mock(&[], vec![]);
     pi.add_service(
         "pi.provider-auth",
-        &["start", "reuse", "answer", "cancel"],
+        &["start", "reuse", "answer", "cancel", "remove"],
         Some(json!({
             "credentialsKnown": true, "hasExistingCredentials": false, "existingProviders": [],
             "attempt": null, "provider": null, "status": "idle", "message": "", "url": null,
@@ -346,6 +346,10 @@ fn subscription_oauth_calls_are_scoped_to_the_server_without_exposing_answers_in
         assert_eq!(call.args[0], "try-1");
         assert_eq!(call.args[1], "challenge-1");
         assert_eq!(call.args[2], "synthetic-code");
+        Ok(None)
+    });
+    pi.set_handler("pi.provider-auth", "remove", |_, _, call| {
+        assert_eq!(call.args, vec![json!("anthropic")]);
         Ok(None)
     });
     pi.set_handler("pi.provider-auth", "cancel", |_, _, _| Ok(None));
@@ -392,6 +396,14 @@ fn subscription_oauth_calls_are_scoped_to_the_server_without_exposing_answers_in
             .requests()
             .iter()
             .any(|(_, r)| r.service_id == "pi.provider-auth" && r.member == "cancel")
+    });
+    env.backend
+        .request(BackendRequest::RemoveSignIn(SignInProvider::Claude));
+    wait_until("remove RPC", || {
+        env.pi
+            .requests()
+            .iter()
+            .any(|(_, r)| r.service_id == "pi.provider-auth" && r.member == "remove")
     });
     assert!(!format!("{:?}", env.lifecycle.lock().unwrap().as_slice()).contains("synthetic-code"));
     env.backend.shutdown();

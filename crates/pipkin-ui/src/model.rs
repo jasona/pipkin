@@ -12,6 +12,8 @@ pub struct Model {
     pub entry: onboarding::EntrySurface,
     pub setup: onboarding::SetupFlow,
     ever_started_setup: bool,
+    pub managing_connections: bool,
+    pub pending_removal: Option<onboarding::SignInProvider>,
     pub accepted_provider: Option<onboarding::SignInProvider>,
     pub engine_selected_model: Option<String>,
     completing_setup: bool,
@@ -29,6 +31,8 @@ impl Model {
             entry: onboarding::EntrySurface::Workspace,
             setup: onboarding::SetupFlow::default(),
             ever_started_setup: false,
+            managing_connections: false,
+            pending_removal: None,
             accepted_provider: None,
             engine_selected_model: None,
             completing_setup: false,
@@ -121,13 +125,26 @@ impl Model {
     }
 
     pub fn explore_workspace(&mut self, cx: &mut Context<Self>) {
+        if let Some(attempt) = self.sign_in.attempt.clone() {
+            self.dispatch(Command::CancelSignIn { attempt }, cx);
+        }
+        self.managing_connections = false;
+        self.pending_removal = None;
         self.entry = onboarding::EntrySurface::Workspace;
         cx.notify();
     }
 
     /// Let a returning user with no usable model connect a subscription in the GUI. Keep all
     /// existing projects, conversations and drafts; opening setup does not mark it complete.
+    pub fn manage_connections(&mut self, cx: &mut Context<Self>) {
+        self.open_account_setup(cx);
+        self.managing_connections = true;
+        self.pending_removal = None;
+        cx.notify();
+    }
+
     pub fn open_account_setup(&mut self, cx: &mut Context<Self>) {
+        self.managing_connections = false;
         self.entry = onboarding::EntrySurface::Welcome;
         self.ever_started_setup = true;
         self.setup.begin();
@@ -352,6 +369,33 @@ mod account_setup_tests {
             m.explore_workspace(cx);
             assert_eq!(m.entry, onboarding::EntrySurface::Workspace);
             assert!(!m.state.prefs.setup_completed);
+            assert_eq!(m.state.projects.len(), 1);
+
+            m.state.prefs.setup_completed = true;
+            m.accepted_provider = Some(onboarding::SignInProvider::Claude);
+            m.manage_connections(cx);
+            assert!(m.managing_connections);
+            assert!(m.state.prefs.setup_completed);
+            m.set_sign_in(
+                onboarding::SignInSnapshot {
+                    available: true,
+                    status: onboarding::SignInStatus::Done,
+                    provider: Some(onboarding::SignInProvider::ChatGpt),
+                    ..Default::default()
+                },
+                cx,
+            );
+            assert!(m.managing_connections);
+            assert_eq!(m.entry, onboarding::EntrySurface::Welcome);
+            assert_eq!(
+                m.accepted_provider,
+                Some(onboarding::SignInProvider::ChatGpt)
+            );
+            m.pending_removal = Some(onboarding::SignInProvider::Claude);
+            m.explore_workspace(cx);
+            assert!(!m.managing_connections);
+            assert!(m.pending_removal.is_none());
+            assert!(m.state.prefs.setup_completed);
             assert_eq!(m.state.projects.len(), 1);
         });
     }

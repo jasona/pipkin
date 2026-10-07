@@ -23,6 +23,7 @@ export function createProviderAuthService(options: {
 	getRuntime(): Promise<{
 		login(provider: string, type: "oauth", interaction: AuthInteraction, options: LoginOptions): Promise<unknown>;
 		listCredentials(): Promise<readonly CredentialInfo[]>;
+		logout(provider: string): Promise<void>;
 		refresh(options: {
 			providers: string[];
 			allowNetwork: false;
@@ -36,6 +37,7 @@ export function createProviderAuthService(options: {
 	const state: MutableReplicatedState<ProviderAuthState> = replicatedState(INITIAL);
 	let active: { id: string; abort: AbortController; reject?: (error: Error) => void } | undefined;
 	let disposed = false;
+	let removing = false;
 	let credentialScan = 0;
 	const refreshCredentials = async (): Promise<void> => {
 		const scan = ++credentialScan;
@@ -141,6 +143,7 @@ export function createProviderAuthService(options: {
 	const service: ProviderAuth = {
 		state,
 		async start(provider) {
+			if (removing) throw new Error("Wait for connection removal to finish");
 			if (disposed) throw new Error("Sign-in is not available");
 			if (provider !== "anthropic" && provider !== "openai-codex") {
 				throw new Error("This provider is not available for sign-in");
@@ -199,6 +202,7 @@ export function createProviderAuthService(options: {
 			return id;
 		},
 		async reuse(provider) {
+			if (removing) throw new Error("Wait for connection removal to finish");
 			if (disposed) throw new Error("Sign-in is not available");
 			if (provider !== "anthropic" && provider !== "openai-codex") {
 				throw new Error("This provider is not available for sign-in");
@@ -247,6 +251,28 @@ export function createProviderAuthService(options: {
 				}
 			})();
 			return id;
+		},
+		async remove(provider) {
+			if (removing) throw new Error("Wait for connection removal to finish");
+			if (disposed) throw new Error("Sign-in is not available");
+			if (provider !== "anthropic" && provider !== "openai-codex")
+				throw new Error("This provider is not available for sign-in");
+			removing = true;
+			stop();
+			responses.clear();
+			try {
+				const runtime = await options.getRuntime();
+				await runtime.logout(provider);
+				await refreshCredentials();
+				if (!disposed) state.change(BACKGROUND_CONTEXT, (draft) => Object.assign(draft, {
+					attempt: null, provider: null, status: "idle",
+					message: "Saved connection removed.", url: null, deviceCode: null, challenge: null,
+				}));
+			} catch {
+				throw new Error("Could not remove the saved connection. Try again.");
+			} finally {
+				removing = false;
+			}
 		},
 		async answer(attempt, challenge, response) {
 			if (!isCurrent(attempt) || state.value?.challenge?.id !== challenge || response.length > 8192) {

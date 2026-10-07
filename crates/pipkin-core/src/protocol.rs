@@ -5,6 +5,7 @@ use crate::onboarding::{SignInAnswer, SignInProvider};
 /// User intents issued by the UI or command palette.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    RemoveSignIn(SignInProvider),
     StartSignIn(SignInProvider),
     ReuseSignIn(SignInProvider),
     AnswerSignIn {
@@ -116,6 +117,7 @@ pub struct Availability {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackendRequest {
+    RemoveSignIn(SignInProvider),
     /// V1 sign-in can only request Pi's allowlisted subscription OAuth methods.
     StartSignIn(SignInProvider),
     ReuseSignIn(SignInProvider),

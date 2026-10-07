@@ -584,6 +584,12 @@ impl AppState {
     fn dispatch_inner(&mut self, cmd: Command) -> Outcome {
         let mut out = Outcome::default();
         match cmd {
+            Command::RemoveSignIn(provider)
+                if self.mode == Mode::Real && self.connection.is_ready() =>
+            {
+                out.effects
+                    .push(Effect::Backend(BackendRequest::RemoveSignIn(provider)));
+            }
             Command::StartSignIn(provider)
                 if self.mode == Mode::Real && self.connection.is_ready() =>
             {
@@ -612,7 +618,8 @@ impl AppState {
                 out.effects
                     .push(Effect::Backend(BackendRequest::CancelSignIn { attempt }));
             }
-            Command::StartSignIn(_)
+            Command::RemoveSignIn(_)
+            | Command::StartSignIn(_)
             | Command::ReuseSignIn(_)
             | Command::AnswerSignIn { .. }
             | Command::CancelSignIn { .. } => {}

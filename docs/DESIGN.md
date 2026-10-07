@@ -29,4 +29,5 @@ Surfaces `bg_app < bg_pane < bg_surface`, `bg_elevated` only for menus and dialo
 - One primary action per surface (Send, or Steer while running). Stop is Danger.
 - Motion: none continuous. Streaming and "Working" are static; reduced-motion also stops caret blinking.
 - Text scale and theme live in Preferences (Ctrl+,) and the palette.
+- Preferences → Model connections reuses the provider sign-in surface without replaying project setup. Saved Claude/ChatGPT connections offer sign-in again and two-step removal; removal deletes Pi's local provider credential, not a subscription or conversations. The surface returns explicitly to the workspace and never changes the saved setup-completed flag. Native visual review and live OAuth/removal remain unverified; Rust workspace checks and synthetic auth-service tests cover routing, metadata refresh, removal serialization and secret-safe failures.
 - Demo honesty: a "Demo · simulated agent" chip is always visible; the inspector reads "Workspace changes · Demo".

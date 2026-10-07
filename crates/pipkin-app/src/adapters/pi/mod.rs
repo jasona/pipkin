@@ -429,7 +429,8 @@ impl Worker {
                     reason: OFFLINE.into(),
                 },
             ),
-            BackendRequest::StartSignIn(_)
+            BackendRequest::RemoveSignIn(_)
+            | BackendRequest::StartSignIn(_)
             | BackendRequest::ReuseSignIn(_)
             | BackendRequest::AnswerSignIn { .. }
             | BackendRequest::CancelSignIn { .. }
@@ -966,6 +967,25 @@ impl Live {
 
     fn handle_request(&mut self, worker: &mut Worker, request: BackendRequest) {
         match request {
+            BackendRequest::RemoveSignIn(provider) => {
+                if self.auth.is_none()
+                    || self
+                        .call(
+                            &self.server(),
+                            "pi.provider-auth",
+                            "remove",
+                            vec![json!(provider.pi_id())],
+                        )
+                        .is_err()
+                {
+                    worker.notice(
+                        "Could not remove the saved connection. Update the engine or try again."
+                            .into(),
+                    );
+                } else if let Some(conversation) = self.current.as_ref().map(|c| c.conversation) {
+                    self.refresh_models(worker, conversation);
+                }
+            }
             BackendRequest::StartSignIn(provider) => {
                 if self.auth.is_none() {
                     worker.notice("This Pi engine does not support subscription sign-in. Update the bundled engine and try again.".into());

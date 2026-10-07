@@ -14,6 +14,8 @@ pi=$(cd "${1:-$here/../pi-fork/pi}" && pwd)
 out=${2:-$here/dist/engine}
 protocol=8   # keep in step with PROTOCOL in crates/pipkin-app/src/install.rs
 commit=$("$here/scripts/check-engine-source.sh" "$pi")
+# Clean pinned builds include native subagents. The development override stages that checkout
+# verbatim; never patch (or dirty) the owner's separate Pi working tree.
 
 [ -d "$pi/node_modules" ] || { echo "no node_modules in $pi (run npm ci there)" >&2; exit 1; }
 [ -f "$pi/pi-test.sh" ] || { echo "$pi is not a Pi checkout" >&2; exit 1; }
@@ -51,6 +53,7 @@ else
   # Give the staged copy its own temporary Git boundary, then remove it before packaging.
   git -C "$out" init -q
   (cd "$out" && git apply --check "$bridge" && git apply "$bridge")
+  (cd "$out" && git apply --check "$here/packaging/pi-subagents.patch" && git apply "$here/packaging/pi-subagents.patch")
   rm -rf "$out/.git"
   install -m 0644 "$bridge_src/provider-auth.ts" "$bridge_dest/provider-auth.ts"
   install -m 0644 "$bridge_src/provider-auth-provider.ts" "$bridge_dest/provider-auth-provider.ts"
@@ -61,6 +64,19 @@ grep -Fq 'providerAuth: {' "$out/packages/coding-agent/src/experimental/server.t
     echo "OAuth bridge was not applied to the staged engine" >&2; exit 1;
   }
 bridge_hash=$(cat "$bridge" "$bridge_src/provider-auth.ts" "$bridge_src/provider-auth-provider.ts" | sha256sum | cut -d' ' -f1)
+subagent_manifest=''
+if [ "${PIPKIN_ENGINE_DEV:-0}" != 1 ]; then
+  src="$here/packaging/pi-subagents"
+  for file in subagents.ts subagents-provider.ts; do
+    install -m 0644 "$src/$file" "$bridge_dest/$file"
+  done
+  grep -Fq 'registry.install(Subagent)' "$out/packages/coding-agent/src/experimental/session-worker.ts" &&
+    grep -Fq 'createSubagentsServiceFacet' "$bridge_dest/worker.ts" || {
+      echo "native subagents were not applied to the staged engine" >&2; exit 1;
+    }
+  subagent_hash=$(cat "$here/packaging/pi-subagents.patch" "$src/subagents.ts" "$src/subagents-provider.ts" | sha256sum | cut -d' ' -f1)
+  subagent_manifest=',"pipkinSubagentsSha256":"'"$subagent_hash"'"'
+fi
 # Installed dependencies are build inputs; preserve workspace links within the staged tree.
 cp -a "$pi/node_modules" "$out/node_modules"
 while IFS= read -r -d '' dependencies; do
@@ -85,6 +101,6 @@ if [ "${PIPKIN_ENGINE_KEEP_DEV:-0}" != 1 ]; then
   fi
 fi
 cat > "$out/engine.json" <<JSON
-{"name":"pi","version":"$commit","sourceRevision":"$commit","pipkinAuthBridgeSha256":"$bridge_hash","modelDataManifestSha256":"$model_data_hash","productionPruneSucceeded":$pruned,"development":$([ "${PIPKIN_ENGINE_DEV:-0}" = 1 ] && echo true || echo false),"protocol":$protocol,"minClient":"0.0.1","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"name":"pi","version":"$commit","sourceRevision":"$commit","pipkinAuthBridgeSha256":"$bridge_hash"$subagent_manifest,"modelDataManifestSha256":"$model_data_hash","productionPruneSucceeded":$pruned,"development":$([ "${PIPKIN_ENGINE_DEV:-0}" = 1 ] && echo true || echo false),"protocol":$protocol,"minClient":"0.0.1","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 JSON
 echo "staged engine $commit at $out ($(du -sh "$out" | cut -f1))"

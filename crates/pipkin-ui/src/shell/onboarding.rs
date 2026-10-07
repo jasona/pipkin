@@ -61,7 +61,18 @@ impl Workspace {
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let m = self.model.read(cx);
-        let stage = m.setup.stage();
+        let managing = m.managing_connections;
+        let pending_removal = m.pending_removal;
+        let stage = if managing && m.state.connection.is_ready() {
+            match m.sign_in.status {
+                pipkin_core::onboarding::SignInStatus::Connecting
+                | pipkin_core::onboarding::SignInStatus::Waiting
+                | pipkin_core::onboarding::SignInStatus::Prompt => SetupStage::ConnectingProvider,
+                _ => SetupStage::ConnectProvider,
+            }
+        } else {
+            m.setup.stage()
+        };
         let auth = m.sign_in.clone();
         let connection = m.state.connection.clone();
         let current_project = m.state.current_project().map(|p| p.name.clone());
@@ -83,43 +94,50 @@ impl Workspace {
         } else {
             stage
         };
-        let (heading, description) = match stage {
-            SetupStage::Welcome => (
-                "A little help for your next big thing.",
-                "Connect your AI, choose a project, and start with something real.",
-            ),
-            SetupStage::PreparingEngine => (
-                "Making a little room to work.",
-                "Pipkin is preparing its built-in engine. This should only take a moment.",
-            ),
-            SetupStage::EngineUnavailable => (
-                "The engine isn't ready yet.",
-                "Pipkin couldn't reach its built-in engine. Check the app installation and try reopening Pipkin; your work is safe.",
-            ),
-            SetupStage::ConnectProvider => (
-                "Connect your AI.",
-                "Choose the subscription you'd like Pipkin to use. Sign-in happens with your provider; Pipkin does not store your password or code.",
-            ),
-            SetupStage::ConnectingProvider => (
-                "Continue with your provider.",
-                "Finish sign-in in your browser, then return here. Pipkin will wait for Pi to confirm your connection.",
-            ),
-            SetupStage::ProviderFailed => (
-                "That connection didn't finish.",
-                "Nothing was sent to a model. Try signing in again or choose another provider.",
-            ),
-            SetupStage::ChooseProject => (
-                "What are we working on?",
-                "Choose a folder for your first conversation. Pipkin will keep the work in that project.",
-            ),
-            SetupStage::ChooseModel => (
-                "Choose a model.",
-                "These are the models the engine reports as available for your connection.",
-            ),
-            SetupStage::Ready => (
-                "Ready when you are.",
-                "Your provider, model and project are connected. Start by describing what you'd like to do.",
-            ),
+        let (heading, description) = if managing {
+            (
+                "Model connections",
+                "Connect another provider or sign in again. Removing a saved connection does not cancel your subscription or delete conversations.",
+            )
+        } else {
+            match stage {
+                SetupStage::Welcome => (
+                    "A little help for your next big thing.",
+                    "Connect your AI, choose a project, and start with something real.",
+                ),
+                SetupStage::PreparingEngine => (
+                    "Making a little room to work.",
+                    "Pipkin is preparing its built-in engine. This should only take a moment.",
+                ),
+                SetupStage::EngineUnavailable => (
+                    "The engine isn't ready yet.",
+                    "Pipkin couldn't reach its built-in engine. Check the app installation and try reopening Pipkin; your work is safe.",
+                ),
+                SetupStage::ConnectProvider => (
+                    "Connect your AI.",
+                    "Choose the subscription you'd like Pipkin to use. Sign-in happens with your provider; Pipkin does not store your password or code.",
+                ),
+                SetupStage::ConnectingProvider => (
+                    "Continue with your provider.",
+                    "Finish sign-in in your browser, then return here. Pipkin will wait for Pi to confirm your connection.",
+                ),
+                SetupStage::ProviderFailed => (
+                    "That connection didn't finish.",
+                    "Nothing was sent to a model. Try signing in again or choose another provider.",
+                ),
+                SetupStage::ChooseProject => (
+                    "What are we working on?",
+                    "Choose a folder for your first conversation. Pipkin will keep the work in that project.",
+                ),
+                SetupStage::ChooseModel => (
+                    "Choose a model.",
+                    "These are the models the engine reports as available for your connection.",
+                ),
+                SetupStage::Ready => (
+                    "Ready when you are.",
+                    "Your provider, model and project are connected. Start by describing what you'd like to do.",
+                ),
+            }
         };
         let title = div()
             .text_size(px(28.0 * theme.scale))
@@ -206,11 +224,19 @@ impl Workspace {
                             "setup-chatgpt",
                         ),
                     ] {
+                        let label = if managing && auth.existing_providers.contains(&provider) {
+                            match provider {
+                                SignInProvider::Claude => "Sign in to Claude again",
+                                SignInProvider::ChatGpt => "Sign in to ChatGPT again",
+                            }
+                        } else {
+                            label
+                        };
                         body = body.child(self.setup_action(
                             id,
                             label,
                             BtnKind::Subtle,
-                            true,
+                            connection.is_ready(),
                             move |m, cx| m.start_sign_in(provider, cx),
                         ));
                     }
@@ -228,7 +254,7 @@ impl Workspace {
                             "setup-reuse-chatgpt",
                         ),
                     ] {
-                        if auth.existing_providers.contains(&provider) {
+                        if !managing && auth.existing_providers.contains(&provider) {
                             body = body.child(self.setup_action(
                                 id,
                                 label,
@@ -239,20 +265,64 @@ impl Workspace {
                         }
                     }
                 }
-                body = body.child(self.setup_action(
-                    "setup-back-welcome",
-                    "Back to welcome",
-                    BtnKind::Ghost,
-                    true,
-                    |m, cx| m.back_to_welcome(cx),
-                ));
-                body = body.child(self.setup_action(
-                    "setup-explore-provider",
-                    "Explore the workspace",
-                    BtnKind::Ghost,
-                    true,
-                    |m, cx| m.explore_workspace(cx),
-                ));
+                if managing {
+                    if !auth.message.is_empty() {
+                        body =
+                            body.child(div().text_color(c.text_muted).child(auth.message.clone()));
+                    }
+                    for (provider, label, id) in [
+                        (
+                            SignInProvider::Claude,
+                            "Remove Claude connection",
+                            "remove-claude",
+                        ),
+                        (
+                            SignInProvider::ChatGpt,
+                            "Remove ChatGPT connection",
+                            "remove-chatgpt",
+                        ),
+                    ] {
+                        if auth.existing_providers.contains(&provider) {
+                            body = body.child(self.setup_action(
+                                id,
+                                label,
+                                BtnKind::Ghost,
+                                connection.is_ready(),
+                                move |m, cx| {
+                                    m.pending_removal = Some(provider);
+                                    cx.notify();
+                                },
+                            ));
+                        }
+                    }
+                    if let Some(provider) = pending_removal {
+                        body = body.child(div().text_color(c.warning).child(format!("Remove the saved {} connection from Pi's local credential storage?", provider.pi_id())))
+                            .child(self.setup_action("confirm-remove", "Remove saved connection", BtnKind::Danger, connection.is_ready(), move |m, cx| {
+                                m.pending_removal = None;
+                                m.accepted_provider = None;
+                                m.dispatch(Command::RemoveSignIn(provider), cx);
+                            }))
+                            .child(self.setup_action("cancel-remove", "Keep connection", BtnKind::Ghost, true, |m, cx| {
+                                m.pending_removal = None;
+                                cx.notify();
+                            }));
+                    }
+                } else {
+                    body = body.child(self.setup_action(
+                        "setup-back-welcome",
+                        "Back to welcome",
+                        BtnKind::Ghost,
+                        true,
+                        |m, cx| m.back_to_welcome(cx),
+                    ));
+                    body = body.child(self.setup_action(
+                        "setup-explore-provider",
+                        "Explore the workspace",
+                        BtnKind::Ghost,
+                        true,
+                        |m, cx| m.explore_workspace(cx),
+                    ));
+                }
             }
             SetupStage::ConnectingProvider => {
                 if !auth.message.is_empty() {
@@ -469,6 +539,15 @@ impl Workspace {
                             }),
                     );
             }
+        }
+        if managing {
+            body = body.child(self.setup_action(
+                "connections-done",
+                "Back to workspace",
+                BtnKind::Subtle,
+                true,
+                |m, cx| m.explore_workspace(cx),
+            ));
         }
         div()
             .id("setup-root")

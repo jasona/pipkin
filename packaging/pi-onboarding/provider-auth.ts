@@ -36,6 +36,8 @@ export interface ProviderAuth {
 	/** The response is handled in memory only. Never put it in a replicated document. */
 	answer(attempt: string, challenge: string, response: string, context: Context): Promise<void>;
 	cancel(attempt: string, context: Context): Promise<void>;
+	/** Remove the saved provider credential locally; does not cancel a subscription. */
+	remove(provider: SignInProvider, context: Context): Promise<void>;
 }
 
 export const ProviderAuth = defineService<ProviderAuth>("pi.provider-auth");

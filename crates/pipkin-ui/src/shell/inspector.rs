@@ -355,7 +355,218 @@ impl Workspace {
             .bg(c.bg_changes)
             .child(header)
             .children(banner)
+            .child(self.render_subagents(cx))
             .child(body)
+    }
+
+    /// Child work is a separate, read-only view; the centre and composer remain on the parent.
+    fn render_subagents(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let t = cx.theme().clone();
+        let c = &t.colors;
+        let s = self.state(cx);
+        if s.mode == Mode::Demo || s.current().is_none() {
+            return div().into_any_element();
+        }
+        let data = &s.current().unwrap().subagents;
+        let total = data.items.len();
+        let sub = SubagentState {
+            enabled: data.enabled,
+            children: data.children.clone(),
+            selected: data.selected,
+            items: Vec::new(),
+            previews: data.previews.clone(),
+            error: data.error.clone(),
+            live: data.live,
+            loading: data.loading,
+            viewed: data.viewed,
+        };
+        let this = cx.entity();
+        let header = div()
+            .id("subagents-heading")
+            .role(Role::Heading)
+            .aria_label("Current session subagents")
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child("Subagents");
+        let mut section = div()
+            .id("subagents-inspector")
+            .role(Role::Region)
+            .aria_label("Current session subagents")
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(12.0))
+            .border_b_1()
+            .border_color(c.border)
+            .child(header);
+        if sub.enabled.is_none() {
+            return section
+                .child(
+                    div()
+                        .text_size(t.small_size())
+                        .text_color(c.text_muted)
+                        .child(sub.error.unwrap_or_else(|| {
+                            "The attached engine does not support subagents.".into()
+                        })),
+                )
+                .into_any_element();
+        }
+        section = section.child(
+            div()
+                .text_size(t.small_size())
+                .text_color(c.text_muted)
+                .child(if sub.enabled == Some(true) {
+                    "New subagent calls allowed · change in Preferences"
+                } else {
+                    "New subagent calls off · existing work continues"
+                }),
+        );
+        if sub.children.is_empty() {
+            section = section.child(
+                div()
+                    .text_size(t.small_size())
+                    .text_color(c.text_muted)
+                    .child("No subagent work in this session."),
+            );
+        } else {
+            let count = sub.children.len();
+            section = section.child(
+                div()
+                    .id("subagent-directory")
+                    .role(Role::List)
+                    .aria_label("Subagent tasks")
+                    .max_h(px(180.0 * t.scale))
+                    .overflow_y_scroll()
+                    .children(sub.children.into_iter().take(100).map(|child| {
+                        let this = this.clone();
+                        let selected = sub.selected == Some(child.id);
+                        let id = child.id;
+                        menu_row(("subagent", id as usize), selected, cx)
+                            .role(Role::ListItem)
+                            .aria_label(format!("{}, {}", child.task, child.status))
+                            .aria_selected(selected)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |w, cx| {
+                                    w.dispatch(Command::SelectSubagent(Some(id)), cx)
+                                })
+                            })
+                            .child(div().flex_1().min_w_0().truncate().child(child.task))
+                            .child(
+                                div()
+                                    .text_size(t.small_size())
+                                    .text_color(c.text_muted)
+                                    .child(child.status),
+                            )
+                    })),
+            );
+            if count > 100 {
+                section =
+                    section.child(div().text_size(t.small_size()).text_color(c.warning).child(
+                        format!(
+                            "Showing 100 of {count} children; more are not yet browsable here."
+                        ),
+                    ));
+            }
+        }
+        if let Some(selected) = sub.selected {
+            let selected_task = s
+                .current()
+                .and_then(|conv| {
+                    conv.subagents
+                        .children
+                        .iter()
+                        .find(|row| row.id == selected)
+                })
+                .map(|row| row.task.clone())
+                .unwrap_or_default();
+            let this = this.clone();
+            section = section
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            Btn::new("subagent-return")
+                                .icon("arrow-left")
+                                .label("Parent")
+                                .aria("Return to the parent session's inspector")
+                                .on_click(move |_, cx| {
+                                    this.update(cx, |w, cx| {
+                                        w.dispatch(Command::SelectSubagent(None), cx)
+                                    })
+                                }),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(selected_task),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(t.small_size())
+                        .text_color(c.text_muted)
+                        .child(if sub.live {
+                            "Live child · read only · composer sends to parent"
+                        } else {
+                            "Child snapshot · read only · composer sends to parent"
+                        }),
+                );
+            if sub.loading {
+                section = section.child(
+                    div()
+                        .id("subagent-loading")
+                        .role(Role::Status)
+                        .child("Loading child transcript…"),
+                );
+            }
+            if let Some(error) = sub.error {
+                section = section.child(
+                    div()
+                        .id("subagent-error")
+                        .role(Role::Alert)
+                        .text_color(c.warning)
+                        .child(error),
+                );
+            }
+            section = section.child(
+                div()
+                    .id("subagent-transcript")
+                    .role(Role::List)
+                    .aria_label("Read-only child transcript")
+                    .max_h(px(320.0 * t.scale))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .children(sub.previews.into_iter().map(|entry| {
+                        div()
+                            .id(("subagent-entry", entry.id.0 as usize))
+                            .role(Role::ListItem)
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .p(px(8.0))
+                            .rounded(px(5.0))
+                            .bg(c.bg_surface)
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_size(t.small_size())
+                                    .child(entry.speaker),
+                            )
+                            .child(div().text_size(t.small_size()).child(entry.text))
+                            .when(entry.clipped, |d| d.child("Entry preview truncated."))
+                    })),
+            );
+            if total > 80 {
+                section = section.child(div().text_size(t.small_size()).text_color(c.warning)
+                    .child(format!("Showing latest 80 of {total} entries; older child history is not yet available here.")));
+            }
+        }
+        section.into_any_element()
     }
 
     fn render_diff(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
