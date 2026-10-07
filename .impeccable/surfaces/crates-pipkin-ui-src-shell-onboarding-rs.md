@@ -85,7 +85,8 @@ Ad-hoc signing fixes bundle integrity, not normal Gatekeeper trust; Developer ID
   engine probe. See `docs/macos-first-pass.md` for exact artifact/hash. Not Finder/UI/auth acceptance.
 - [x] Tested, allowlisted per-client Pi OAuth bridge, bundled as a reviewed patch to the pinned engine.
 - [x] GPUI welcome/provider/project/model flow with credential metadata, authoritative acknowledgement and persisted completion.
-- [ ] Owner-authorized OAuth through a first real reply, native Mac UI/error/interruption review and a Mac artifact built from this worktree. See `llm-docs/pipkin-onboarding-plan.md` for the detailed current status and verification limits.
+- [x] macOS ARM64 CI built and packaged the pinned Pi bridge with bundled Node; real local OAuth transport passed without account credentials ([run 37559405162](https://github.com/last-refuge/pipkin/actions/runs/37559405162)).
+- [ ] Owner-authorized OAuth through a first real reply and native Mac GUI/error/interruption review. See `llm-docs/pipkin-onboarding-plan.md` for verification limits.
 
 No owner first real reply, Finder launch or live account authorization is claimed by this document. The successful bundled runtime qualification is automated native CI evidence. Product/design context contains prototype-era statements; use current source and release-gate
 evidence for capabilities rather than silently repairing unrelated context as part of this feature.

@@ -52,6 +52,10 @@ with a bare system PATH/private profile: Node 22.23.3, owned engine handshake **
 passed before archive, after extraction and after engine startup. This is automated CLI/runtime evidence,
 not observed Finder UI startup, publisher trust or provider login.
 
+## Subscription onboarding build for owner evaluation
+
+The OAuth-only onboarding implementation was built on macOS 15 (Apple Silicon) in [run 37559405162](https://github.com/last-refuge/pipkin/actions/runs/37559405162), clean commit `5fd4944f7a9a2be772dfe0d912677eed4c424bc7`. Download artifact `pipkin-macos-ARM64-5fd4944f7a9a2be772dfe0d912677eed4c424bc7`. Its experimental archive `pipkin-0.0.1-aarch64-apple-darwin-experimental.zip` has SHA-256 `5cc1367953d31471ebaf52f314dee4b798016bdd903a1583a7fb13bde66231a0`. This app includes the reviewed OAuth bridge in the bundled pinned Pi engine; CI passed its real local Unix-transport capability test, without using account credentials. The bundle is ad-hoc signed, **not** notarized; neither Finder launch nor live provider sign-in has been verified on a user's Mac. Use an isolated profile for first-run evaluation. Do not paste sign-in codes into logs or support reports.
+
 The initial CI checks the pure core, Unix transport (including kernel peer uid), macOS owned-process
 identification and native compilation. It also checks owned engine startup/stop and one real
 scripted-provider file-edit/history round trip. No paid/provider-authenticated request is required.
@@ -67,8 +71,7 @@ To try the interface without an engine, use a disposable app data directory:
 
 The demo is simulated, not an agent. The self-contained artifact requires **no Pi checkout, npm install,
 system Node or manual server startup**. Real-mode engine/runtime evaluation can use a disposable app and
-agent profile. The existing credential behavior is not yet replaced by the planned consent-based setup UI;
-keep personal credentials out of unattended tests. Deliberate real provider configuration remains necessary.
+agent profile. The new first-run UI offers Claude Pro/Max and ChatGPT Plus/Pro OAuth only, and keeps Pi responsible for credential storage. Do not use personal credentials in unattended tests; interactive authorization and a first real reply still need owner observation.
 
 For a disposable runtime evaluation (no credentials):
 
