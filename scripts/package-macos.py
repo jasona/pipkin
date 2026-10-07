@@ -113,10 +113,53 @@ def main():
             subprocess.run([str(restored / 'Contents/MacOS/pipkin'), '--diagnose', '--probe',
                             '--data-dir', str(Path(profile) / 'app-data')], env=environment, check=True)
         subprocess.run(verify + [str(restored)], check=True)  # Engine startup must not mutate sealed resources.
-    # Avoid uploading the app twice; the zip retains executable permissions and bundle layout.
-    shutil.rmtree(out / 'Pipkin.app')
-    (out / 'SHA256SUMS').write_text(f'{sha256(archive)}  {archive.name}\n')
-    print(f'experimental macOS package: {archive.name}; {sha256(archive)}')
+    # Build the drag-to-Applications image from the same sealed bundle, before removing it.
+    # The source folder must contain only the app and shortcut: never package build reports or
+    # temporary verification data into the volume.
+    dmg = out / f'pipkin-{version}-{target}-experimental.dmg'
+    with tempfile.TemporaryDirectory(prefix='dmg-', dir=out) as scratch:
+        scratch = Path(scratch)
+        payload = scratch / 'payload'
+        payload.mkdir()
+        shutil.copytree(bundle, payload / 'Pipkin.app', symlinks=True)
+        (payload / 'Applications').symlink_to('/Applications', target_is_directory=True)
+        subprocess.run(['hdiutil', 'create', '-volname', 'Pipkin', '-srcfolder', str(payload),
+                        '-format', 'UDZO', '-ov', str(dmg)], check=True)
+        mount = scratch / 'mount'
+        mount.mkdir()
+        try:
+            subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', str(mount),
+                            str(dmg)], check=True)
+        except subprocess.CalledProcessError:
+            # An attach can fail after mounting; best-effort detach before deleting scratch.
+            subprocess.run(['hdiutil', 'detach', str(mount)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            raise
+        try:
+            if not (mount / 'Applications').is_symlink() or (mount / 'Applications').readlink() != Path('/Applications'):
+                raise RuntimeError('mounted DMG is missing the Applications shortcut')
+            copied = scratch / 'installed/Pipkin.app'
+            shutil.copytree(mount / 'Pipkin.app', copied, symlinks=True)
+            subprocess.run(verify + [str(copied)], check=True)
+            if sha256(copied / 'Contents/MacOS/pipkin') != info['app']['binarySha256']:
+                raise RuntimeError('DMG-installed executable checksum mismatch')
+            if sha256(copied / 'Contents/lib/pipkin/runtime/bin/node') != runtime_info['binarySha256']:
+                raise RuntimeError('DMG-installed Node checksum mismatch')
+            if sha256(copied / 'Contents/Resources/pipkin.icns') != sha256(ROOT / 'packaging/pipkin.icns'):
+                raise RuntimeError('DMG-installed app icon checksum mismatch')
+            with tempfile.TemporaryDirectory(prefix='pk-dmg-', dir='/tmp') as profile:
+                environment = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': profile,
+                               'TMPDIR': profile, 'PI_OFFLINE': '1'}
+                subprocess.run([str(copied / 'Contents/MacOS/pipkin'), '--diagnose', '--probe',
+                                '--data-dir', str(Path(profile) / 'app-data')], env=environment, check=True)
+            subprocess.run(verify + [str(copied)], check=True)
+        finally:
+            subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
+    # Avoid uploading the app twice. Both archives retain the same signed bundle.
+    shutil.rmtree(bundle)
+    (out / 'SHA256SUMS').write_text(
+        f'{sha256(archive)}  {archive.name}\n{sha256(dmg)}  {dmg.name}\n')
+    print(f'experimental macOS packages: {archive.name}, {dmg.name}; hashes in SHA256SUMS')
 
 
 if __name__ == '__main__':

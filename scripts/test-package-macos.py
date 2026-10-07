@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import zipfile
 import tempfile
@@ -51,13 +52,20 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
 
     calls = []
     corrupt_extraction = False
+    corrupt_dmg = False
+    fail_attach = False
+    dmg_payload = None
 
     def seal(contents):
         return {str(p.relative_to(contents)): module.sha256(p) for p in contents.rglob('*')
                 if p.is_file() and '_CodeSignature' not in p.parts}
 
     def command(args, **kwargs):
-        assert kwargs['check'] is True
+        global dmg_payload
+        if args[:2] == ['hdiutil', 'detach'] and 'stdout' in kwargs:
+            assert kwargs['check'] is False  # Cleanup after a partially successful attach.
+        else:
+            assert kwargs['check'] is True
         calls.append(args)
         if args[:2] == ['codesign', '--force']:
             assert args[2:6] == ['--sign', '-', '--identifier', 'org.last-refuge.pipkin']
@@ -93,6 +101,27 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
                 archive.extractall(args[4])
             if corrupt_extraction:
                 (Path(args[4]) / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered resource')
+        elif args[:2] == ['hdiutil', 'create']:
+            assert args[2:5] == ['-volname', 'Pipkin', '-srcfolder']
+            assert args[6:9] == ['-format', 'UDZO', '-ov']
+            payload = Path(args[5])
+            assert sorted(p.name for p in payload.iterdir()) == ['Applications', 'Pipkin.app']
+            assert (payload / 'Applications').is_symlink()
+            assert (payload / 'Applications').readlink() == Path('/Applications')
+            dmg_payload = payload
+            Path(args[-1]).write_bytes(b'fixture disk image')
+        elif args[:2] == ['hdiutil', 'attach']:
+            assert args[2:6] == ['-readonly', '-nobrowse', '-mountpoint', args[5]]
+            assert Path(args[-1]).read_bytes() == b'fixture disk image'
+            mount = Path(args[5])
+            shutil.copytree(dmg_payload / 'Pipkin.app', mount / 'Pipkin.app', symlinks=True)
+            (mount / 'Applications').symlink_to('/Applications', target_is_directory=True)
+            if corrupt_dmg:
+                (mount / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered image')
+            if fail_attach:
+                raise subprocess.CalledProcessError(1, args)
+        elif args[:2] == ['hdiutil', 'detach']:
+            assert Path(args[2]).is_dir()
         elif '--diagnose' in args:
             assert '--probe' in args
             assert kwargs['env']['PATH'] == '/usr/bin:/bin:/usr/sbin:/sbin'
@@ -113,14 +142,35 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         assert info['app']['revision'] == 'b' * 40 and info['app']['dirty'] is False
         assert info['app']['preBundleSigningBinarySha256'] == module.sha256(root / 'target/release/pipkin')
         assert info['app']['binarySha256'] != info['app']['preBundleSigningBinarySha256']
-        assert sum(args[:2] == ['codesign', '--verify'] for args in calls) == 3
+        assert sum(args[:2] == ['codesign', '--verify'] for args in calls) == 5
         assert 'Developer ID' in info['signing']
         assert temporary not in (out / 'build-info.json').read_text()
         assert '/private/fixture' not in (out / 'build-info.json').read_text()
         assert not (out / 'Pipkin.app').exists()
         package = next(out.glob('*.zip'))
-        assert (out / 'SHA256SUMS').read_text() == f'{module.sha256(package)}  {package.name}\n'
+        dmg = next(out.glob('*.dmg'))
+        assert (out / 'SHA256SUMS').read_text() == (
+            f'{module.sha256(package)}  {package.name}\n{module.sha256(dmg)}  {dmg.name}\n')
+        assert sum('--probe' in args for args in calls) == 2  # Extracted ZIP and copied DMG app.
         module.main()  # An identified prior output can be replaced.
+        corrupt_dmg = True
+        before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+        try:
+            module.main()
+            raise AssertionError('tampered mounted app was accepted')
+        except subprocess.CalledProcessError:
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 1
+            assert not (out / 'SHA256SUMS').exists()
+        corrupt_dmg = False
+        fail_attach = True
+        before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+        try:
+            module.main()
+            raise AssertionError('failed attach was accepted')
+        except subprocess.CalledProcessError:
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before + 1
+            assert not (out / 'SHA256SUMS').exists()
+        fail_attach = False
         corrupt_extraction = True
         try:
             module.main()

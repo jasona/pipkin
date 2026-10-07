@@ -109,7 +109,7 @@ jobs:
           python3 scripts/package-macos.py "$target" 2>&1 | tee qualification-logs/package.log
           cp dist/macos/build-info.json qualification-logs/
           cp dist/macos/SHA256SUMS qualification-logs/
-      - name: Retain experimental app (ad-hoc only, not notarized or a release)
+      - name: Retain experimental ZIP and DMG (ad-hoc only, not notarized or a release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pipkin-macos-${{ runner.arch }}-${{ github.sha }}

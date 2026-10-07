@@ -56,6 +56,25 @@ not observed Finder UI startup, publisher trust or provider login.
 
 The OAuth-only onboarding implementation was built on macOS 15 (Apple Silicon) in [run 37559405162](https://github.com/last-refuge/pipkin/actions/runs/37559405162), clean commit `5fd4944f7a9a2be772dfe0d912677eed4c424bc7`. Download artifact `pipkin-macos-ARM64-5fd4944f7a9a2be772dfe0d912677eed4c424bc7`. Its experimental archive `pipkin-0.0.1-aarch64-apple-darwin-experimental.zip` has SHA-256 `5cc1367953d31471ebaf52f314dee4b798016bdd903a1583a7fb13bde66231a0`. This app includes the reviewed OAuth bridge in the bundled pinned Pi engine; CI passed its real local Unix-transport capability test, without using account credentials. The bundle is ad-hoc signed, **not** notarized; neither Finder launch nor live provider sign-in has been verified on a user's Mac. Use an isolated profile for first-run evaluation. Do not paste sign-in codes into logs or support reports.
 
+## Experimental drag-to-Applications image
+
+The packaging workflow now also builds `pipkin-<version>-<target>-experimental.dmg` from the **same
+signed app** as the ZIP. The disk image contains `Pipkin.app` and a shortcut to `/Applications`.
+The macOS runner mounts it read-only, copies the app to a disposable destination, checks its
+signature and app/Node/icon hashes, and runs an offline engine handshake from the copied app.
+`SHA256SUMS` lists both formats. This describes the new checks, **not a passing remote run or a
+Finder installation**; examine the run for the exact revision before relying on its artifact.
+
+For an owner evaluation, download both the DMG and `SHA256SUMS` from one identified Actions
+artifact, run `shasum -a 256 -c SHA256SUMS` in their directory (the ZIP must also be present),
+open the DMG in Finder, and drag **Pipkin.app** to **Applications**. Replace an earlier Pipkin.app
+as a whole; do not merge its contents. Open the installed copy from Applications, not the mounted
+image, and retain the app revision and macOS version with any observations. A checksum verifies
+file identity against that artifact's report, **not the publisher**. This DMG is still ad-hoc
+signed and unnotarized: it may be blocked by Gatekeeper. Do not disable Gatekeeper globally.
+Developer ID signing, notarization, a quarantined-download walkthrough, Intel coverage and
+interactive provider sign-in remain separate gates.
+
 The initial CI checks the pure core, Unix transport (including kernel peer uid), macOS owned-process
 identification and native compilation. It also checks owned engine startup/stop and one real
 scripted-provider file-edit/history round trip. No paid/provider-authenticated request is required.
