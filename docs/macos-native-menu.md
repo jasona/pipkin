@@ -37,6 +37,18 @@ Automated tests check menu ordering, Services, the real Quit action, Command-Q m
 menu availability. Workspace tests, Clippy and formatting pass on Linux; Mac CI runs the menu tests and
 compiles/packages the actual native app. These are not an observed native menu click or Dock interaction.
 
+Native Apple Silicon build [37686573006](https://github.com/last-refuge/pipkin/actions/runs/37686573006)
+passed on clean commit `5310b0a962b54ca38a419b7621b8c3edb0f59537`: all three menu contract tests,
+actual native compilation, bundled engine lifecycle/edit/history smoke checks, ZIP extraction and DMG
+copy-install signature/runtime probes. Both extracted and DMG-installed CLI probes reported engine ready
+in **1.9s**. No native menu click, keyboard input or Dock interaction was automated or observed.
+
+Download the [ZIP/DMG artifact](https://github.com/last-refuge/pipkin/actions/runs/37686573006/artifacts/11512137232)
+(`pipkin-macos-ARM64-5310b0a962b54ca38a419b7621b8c3edb0f59537`). Replace the old app rather than merging
+bundles. Signing remains ad-hoc, not Developer ID/notarized. Local workspace/Clippy logs are
+`/tmp/pipkin-mac-menu-{workspace,clippy}.log`; native evidence is `/tmp/pipkin-mac-menu-ci-full.log`.
+Concurrent onboarding/subagent changes were preserved and are not attributed to this menu milestone.
+
 On the new Mac build, please verify:
 
 1. Pipkin's menu opens, Settings/About work, and Hide/Hide Others/Show All behave normally.
