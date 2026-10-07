@@ -10,6 +10,10 @@
     "x86_64-apple-darwin": {
       "archive": "node-v22.23.3-darwin-x64.tar.gz",
       "sha256": "8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "archive": "node-v22.23.3-linux-x64.tar.gz",
+      "sha256": "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
     }
   }
 }

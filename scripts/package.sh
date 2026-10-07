@@ -17,6 +17,19 @@ pi=${1:-$here/../pi-fork/pi}
 cargo build -p pipkin-app --release --locked
 rm -rf "$stage"
 "$here/scripts/build-engine.sh" "$pi" "$stage/usr/lib/pipkin/engine"
+target=$(rustc -vV | awk '/^host:/ {print $2}')
+[ "$arch" = x86_64 ] && [ "$target" = x86_64-unknown-linux-gnu ] &&
+  { [ -z "${CARGO_BUILD_TARGET:-}" ] || [ "$CARGO_BUILD_TARGET" = "$target" ]; } || {
+  echo "Linux installer supports native x86_64-unknown-linux-gnu builds only (got $arch/$target/${CARGO_BUILD_TARGET:-native})" >&2; exit 1;
+}
+python3 "$here/scripts/stage-node-runtime.py" "$target" "$stage/usr/lib/pipkin/runtime"
+python3 - "$stage/usr/lib/pipkin/engine/engine.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+manifest['requiresBundledNode'] = True
+path.write_text(json.dumps(manifest, indent=2) + '\n')
+PY
 install -Dm755 target/release/pipkin "$stage/usr/bin/pipkin"
 install -Dm644 packaging/pipkin.desktop "$stage/usr/share/applications/pipkin.desktop"
 for size in 128 256 512; do

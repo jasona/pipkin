@@ -27,37 +27,27 @@ pipkin --diagnose --probe
 ```
 
 Package build dependencies are in `packaging/PKGBUILD`; the pinned Rust toolchain is in
-`rust-toolchain.toml`. Runtime needs Node.js **22.19 or newer**, a functioning Vulkan-capable driver, and the desktop
-libraries declared in the PKGBUILD. A successful build is not clean-machine desktop qualification.
+`rust-toolchain.toml`. The installed package includes a private, pinned Node 22 runtime; no system Node is needed to *run* it. A functioning Vulkan-capable driver, Git and the desktop libraries declared in the PKGBUILD are still needed. A successful build is not clean-machine desktop qualification.
 
 When a signed release is available, use its download/verification instructions instead of building mutable source.
 Do not treat the current unsigned tarball as authenticated merely because its checksum matches.
 
-## Configure a provider
+## First run and provider sign-in
 
-Pipkin does not currently provide a provider login dialog. It uses the Pi agent configuration (normally
-`~/.pi/agent`, or `--pi-agent-dir DIR`) and credentials/environment of the process that starts its owned engine.
-Use existing Pi credentials, or Pi's `/login` in its terminal client with the **same agent directory**. `/login` is
-not a Pipkin composer command. Keep Pi's `auth.json` private; never include it in a report.
+From a newly installed package, open Pipkin from its desktop launcher or run `pipkin`. The shared first-run GUI
+welcomes you, offers **Claude Pro/Max** and **ChatGPT Plus/Pro** OAuth sign-in, then asks for a project folder and
+an available Pi model. The app stores no sign-in answers; Pi stores credentials in its agent profile (normally
+`~/.pi/agent`, or `--pi-agent-dir DIR`). Sign-in, project and model selection are not commands to paste into the
+chat composer. A returning profile with saved work or Pi credentials opens its existing workspace rather than
+forcing a new login. Keep Pi's `auth.json` private; never include it in a report.
 
-For an API-key provider, an environment variable is another option. For example, in Bash, this avoids putting the
-literal key in shell history or echoing it to the terminal:
+The wizard does **not** set up API keys or other providers. Advanced users may configure Pi directly and keep their
+existing credentials; an API-key environment variable set in a terminal is not necessarily inherited by a desktop
+launcher. If a separate/external engine lacks Pipkin's tested OAuth service, the wizard does not offer usable-looking
+login buttons. The installer cannot authenticate your provider or prove that a paid model request succeeds.
 
-```sh
-read -rsp 'Anthropic API key: ' ANTHROPIC_API_KEY; printf '\n'
-export ANTHROPIC_API_KEY
-pipkin --project /path/to/your/project
-unset ANTHROPIC_API_KEY
-```
-
-OpenAI uses `OPENAI_API_KEY`; provider-specific setup and OAuth are described in the pinned engine's
-`packages/coding-agent/docs/providers.md`. Do not commit keys or paste them into a conversation. Environment
-credentials are visible to processes/tools that inherit them; only run trusted projects and extensions. A desktop
-launcher does not necessarily inherit variables exported in a terminal: use stored Pi credentials or launch from
-that terminal. Changing the terminal environment does not update an already running external server.
-
-Select a model with **Ctrl M**, then send a small prompt. **This makes a real provider request and may be billed.**
-Demo mode is simulated; the scripted-provider test is offline. Neither establishes that your paid provider works.
+After selecting a model, send a small prompt. **This makes a real provider request and may be billed.** Demo mode
+is simulated; the scripted-provider test is offline. Neither establishes that your paid provider works.
 
 ### Missing or expired authentication
 

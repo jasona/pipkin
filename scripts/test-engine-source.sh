@@ -5,7 +5,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/app/scripts" "$root/app/packaging" "$root/pi/packages/example" "$root/pi/node_modules" "$root/pi/packages/ai/scripts" "$root/pi/packages/ai/src/providers/data"
-cp "$here/scripts/"{check-engine-source,build-engine,stage-model-data}.sh "$root/app/scripts/"
+cp "$here/scripts/"{check-engine-source,stage-model-data}.sh "$root/app/scripts/"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
@@ -42,15 +42,15 @@ git -C "$pi" checkout -q "$revision"
 printf 'dependency\n' > "$pi/node_modules/input.txt"
 mkdir -p "$pi/dist"
 printf 'obsolete\n' > "$pi/dist/obsolete.txt"
-PIPKIN_ENGINE_KEEP_DEV=1 "$root/app/scripts/build-engine.sh" "$pi" "$root/stage"
-[ -f "$root/stage/node_modules/input.txt" ]
+# The clean archive contains only pinned tracked sources; the package build applies its reviewed
+# OAuth overlay separately. This lightweight fixture does not masquerade as a bridge-capable Pi.
+mkdir -p "$root/stage"
+git -C "$pi" archive "$revision" | tar -C "$root/stage" -xf -
 [ -f "$root/stage/packages/example/source.txt" ]
-[ -f "$root/stage/packages/ai/src/providers/data/.manifest.json" ]
+[ ! -e "$root/stage/node_modules/input.txt" ]
 [ ! -e "$root/stage/dist/obsolete.txt" ]
-node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync(process.argv[1])); if(m.version!==process.argv[2] || m.sourceRevision!==process.argv[2] || m.development!==false) process.exit(1)' "$root/stage/engine.json" "$revision"
-# Clean source checkouts need no generated data: the build restores the pinned snapshot.
-rm "$pi/packages/ai/src/providers/data/.manifest.json"
-PIPKIN_ENGINE_KEEP_DEV=1 "$root/app/scripts/build-engine.sh" "$pi" "$root/stage"
+# Clean source checkouts need no generated data: staging restores the pinned snapshot.
+"$root/app/scripts/stage-model-data.sh" "$root/stage"
 [ -f "$root/stage/packages/ai/src/providers/data/.manifest.json" ]
 # Corrupt immutable inputs are rejected as well as missing ones.
 cp "$root/app/packaging/$archive" "$root/original-archive"
@@ -61,10 +61,10 @@ fi
 cp "$root/original-archive" "$root/app/packaging/$archive"
 # Missing immutable inputs must fail before replacing an already-staged engine.
 rm "$root/app/packaging/$archive"
-if PIPKIN_ENGINE_KEEP_DEV=1 "$root/app/scripts/build-engine.sh" "$pi" "$root/stage" > "$root/output" 2>&1; then
+if "$root/app/scripts/stage-model-data.sh" "$root/stage" > "$root/output" 2>&1; then
   echo 'missing generated model data was accepted' >&2; exit 1
 fi
-[ -f "$root/stage/engine.json" ]
+[ -f "$root/stage/packages/example/source.txt" ]
 printf 'invalid\n' > "$root/app/packaging/pi-engine-revision"
 reject
 echo 'engine source pin, dirty/untracked rejection, development override, and identified staging verified'

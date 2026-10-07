@@ -4,7 +4,8 @@
 
 ```
 /usr/bin/pipkin                         the application
-/usr/lib/pipkin/engine/                 a self-contained Pi engine (sources, production node_modules, engine.json)
+/usr/lib/pipkin/engine/                 a paired Pi engine (sources, production node_modules, engine.json)
+/usr/lib/pipkin/runtime/                private checksum-pinned Node binary, manifest and full Node LICENSE
 /usr/share/applications/pipkin.desktop  launcher entry (StartupWMClass=pipkin)
 /usr/share/licenses/pipkin/             MIT licence for Pipkin, plus the font and icon licences
 /usr/share/doc/pipkin/README.md         installed-help index (not the source marketing README)
@@ -21,8 +22,7 @@ checkout to read setup/privacy/recovery instructions. Developer commands and scr
 the full source repository; these are not installed source tooling. `scripts/test-package-docs.py dist/stage` checks
 that packaged guides match their source bytes and is required by CI.
 
-The engine runs on the system `nodejs` (>= 22.19, a package dependency). `engine.json` records the engine
-version, the protocol it speaks (8) and the oldest Pipkin it supports. Pipkin refuses an engine with another
+The paired engine declares `requiresBundledNode` and runs on the package's private, checksum-pinned Node 22.23.3 (target `x86_64-unknown-linux-gnu`). Neither the installer nor the Arch package needs a system Node to run. Building the package still requires Node/npm. `engine.json` records the engine version, the protocol it speaks (8) and the oldest Pipkin it supports. Pipkin refuses an engine with another
 protocol, an incomplete one, or one that needs a newer Pipkin, and says why (`pipkin --diagnose`).
 
 With no flags, Pipkin looks for the engine at `PIPKIN_ENGINE_DIR`, then `../lib/pipkin/engine` relative to its own
@@ -48,7 +48,7 @@ they do not fetch a mutable public model catalog. `scripts/stage-model-data.sh P
 snapshot for development-engine qualification. See `packaging/engine-model-data.md` for provenance and pin updates.
 `PIPKIN_ENGINE_DEV=1 scripts/package.sh PI_CHECKOUT` is an explicit development override, not release qualification.
 
-`scripts/build-engine.sh` stages the identified tracked sources through Git archive, not arbitrary ignored build
+`scripts/package.sh` downloads the Linux Node archive over HTTPS during the build, verifies its pinned SHA-256, and extracts only the exact regular Node executable and full LICENSE into a private versioned runtime. Installation itself performs no network request or global Node changes. The hash is a build-input integrity check, **not publisher authentication**; review the release signature policy before trusting an artifact. `scripts/build-engine.sh` stages the identified tracked sources through Git archive, not arbitrary ignored build
 output. It separately restores/validates pinned generated provider JSON and copies installed workspace dependencies,
 then prunes dev dependencies offline. The manifest records the full source revision, generated-data manifest hash,
 protocol, minimum client and whether the development override was used. It does not yet identify every build input
@@ -121,7 +121,7 @@ engine 633 -> 700 MiB, open files 15 -> 19. Current RC soak and real-window day-
 
 ## Generic Linux install, upgrade and rollback
 
-`scripts/package.sh` also leaves `install.sh` at the root of the release tarball. It installs into `~/.local`
+`scripts/package.sh` also leaves `install.sh` at the root of the release tarball. It checks the Linux architecture, essential system tools, the packaged app/runtime hashes, and the copied engine with an offline throwaway-profile handshake before switching the active version. Progress uses color on interactive terminals and plain ASCII otherwise; it cannot verify a Vulkan driver or grant the archive publisher trust. A missing desktop library/unsupported ABI is reported without silently changing system packages. The script hands provider/project/model setup to the Pipkin GUI, never collecting credentials in the terminal. It installs into `~/.local`
 (or `--prefix DIR`) under `lib/pipkin/versions/<version>/` with a `current` link, so:
 
 ```

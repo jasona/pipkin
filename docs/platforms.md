@@ -42,8 +42,7 @@ Packages pair the app with the exact Pi revision in `packaging/pi-engine-revisio
 app database schema is **7**. An external server must satisfy the app's compatibility checks; arbitrary/latest
 Pi revisions are not promised compatible. Requalify any changed pair, and do not bypass a protocol/schema refusal.
 
-For Linux packages, runtime requirements include **Node >=22.19**, Git, a working Vulkan-capable graphics setup and desktop libraries
-listed in [PKGBUILD](../packaging/PKGBUILD). The bundled engine is not a bundled system Node or GPU driver.
+For the current Linux package, the Pi engine uses a paired private Node 22.23.3 runtime. A system Node is not required to run Pipkin; building from source still requires Node/npm. Runtime requirements include Git, a working Vulkan-capable graphics setup and desktop libraries listed in [PKGBUILD](../packaging/PKGBUILD). The bundled runtime does not provide a GPU driver.
 Inspect the artifact's [native/runtime inventory](bundled-licenses.md#native-runtime-inspection) for direct ELF
 library/ABI references. It is not a complete static/dlopen dependency audit or portability guarantee. Optional
 native VM/sandbox components and foreign source-tree artifacts remain provenance/runtime review findings; their
@@ -53,8 +52,7 @@ presence does not extend platform support or promise a sandbox.
 
 Pipkin does not provide its own credential store. Its logs/caches can still contain sensitive provider/tool/error
 text and must not be assumed credential-free. Pi's own mechanism (login, API keys, `models.json` under `~/.pi/agent`) is used
-by the engine; Pipkin shows status and offers a refresh. The installed engine runs on the system `node` and
-uses `git` from `PATH`; `pipkin --diagnose` reports Node and the engine.
+by the engine; Pipkin shows status and offers a refresh. The installed engine uses its private Node and `git` from `PATH`; `pipkin --diagnose` reports the Node runtime and engine.
 
 ## Isolation
 

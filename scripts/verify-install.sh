@@ -22,6 +22,8 @@ check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 
 check "binary is executable" "[ -x '$root/prefix/usr/bin/pipkin' ]"
 check "engine manifest present" "[ -f '$root/prefix/usr/lib/pipkin/engine/engine.json' ]"
+check "engine requires private Node" "grep -q '\"requiresBundledNode\"[[:space:]]*:[[:space:]]*true' '$root/prefix/usr/lib/pipkin/engine/engine.json'"
+check "private Node and notices are present" "[ -x '$root/prefix/usr/lib/pipkin/runtime/bin/node' ] && [ -s '$root/prefix/usr/lib/pipkin/runtime/LICENSE' ] && [ -f '$root/prefix/usr/lib/pipkin/runtime/runtime.json' ]"
 check "desktop entry present" "grep -q '^Exec=pipkin' '$root/prefix/usr/share/applications/pipkin.desktop'"
 check "the MIT licence is installed" "grep -q '^MIT License' '$root/prefix/usr/share/licenses/pipkin/LICENSE'"
 check "icon present" "[ -f '$root/prefix/usr/share/icons/hicolor/256x256/apps/pipkin.png' ]"
@@ -35,7 +37,11 @@ check "no escaping relative link" \
 check "no reference to a source checkout in the binary" \
   "! strings '$root/prefix/usr/bin/pipkin' | grep -q '/coding/pi-fork'"
 
-run() { (cd "$root/cwd" && env -i HOME="$root/home" PATH="/usr/bin:/bin" XDG_DATA_HOME="$root/home/.local/share" \
+mkdir -p "$root/shims"
+printf '#!/bin/sh\nexit 93\n' > "$root/shims/node"
+chmod +x "$root/shims/node"
+# An unusable system Node cannot accidentally satisfy the handshake.
+run() { (cd "$root/cwd" && env -i HOME="$root/home" PATH="$root/shims:/usr/bin:/bin" XDG_DATA_HOME="$root/home/.local/share" \
   WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}" "$root/prefix/usr/bin/pipkin" "$@"); }
 check "--version prints the version" "run --version | grep -q '^pipkin '"
 out=$(run --diagnose --probe 2>&1) || true

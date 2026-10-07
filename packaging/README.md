@@ -1,6 +1,6 @@
 # Pipkin installed help
 
-This package carries the app and its paired Pi engine, not system Node, Git or graphics/desktop libraries.
+This package carries the app, paired Pi engine and pinned private Node runtime. It does not install system Node, Git or graphics/desktop libraries.
 Current packages are qualification builds; final native acceptance and release approval remain open. Do not assume
 an unsigned artifact is authenticated or portable to another distribution merely because it can be unpacked.
 

@@ -785,6 +785,25 @@ activity status) preserved. The onboarding plan's automated runtime milestone is
 provider-authentication/credential-consent UI, native visual review and owner first reply remain **unverified**.
 Ad-hoc signing still supplies no publisher identity/notarization; no 1.0 release/tag/publication authorized here.
 
+## Linux private-runtime installer iteration (2026-10-07)
+
+The generic x86_64 Linux tarball now stages a checksum-pinned private Node 22.23.3 (with full
+LICENSE) alongside the paired Pi engine. `./install.sh` checks architecture, Git, basic tools,
+missing direct libraries, app/Node payload hashes and a throwaway offline installed-engine
+handshake **before** activating a version. It prints TTY-only colored ASCII progress, respects
+`NO_COLOR`, and preserves the old version when a checksum or handshake fails. It neither invokes
+a system package manager nor modifies system Node; missing GPU/desktop libraries need distro-specific
+installation. The Arch package also carries the private runtime; building needs Node/npm, running
+does not require a system Node package.
+
+Local scratch-prefix verification passed install, upgrade, rollback, uninstall, accidental-path
+refusal, altered app/Node rejection, failed-engine refusal, paths with spaces and desktop entry
+validation. The unpacked Linux artifact passed 37 scripted-provider real-engine tests; an isolated
+Wayland GUI launched from the unpacked layout reached the shared OAuth provider screen with a fake,
+non-working system `node` ahead of PATH. This is observed behavior on the author machine, not a
+clean third-party install or provider-authenticated first reply. Signed release, portable GLIBC/GPU
+coverage, native distro matrix and owner sign-off remain open.
+
 ## Gate tracker
 
 Status meanings: **passed (automated)**, **owner-reported**, **partial**, **open**, **failed**, or **unverified**. Every candidate should update these with its app/engine revisions and evidence. Historical passes must not silently become qualification of a changed candidate.

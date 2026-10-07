@@ -3,12 +3,12 @@
 #   cd packaging && makepkg -si      (PI_CHECKOUT=../../pi-fork/pi by default)
 pkgname=pipkin
 pkgver=0.0.1
-pkgrel=1
+pkgrel=2
 pkgdesc='Native Wayland desktop client for the Pi coding agent, with a bundled engine'
 arch=('x86_64')
 url='https://github.com/last-refuge/pipkin'
 license=('MIT')
-depends=('nodejs>=22.19' 'wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'vulkan-icd-loader' 'fontconfig' 'git')
+depends=('wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'vulkan-icd-loader' 'fontconfig' 'git')
 makedepends=('rust' 'cargo' 'npm' 'zstd' 'clang' 'cmake' 'python' 'binutils')
 optdepends=('foot: terminal for the "open terminal" action'
             'orca: screen reader'

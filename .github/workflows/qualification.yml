@@ -44,12 +44,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.19.0"
-      - name: Expose the declared Node runtime in the bare system PATH
+      - name: Identify build-only Node
         run: |
-          # setup-node installs into its tool cache; verify-install intentionally strips that PATH.
-          # Only this ephemeral runner is modified, not a user's desktop.
-          sudo ln -sf "$(command -v node)" /usr/bin/node
-          /usr/bin/node --version
+          node --version
+          # Installed-app probes use the package's private Node; they do not rely on this runner PATH.
       - name: Rust and packaging policy checks
         run: |
           mkdir -p qualification-logs

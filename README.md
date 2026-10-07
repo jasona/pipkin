@@ -89,8 +89,8 @@ editing, selection and accessibility tree.
 ## Install
 
 The working qualification scope is **x86_64 Arch/Omarchy, Hyprland/Wayland** with a Vulkan-capable GPU driver.
-You also need **Node.js 22.19 or newer**, Git and the desktop/runtime libraries listed in
-[`packaging/PKGBUILD`](packaging/PKGBUILD). The bundled Pi engine does not replace those system dependencies.
+The current package includes a private, checksum-pinned Node 22 runtime and paired Pi engine; no system Node installation or global npm changes are needed to run it. Git and the desktop/runtime libraries listed in
+[`packaging/PKGBUILD`](packaging/PKGBUILD) are still needed. Building a package from source needs Node/npm and other build tools.
 Other desktops/distributions and X11 remain experimental. Each artifact's native ABI requirements depend on its
 build inputs; see [runtime inventory and limitations](docs/bundled-licenses.md#native-runtime-inspection).
 Your Pi credentials in `~/.pi/agent` are used unless an alternate agent directory is explicitly selected.
@@ -112,7 +112,7 @@ tar --zstd -xf pipkin-<version>-x86_64.tar.zst && ./install.sh     # into ~/.loc
 ./install.sh --rollback        # go back to the previous version in one step
 ```
 
-There is no published signed release yet. Each version is kept with its own paired engine. The installer preserves
+The installer runs an offline preflight and installed-engine handshake with a colored ASCII progress display on interactive terminals; on other terminals it prints plain progress. It uses the packaged private Node and never installs global Node or runs a package manager. Missing native libraries or an unsupported distro still require the user's package manager. There is no published signed release yet. Each version is kept with its own paired engine and runtime. The installer preserves
 user-data locations; application database migrations and schema-compatible rollback require the documented backup
 procedure. Verify a download with `scripts/verify-release.sh`. Details:
 [`docs/packaging.md`](docs/packaging.md).

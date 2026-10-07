@@ -89,8 +89,7 @@ wrapper declarations. Do not infer that every optional dependency is exercised b
 
 The actual locally built app references **GLIBC_2.44**. The package's ABI requirements depend on its build inputs;
 this unsigned local artifact is not a promise of portability to older Linux systems. The final supported-platform
-candidate needs its own ABI/runtime qualification. Node >=22.19 and the PKGBUILD's desktop/GPU dependencies remain
-external runtime requirements. Rust/Go standard libraries and bundled native components also require provenance/
+candidate needs its own ABI/runtime qualification. Linux packages now include a checksum-pinned private Node 22.23.3 executable and full Node LICENSE. The PKGBUILD's desktop/GPU dependencies and Git remain external runtime requirements. Node archive checksums alone do not establish publisher identity or legal clearance. Rust/Go standard libraries and bundled native components also require provenance/
 notice review beyond the Cargo/npm package graph.
 
 ## Reproduction
