@@ -91,7 +91,7 @@ impl Workspace {
                 .child(
                     Btn::new("refresh-changes")
                         .icon("refresh-cw")
-                        .aria("Refresh this session's recorded changes")
+                        .aria("Refresh this session's uncommitted changes")
                         .disabled(!avail.refresh_changes)
                         .on_click(move |_, cx| {
                             refresh_this.update(cx, |t, cx| t.dispatch(Command::RefreshChanges, cx))
@@ -180,7 +180,7 @@ impl Workspace {
                 Btn::new("inspector-changes-tab")
                     .label("Changes")
                     .selected(!agents)
-                    .aria("Show this session's recorded changes")
+                    .aria("Show this session's uncommitted changes")
                     .on_click(move |_, cx| {
                         change_tab.update(cx, |w, cx| {
                             w.inspector_tab = InspectorTab::Changes;
@@ -263,153 +263,152 @@ impl Workspace {
                         )
                     })
             });
-        let body: gpui::AnyElement = if changes.is_empty() && !demo && status.is_some() {
-            // Progress, failure and a non-Git folder are not a successful empty scan.
-            div().flex_1().into_any_element()
-        } else if changes.is_empty() {
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.0))
-                .px(px(24.0))
-                .child(
-                    gpui::img(crate::assets::MASCOT_WAITING)
-                        .w(px(150.0 * t.scale.max(1.0)))
-                        .h(px(188.0 * t.scale.max(1.0)))
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
-                .child(div().text_color(c.text_muted).child(if demo {
-                    "No changes yet"
-                } else {
-                    "No recorded file edits"
-                }))
-                .child(
+        let body: gpui::AnyElement =
+            if changes.is_empty() && !demo && status.is_some() {
+                // Progress, failure and a non-Git folder are not a successful empty scan.
+                div().flex_1().into_any_element()
+            } else if changes.is_empty() {
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.0))
+                    .px(px(24.0))
+                    .child(
+                        gpui::img(crate::assets::MASCOT_WAITING)
+                            .w(px(150.0 * t.scale.max(1.0)))
+                            .h(px(188.0 * t.scale.max(1.0)))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .child(div().text_color(c.text_muted).child(if demo {
+                        "No changes yet"
+                    } else {
+                        "No uncommitted changes"
+                    }))
+                    .child(
+                        div()
+                            .text_size(t.small_size())
+                            .text_color(c.text_faint)
+                            .child(if demo {
+                                "Simulated file edits appear here with their diffs."
+                            } else {
+                                "Changes clear after you commit."
+                            }),
+                    )
+                    .into_any_element()
+            } else {
+                let count = changes.len();
+                let list =
                     div()
-                        .text_size(t.small_size())
-                        .text_color(c.text_faint)
-                        .child(if demo {
-                            "Simulated file edits appear here with their diffs."
-                        } else {
-                            "Recorded file edits from this session appear here. Other sessions' changes are not included."
-                        }),
-                )
-                .into_any_element()
-        } else {
-            let count = changes.len();
-            let list = div()
-                .id("changed-files")
-                .role(Role::List)
-                .aria_label("Changed files")
-                .flex()
-                .flex_col()
-                .max_h(px(180.0 * t.scale))
-                .overflow_y_scroll()
-                .track_scroll(&self.changes_scroll)
-                .children(
-                    changes
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (path, add, rem, letter))| {
-                            let this = this.clone();
-                            let sel = selected == Some(i);
-                            let badge = match letter {
-                                'A' => c.success,
-                                'D' => c.danger,
-                                _ => c.accent_fill,
-                            };
-                            menu_row(("change", i), sel, cx)
-                                .role(Role::ListItem)
-                                .aria_label(format!("{path}, {add} added, {rem} removed"))
-                                .aria_selected(sel)
-                                .rounded(px(0.0))
-                                .on_click(move |_, _, cx| {
-                                    this.update(cx, |t, cx| {
-                                        t.dispatch(Command::SelectChange(i), cx)
-                                    })
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_none()
-                                        .items_center()
-                                        .justify_center()
-                                        .size(px(18.0 * t.scale.max(1.0)))
-                                        .rounded(px(3.0))
-                                        .bg(badge)
-                                        .text_color(c.accent_text)
-                                        .text_size(t.small_size())
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(letter.to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_ellipsis_start()
-                                        .font_family(t.mono_font())
-                                        .text_size(t.small_size())
-                                        .child(path.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .font_family(t.mono_font())
-                                        .text_size(t.small_size())
-                                        .text_color(c.diff_add_text)
-                                        .child(format!("+{add}")),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .font_family(t.mono_font())
-                                        .text_size(t.small_size())
-                                        .text_color(c.diff_remove_text)
-                                        .child(format!("\u{2212}{rem}")),
-                                )
-                        }),
-                );
-            let files_card = div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .overflow_hidden()
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(c.border_strong)
-                .child(
-                    div()
+                        .id("changed-files")
+                        .role(Role::List)
+                        .aria_label("Changed files")
                         .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .border_b_1()
-                        .border_color(c.border_strong)
-                        .text_size(t.small_size())
-                        .text_color(c.text_muted)
-                        .child(
-                            div()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("Files changed"),
-                        )
-                        .child(format!("{count} file{}", if count == 1 { "" } else { "s" })),
-                )
-                .child(list);
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-                .gap(px(10.0))
-                .p(px(12.0))
-                .child(self.render_diff(cx))
-                .child(files_card)
-                .into_any_element()
-        };
+                        .flex_col()
+                        .max_h(px(180.0 * t.scale))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.changes_scroll)
+                        .children(changes.iter().enumerate().map(
+                            |(i, (path, add, rem, letter))| {
+                                let this = this.clone();
+                                let sel = selected == Some(i);
+                                let badge = match letter {
+                                    'A' => c.success,
+                                    'D' => c.danger,
+                                    _ => c.accent_fill,
+                                };
+                                menu_row(("change", i), sel, cx)
+                                    .role(Role::ListItem)
+                                    .aria_label(format!("{path}, {add} added, {rem} removed"))
+                                    .aria_selected(sel)
+                                    .rounded(px(0.0))
+                                    .on_click(move |_, _, cx| {
+                                        this.update(cx, |t, cx| {
+                                            t.dispatch(Command::SelectChange(i), cx)
+                                        })
+                                    })
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_none()
+                                            .items_center()
+                                            .justify_center()
+                                            .size(px(18.0 * t.scale.max(1.0)))
+                                            .rounded(px(3.0))
+                                            .bg(badge)
+                                            .text_color(c.accent_text)
+                                            .text_size(t.small_size())
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(letter.to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_ellipsis_start()
+                                            .font_family(t.mono_font())
+                                            .text_size(t.small_size())
+                                            .child(path.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .font_family(t.mono_font())
+                                            .text_size(t.small_size())
+                                            .text_color(c.diff_add_text)
+                                            .child(format!("+{add}")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .font_family(t.mono_font())
+                                            .text_size(t.small_size())
+                                            .text_color(c.diff_remove_text)
+                                            .child(format!("\u{2212}{rem}")),
+                                    )
+                            },
+                        ));
+                let files_card = div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .overflow_hidden()
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(c.border_strong)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .border_b_1()
+                            .border_color(c.border_strong)
+                            .text_size(t.small_size())
+                            .text_color(c.text_muted)
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child("Files changed"),
+                            )
+                            .child(format!("{count} file{}", if count == 1 { "" } else { "s" })),
+                    )
+                    .child(list);
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .gap(px(10.0))
+                    .p(px(12.0))
+                    .child(self.render_diff(cx))
+                    .child(files_card)
+                    .into_any_element()
+            };
 
         div()
             .id("inspector")
@@ -568,7 +567,6 @@ fn changes_status(state: &ChangesState, has_changes: bool) -> Option<(&'static s
             "Changes unavailable",
             format!("{reason}\n{previous} Fix the problem, then retry the scan."),
         )),
-        ChangesState::Recorded(detail) => Some(("Recorded session changes", detail.clone())),
         ChangesState::Loading => Some(("Refreshing changes…", previous.into())),
         ChangesState::NotARepository => Some((
             "Not a Git repository",

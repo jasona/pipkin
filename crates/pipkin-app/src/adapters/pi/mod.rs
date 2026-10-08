@@ -60,6 +60,7 @@ const ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often a conversation with a run in flight is polled for its outcome, as a fallback to
 /// the transcript updates that normally trigger the check first.
 const RUN_POLL: Duration = Duration::from_millis(400);
+const CHANGES_POLL: Duration = Duration::from_secs(2);
 /// Messages handled per wakeup before remapping, so a burst becomes one refresh.
 const BATCH: usize = 256;
 /// Waits before each retry of an attach that failed with `internal_error`; at most this many
@@ -131,6 +132,7 @@ enum Msg {
     Changes {
         conversation: ConversationId,
         generation: u64,
+        scanned_through: u64,
         workspace: Workspace,
     },
     BackgroundSettled {
@@ -613,7 +615,8 @@ impl Worker {
         loop {
             // While a run is in flight in the open conversation, wake regularly to ask how it
             // went; otherwise sleep until something happens.
-            let polling = live.has_runs(self);
+            let polling =
+                live.has_runs(self) || live.current.as_ref().is_some_and(|c| c.workspace_ready);
             let first = if polling {
                 match self.rx.recv_timeout(RUN_POLL) {
                     Ok(m) => Some(m),
@@ -654,8 +657,15 @@ impl Worker {
                     Msg::Changes {
                         conversation,
                         generation,
+                        scanned_through,
                         workspace,
-                    } => live.changes_ready(self, conversation, generation, workspace),
+                    } => live.changes_ready(
+                        self,
+                        conversation,
+                        generation,
+                        scanned_through,
+                        workspace,
+                    ),
                     Msg::BackgroundSettled { op, request, kind } => {
                         self.background_settled(op, &request, kind);
                     }
@@ -665,6 +675,12 @@ impl Worker {
             // Settlement is checked after every wakeup that could have changed it: a transcript
             // update, or the poll timer.
             live.poll_runs(self);
+            if let Some(current) = &live.current
+                && current.workspace_ready
+                && Instant::now() >= current.next_changes_scan
+            {
+                live.schedule_changes(self, current.conversation, current.generation);
+            }
         }
     }
 }
@@ -703,9 +719,9 @@ struct Current {
     /// Last scan published for this attachment; unchanged background results do not repaint.
     last_workspace: Option<Workspace>,
     publish_empty_changes: bool,
+    next_changes_scan: Instant,
     /// Raw durable entries retain tool edit evidence even after live-view compaction.
     change_entries: std::collections::BTreeMap<u64, Value>,
-    changes_history_complete: bool,
     /// The oldest entry the live view held last time, to notice a compaction or reset moving it.
     oldest_entry: Option<u64>,
 }
@@ -725,6 +741,7 @@ struct Live {
     /// A workspace scan is running; another is wanted once it ends.
     scanning: bool,
     rescan: Option<(ConversationId, u64)>,
+    changes_bases: HashMap<ConversationId, u64>,
 }
 
 fn server_target(route: &ServerRoute) -> RpcTarget {
@@ -930,6 +947,7 @@ impl Live {
             resubscribes: 0,
             scanning: false,
             rescan: None,
+            changes_bases: HashMap::new(),
         };
         live.refresh_directory();
         Ok(live)
@@ -1763,7 +1781,6 @@ impl Live {
                             current.change_entries.insert(id, entry.clone());
                         }
                     }
-                    current.changes_history_complete |= !more;
                 }
                 let mapped = transcript::map_history_page(&entries);
                 worker.emit(
@@ -1971,8 +1988,8 @@ impl Live {
         }
     }
 
-    /// Collect the open session's recorded tool changes off this thread, one scan at a
-    /// time (a request during a scan asks for one more afterwards). Never read global Git state.
+    /// Collect uncommitted Git changes scoped to the selected session's file mutations,
+    /// off this thread. A clean result retires committed evidence as the session's new base.
     fn schedule_changes(&mut self, worker: &Worker, conversation: ConversationId, generation: u64) {
         let Some(current) = self
             .current
@@ -1985,19 +2002,39 @@ impl Live {
             return;
         }
         let entries: Vec<_> = current.change_entries.values().cloned().collect();
-        let history_complete = current.changes_history_complete;
+        let scanned_through = current
+            .change_entries
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(0);
+        let after = self.changes_bases.get(&conversation).copied().unwrap_or(0);
+        let cwd = current.cwd.clone();
         if self.scanning {
             self.rescan = Some((conversation, generation));
             return;
         }
         self.scanning = true;
         let (conversation, generation) = (current.conversation, current.generation);
+        if let Some(current) = self.current.as_mut() {
+            current.next_changes_scan = Instant::now() + CHANGES_POLL;
+        }
         let tx = worker.tx.clone();
         thread::spawn(move || {
-            let workspace = session_changes::collect(&entries, history_complete);
+            let workspace = match cwd {
+                Some(cwd) => session_changes::collect(Path::new(&cwd), &entries, after),
+                None if session_changes::paths(&entries, after).is_empty() => Workspace::Changes {
+                    files: vec![],
+                    truncated: false,
+                },
+                None => {
+                    Workspace::Unavailable("The engine did not report a project folder.".into())
+                }
+            };
             let _ = tx.send(Msg::Changes {
                 conversation,
                 generation,
+                scanned_through,
                 workspace,
             });
         });
@@ -2008,18 +2045,23 @@ impl Live {
         worker: &Worker,
         conversation: ConversationId,
         generation: u64,
+        scanned_through: u64,
         workspace: Workspace,
     ) {
         self.scanning = false;
         // Only the conversation that is still open may show the result.
         let had_files = self.current.as_ref().is_some_and(|current| {
-            matches!(&current.last_workspace, Some(Workspace::Recorded { files, .. }) if !files.is_empty())
+            matches!(&current.last_workspace, Some(Workspace::Changes { files, .. }) if !files.is_empty())
         });
         let changed = self
             .current
             .as_mut()
             .filter(|c| c.conversation == conversation && c.generation == generation)
             .is_some_and(|current| {
+                if matches!(&workspace, Workspace::Changes { files, truncated: false } if files.is_empty()) {
+                    let base = self.changes_bases.entry(conversation).or_default();
+                    *base = (*base).max(scanned_through);
+                }
                 if current.last_workspace.as_ref() == Some(&workspace) {
                     return false;
                 }
@@ -2028,7 +2070,7 @@ impl Live {
             });
         if changed {
             let kind = match workspace {
-                Workspace::Recorded { files, detail } => {
+                Workspace::Changes { files, .. } => {
                     let explicit = self
                         .current
                         .as_mut()
@@ -2036,15 +2078,11 @@ impl Live {
                     if explicit || had_files || !files.is_empty() {
                         worker.emit(conversation, generation, EventKind::ChangesSynced(files));
                     }
-                    EventKind::ChangesScanState(ChangesState::Recorded(detail))
+                    EventKind::ChangesScanState(ChangesState::Ready)
                 }
-                #[cfg(test)]
-                Workspace::Changes { files, .. } => EventKind::ChangesSynced(files),
-                #[cfg(test)]
                 Workspace::NotARepository => {
                     EventKind::ChangesScanState(ChangesState::NotARepository)
                 }
-                #[cfg(test)]
                 Workspace::Unavailable(reason) => {
                     log::warn!("workspace changes unavailable: {reason}");
                     EventKind::ChangesScanState(ChangesState::Unavailable(reason))
@@ -2226,11 +2264,10 @@ impl Live {
             );
         }
         let mut change_entries = std::collections::BTreeMap::new();
-        let mut changes_history_complete = !has_older;
         if has_older {
             let mut before = oldest_entry;
-            // Bound history retrieval. Missing older evidence is disclosed, never inferred
-            // from today's working tree. Normal transcript paging remains independent.
+            // Bound history retrieval for session file scope. Normal transcript paging
+            // remains independent and can reveal additional file paths.
             for _ in 0..8 {
                 let Ok((entries, more)) = self.history_page(&target, before, HISTORY_PAGE) else {
                     break;
@@ -2245,7 +2282,6 @@ impl Live {
                     }
                 }
                 if !more {
-                    changes_history_complete = true;
                     break;
                 }
                 if next.is_none() || next == before {
@@ -2280,8 +2316,8 @@ impl Live {
             workspace_ready,
             last_workspace: None,
             publish_empty_changes: false,
+            next_changes_scan: Instant::now(),
             change_entries,
-            changes_history_complete,
             oldest_entry,
         });
         self.refresh_subagents(worker);

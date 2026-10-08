@@ -1597,6 +1597,7 @@ fn a_run_that_finished_while_another_session_was_open_settles_in_background() {
     env.backend
         .tx
         .send(Msg::Changes {
+            scanned_through: 0,
             conversation: a,
             generation: 1,
             workspace: Workspace::Changes {
@@ -2049,18 +2050,13 @@ two
     );
     let files = changes(&env);
     let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-    assert_eq!(names, ["new.txt", "notes.txt"], "{files:?}");
-    assert_eq!((files[1].added, files[1].removed), (1, 0));
+    assert_eq!(names, ["notes.txt", "new.txt"], "{files:?}");
+    assert_eq!((files[0].added, files[0].removed), (1, 0));
     assert!(
-        files[0].hunks[0]
+        files[1].hunks[0]
             .lines
             .iter()
-            .all(|l| l.kind == pipkin_core::DiffKind::Context)
-    );
-    assert!(
-        files[0].hunks[0]
-            .header
-            .contains("previous contents unavailable")
+            .all(|l| l.kind == pipkin_core::DiffKind::Add)
     );
     // A transcript change that finishes no tool and ends no run does not rescan.
     let _ = ItemKind::Notice {
@@ -2070,24 +2066,34 @@ two
 }
 
 #[test]
-fn changing_sessions_keeps_recorded_changes_separate_even_in_the_same_folder() {
+fn changing_sessions_keeps_uncommitted_changes_scoped_to_session_files() {
     let repo = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(repo.path().join("a.txt"), "session A\n").unwrap();
+    std::fs::write(repo.path().join("b.txt"), "session B\n").unwrap();
     std::fs::write(
-        repo.path().join("shared.txt"),
-        "unrelated later workspace edit",
+        repo.path().join("unrelated.txt"),
+        "unrelated workspace edit",
     )
     .unwrap();
-    let recorded = |text: &str| {
+    let recorded = |path: &str| {
         json!({ "conversation": {"id": 1}, "docs": {}, "entries": [
             {"id": 1, "kind": "pi.assistant", "model": [{"role": "assistant", "content": [
-                {"type": "toolCall", "id": "c", "name": "write", "arguments": {"path": "shared.txt", "content": text}}
+                {"type": "toolCall", "id": "c", "name": "write", "arguments": {"path": path, "content": "written"}}
             ]}]},
             {"id": 2, "kind": "pi.tool-result", "model": [{"role": "toolResult", "toolCallId": "c", "toolName": "write", "isError": false}]}
         ]})
     };
     let (pi, _, _) = agent_mock(
         &[],
-        vec![("a", recorded("session A")), ("b", recorded("session B"))],
+        vec![("a", recorded("a.txt")), ("b", recorded("b.txt"))],
     );
     pi.publish("pi.session-directory", vec![Op::Replace(json!({"revision": 2, "sessions": [
         {"serverId": SERVER_ID, "sessionId": "a", "createdAt": 10, "cwd": repo.path().to_str().unwrap()},
@@ -2116,9 +2122,53 @@ fn changing_sessions_keeps_recorded_changes_separate_even_in_the_same_folder() {
             unreachable!()
         };
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "shared.txt");
+        assert_eq!(
+            files[0].path,
+            if conversation == a { "a.txt" } else { "b.txt" }
+        );
         assert_eq!(files[0].hunks[0].lines[0].text, expected);
     }
+    // An external commit, with no transcript update, clears the selected session automatically.
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false"
+                ])
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["add", "a.txt"]);
+    git(&["commit", "-q", "-m", "session A"]);
+    let cleared = event_where(
+        &env,
+        |kind| matches!(kind, EventKind::ChangesSynced(files) if files.is_empty()),
+    );
+    assert_eq!((cleared.conversation, cleared.generation), (a, 2));
+    // Old committed calls cannot claim a later edit to the same file as new session work.
+    std::fs::write(repo.path().join("a.txt"), "unrelated later edit\n").unwrap();
+    env.open(b, 2);
+    event_where(
+        &env,
+        |kind| matches!(kind, EventKind::ChangesSynced(files) if !files.is_empty()),
+    );
+    env.open(a, 3);
+    event_where(&env, |kind| matches!(kind, EventKind::ThinkingState { .. }));
+    env.backend.request(BackendRequest::RefreshChanges {
+        conversation: a,
+        generation: 3,
+    });
+    let refreshed = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    assert!(matches!(refreshed.kind, EventKind::ChangesSynced(files) if files.is_empty()));
 }
 
 // -------------------------------------------------------------------- steer, queue, stop
@@ -2454,7 +2504,17 @@ fn view_of(entries: Vec<Value>) -> Value {
 }
 
 #[test]
-fn session_changes_recover_recorded_edits_from_before_compaction() {
+fn session_changes_recover_file_scope_from_before_compaction() {
+    let repo = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(repo.path().join("old.rs"), "after\n").unwrap();
     let all = vec![
         json!({"id": 1, "kind": "pi.assistant", "model": [{"role": "assistant", "content": [
             {"type": "toolCall", "id": "c", "name": "edit", "arguments": {"path": "old.rs", "oldText": "before", "newText": "after"}}
@@ -2463,6 +2523,7 @@ fn session_changes_recover_recorded_edits_from_before_compaction() {
         user_entry(3, "continue after compaction"),
     ];
     let (pi, _) = history_mock(&[("s", 1)], view_of(vec![all[2].clone()]), all);
+    pi.publish("pi.session-directory", vec![Op::Replace(json!({"revision": 2, "sessions": [{"serverId": SERVER_ID, "sessionId": "s", "createdAt": 1, "cwd": repo.path().to_str().unwrap()}]}))]);
     let env = start(pi, true);
     let conv = env.conversation(0);
     env.open(conv, 1);
@@ -2472,8 +2533,7 @@ fn session_changes_recover_recorded_edits_from_before_compaction() {
     };
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "old.rs");
-    assert_eq!(files[0].hunks[0].lines[0].text, "before");
-    assert_eq!(files[0].hunks[0].lines[1].text, "after");
+    assert_eq!(files[0].hunks[0].lines[0].text, "after");
 }
 
 #[test]

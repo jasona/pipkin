@@ -77,13 +77,12 @@ real first reply on a clean supported desktop remains an open qualification gate
   remain. It is not undo. A raced successful completion may remain completed.
 - **Steer/queue** are engine-authoritative. If settlement is unknown, wait for reconciliation rather than copying
   and resending the prompt. Timeout does not prove a tool stopped.
-- **Changes** shows recorded `edit`/`write` operations from the selected session, not the project's global Git
-  working tree. Switching sessions restores that session's evidence, even when both sessions edited the same file;
-  later changes from your editor or other sessions do not rewrite it. Edit patches/replacements are shown in execution
-  order, not combined into a net diff. Writes show recorded content, without claiming it was an entirely new file.
-  The coverage banner explains missing history, shell/custom-tool changes without recorded file diffs, and unavailable
-  previous contents. Older evidence is loaded from bounded session history; transcript paging can reveal more.
-  Refresh only re-reads session evidence—it does not send agent input or scan unrelated workspace changes.
+- **Changes** shows the current uncommitted Git diff for files associated with the selected session's successful
+  `edit`/`write` calls. It includes staged, unstaged, and untracked changes—not a history of tool operations.
+  Committed or reverted changes disappear, and subsequent edits compare against the latest HEAD. A lightweight
+  background scan detects external commits too. Session file scope excludes unrelated project files; if multiple
+  tools edit the same session-owned file, its diff reflects that file's current combined uncommitted state.
+  Refresh does not send agent input. Earlier session file paths are recovered from bounded engine history.
 - **Search** covers locally cached history, not all engine history. Older material may not yet be cached.
 - **`@` paths** are project-scoped references inserted into the text. Selecting one does **not** attach file contents.
   Use the attachment picker/drag-and-drop when you want an attachment; missing/deleted paths cannot become files by

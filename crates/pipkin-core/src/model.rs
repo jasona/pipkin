@@ -196,8 +196,6 @@ pub enum ChangesState {
     Unscanned,
     Loading,
     Ready,
-    /// Session tool evidence, with an explicit description of its coverage.
-    Recorded(String),
     NotARepository,
     Unavailable(String),
 }

@@ -1,9 +1,6 @@
-//! Bounded unified-diff parsing and change-collection results.
-//!
-//! The legacy global Git collector is retained only for parser/collector regression tests.
-//! Production Changes uses session tool evidence, never this directory-wide scan.
+//! Read-only, bounded Git diffs. Session scans use literal file pathspecs so unrelated
+//! project files are not collected. Both staged and unstaged changes are relative to HEAD.
 
-#[cfg(test)]
 use std::{
     io::Read,
     path::Path,
@@ -14,35 +11,22 @@ use std::{
 use pipkin_core::{DiffKind, DiffLine, FileChange, Hunk};
 
 /// Total bytes of diff text read from `git diff`; more is cut and flagged.
-#[cfg(test)]
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 /// Untracked files shown, and how much of each is read.
-#[cfg(test)]
 const MAX_UNTRACKED_FILES: usize = 50;
-#[cfg(test)]
 const MAX_UNTRACKED_BYTES: usize = 64 * 1024;
 /// Lines kept per file before the rest is summarized.
 const MAX_LINES_PER_FILE: usize = 2000;
-#[cfg(test)]
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The well-known hash of Git's empty tree, for a repository with no commits yet.
-#[cfg(test)]
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Workspace {
-    /// Historical tool evidence belonging to one session, not today's repository diff.
-    Recorded {
-        files: Vec<FileChange>,
-        detail: String,
-    },
     /// The directory is not inside a Git repository (or Git is not installed).
-    #[cfg(test)]
     NotARepository,
     /// Git ran but could not answer.
-    #[cfg(test)]
     Unavailable(String),
-    #[cfg(test)]
     Changes {
         files: Vec<FileChange>,
         /// Output was cut to stay bounded.
@@ -52,7 +36,6 @@ pub enum Workspace {
 
 /// Run `git` with `args` in `dir`; stdout up to `limit` bytes. `Err` on spawn failure, timeout
 /// or a non-zero exit (with stderr's first line).
-#[cfg(test)]
 fn git(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), String> {
     let mut child = Command::new("git")
         .args(args)
@@ -115,6 +98,21 @@ fn git(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), Strin
 /// The workspace's current changes: staged and unstaged edits against HEAD, plus untracked files.
 #[cfg(test)]
 pub fn collect(dir: &Path) -> Workspace {
+    collect_paths(dir, None)
+}
+
+/// Only uncommitted changes to files associated with the selected session.
+pub fn collect_scoped(dir: &Path, paths: &[String]) -> Workspace {
+    if paths.is_empty() {
+        return Workspace::Changes {
+            files: vec![],
+            truncated: false,
+        };
+    }
+    collect_paths(dir, Some(paths))
+}
+
+fn collect_paths(dir: &Path, paths: Option<&[String]>) -> Workspace {
     match git(dir, &["rev-parse", "--is-inside-work-tree"], 64) {
         Ok((out, _)) if out.starts_with(b"true") => {}
         Ok(_) => return Workspace::NotARepository,
@@ -126,41 +124,50 @@ pub fn collect(dir: &Path) -> Workspace {
     } else {
         EMPTY_TREE
     };
-    let diff = git(
-        dir,
-        &[
-            // User configuration must not change the shape of the output we parse: pin the path
-            // prefixes (mnemonic prefixes would give `w/` and `i/`), quoting and rename detection.
-            "-c",
-            "core.quotepath=false",
-            "-c",
-            "diff.mnemonicPrefix=false",
-            "-c",
-            "diff.noprefix=false",
-            "-c",
-            "diff.renames=true",
-            "diff",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--no-color",
-            "--no-ext-diff",
-            "-M",
-            "-U3",
-            base,
-            "--",
-        ],
-        MAX_DIFF_BYTES,
-    );
+    let mut diff_args = vec![
+        "--literal-pathspecs",
+        // User configuration must not change the shape of the output we parse: pin the path
+        // prefixes (mnemonic prefixes would give `w/` and `i/`), quoting and rename detection.
+        "-c",
+        "core.quotepath=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "-c",
+        "diff.noprefix=false",
+        "-c",
+        "diff.renames=true",
+        "diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--no-color",
+        "--no-ext-diff",
+        "--relative",
+        "-M",
+        "-U3",
+        base,
+        "--",
+    ];
+    if let Some(paths) = paths {
+        diff_args.extend(paths.iter().map(String::as_str));
+    }
+    let diff = git(dir, &diff_args, MAX_DIFF_BYTES);
     let (text, mut truncated) = match diff {
         Ok(v) => v,
         Err(e) => return Workspace::Unavailable(e),
     };
     let mut files = parse_diff(&String::from_utf8_lossy(&text));
-    match git(
-        dir,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-        MAX_DIFF_BYTES,
-    ) {
+    let mut listing_args = vec![
+        "--literal-pathspecs",
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+    ];
+    if let Some(paths) = paths {
+        listing_args.extend(paths.iter().map(String::as_str));
+    }
+    match git(dir, &listing_args, MAX_DIFF_BYTES) {
         Ok((listing, cut)) => {
             truncated |= cut;
             let mut names: Vec<String> = listing
@@ -183,7 +190,6 @@ pub fn collect(dir: &Path) -> Workspace {
 }
 
 /// An untracked file shown as an all-added change, bounded and never read if it is not a plain file.
-#[cfg(test)]
 fn untracked_file(dir: &Path, name: &str) -> FileChange {
     let path = dir.join(name);
     // A symlink or special file is listed but never followed or read.
@@ -233,7 +239,6 @@ fn untracked_file(dir: &Path, name: &str) -> FileChange {
     }
 }
 
-#[cfg(test)]
 fn marker(name: &str, why: &str) -> FileChange {
     FileChange {
         path: name.to_owned(),
