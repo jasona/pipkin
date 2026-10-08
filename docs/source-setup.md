@@ -125,13 +125,18 @@ Native Apple Silicon run [37709798124](https://github.com/last-refuge/pipkin/act
 on clean `5a873fa3646599613f9333d12fe8bd74949a826f` passed the actual one-command source build: private
 Node/npm, patched engine, native binary and **offline handshake in 2.0s**. The subsequent complete ZIP/DMG
 signature and copy-install/runtime checks passed (1.8s / 1.7s probes). This is native automated evidence,
-not Finder interaction or a real paid provider/subagent invocation. The follow-up CI source-install gate also
-uses a disposable HOME, not the runner's regular Applications folder.
+not Finder interaction or a real paid provider/subagent invocation. Follow-up native run [37711156610](https://github.com/last-refuge/pipkin/actions/runs/37711156610)
+on clean `d03ffe812cbcbcd60a141614d556ad6386bccdf7` also passed **`scripts/setup.sh --install`**:
+private build/probe, complete app-only package (no DMG dependency), and actual per-user install to
+`/private/tmp/pipkin-ci/source-home/Applications/Pipkin.app`, with signature verification after copying.
+The source and app-only probes took 2.9s and 2.0s. The HOME was disposable, not the runner's regular
+Applications folder. Evidence: `/tmp/pipkin-source-setup-macos-install-full.log`.
 
 [Qualified ZIP/DMG artifact](https://github.com/last-refuge/pipkin/actions/runs/37709798124/artifacts/11521547936):
 `pipkin-macos-ARM64-5a873fa3646599613f9333d12fe8bd74949a826f`. DMG SHA-256:
 `d9c3ff0743246c29686be9051017c83db45f6e0eb0daf605332fe1249a78e80c`. Native log:
-`/tmp/pipkin-source-setup-macos-full.log`. Mac local source installation/Finder interaction and unqualified
-distro desktops still require their own observation; notice retention is not legal/security clearance.
+`/tmp/pipkin-source-setup-macos-full.log`. Owner-local Finder interaction, actual provider/subagent invocation and unqualified distro desktops still
+require their own observation; the automated native source-install path is qualified, not every desktop
+experience. Notice retention is not legal/security clearance.
 
 See [getting started](getting-started.md), [support/privacy](support.md), and [subagent limitations](../packaging/pi-subagents/README.md).
