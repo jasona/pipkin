@@ -73,7 +73,14 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/test-source-setup.py
-          scripts/setup.sh 2>&1 | tee qualification-logs/source-setup.log
+          # Real per-user source install, but only into a disposable HOME. Keep Rust's
+          # public toolchain/cache locations explicit so changing HOME cannot hide rustup.
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          source_home="$TMPDIR/source-home"
+          mkdir -p "$source_home"
+          HOME="$source_home" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" scripts/setup.sh --install 2>&1 | tee qualification-logs/source-setup.log
+          codesign --verify --deep --strict "$source_home/Applications/Pipkin.app"
       - name: Build actual native app and retain dependency notices
         run: |
           set -o pipefail

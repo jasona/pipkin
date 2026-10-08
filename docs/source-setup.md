@@ -121,7 +121,17 @@ profile, global Node/npm or desktop configuration was modified. Working-delta lo
 Fixtures cover supported/rejected targets, unknown output refusal, private npm versus minimal runtime,
 subagent omission refusal, immutable rebuilds and failed-probe preservation of the last good build. Mac bundle
 fixtures verify the app-only install path skips DMG tooling but retains signing/extracted-app probe requirements.
-Mac CI now runs the actual one-command source build; this is a gate, not yet a recorded native success. Clean
-Mac source install/Finder interaction and unqualified distro desktops still require actual observation.
+Native Apple Silicon run [37709798124](https://github.com/last-refuge/pipkin/actions/runs/37709798124)
+on clean `5a873fa3646599613f9333d12fe8bd74949a826f` passed the actual one-command source build: private
+Node/npm, patched engine, native binary and **offline handshake in 2.0s**. The subsequent complete ZIP/DMG
+signature and copy-install/runtime checks passed (1.8s / 1.7s probes). This is native automated evidence,
+not Finder interaction or a real paid provider/subagent invocation. The follow-up CI source-install gate also
+uses a disposable HOME, not the runner's regular Applications folder.
+
+[Qualified ZIP/DMG artifact](https://github.com/last-refuge/pipkin/actions/runs/37709798124/artifacts/11521547936):
+`pipkin-macos-ARM64-5a873fa3646599613f9333d12fe8bd74949a826f`. DMG SHA-256:
+`d9c3ff0743246c29686be9051017c83db45f6e0eb0daf605332fe1249a78e80c`. Native log:
+`/tmp/pipkin-source-setup-macos-full.log`. Mac local source installation/Finder interaction and unqualified
+distro desktops still require their own observation; notice retention is not legal/security clearance.
 
 See [getting started](getting-started.md), [support/privacy](support.md), and [subagent limitations](../packaging/pi-subagents/README.md).
