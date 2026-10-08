@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package/verify a self-contained ad-hoc signed macOS bundle; no Developer ID/notarization."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,10 @@ import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.dont_write_bytecode = True  # Importing the layout helper must not dirty the checkout.
+_layout_spec = importlib.util.spec_from_file_location('macos_dmg_layout', ROOT / 'scripts/macos-dmg-layout.py')
+dmg_layout = importlib.util.module_from_spec(_layout_spec)
+_layout_spec.loader.exec_module(dmg_layout)
 
 
 def sha256(path):
@@ -133,21 +138,31 @@ def main():
         print(f'local macOS app: {bundle}; verified ZIP {archive.name}')
         return
     # Build the drag-to-Applications image from the same sealed bundle, before removing it.
-    # The source folder must contain only the app and shortcut: never package build reports or
-    # temporary verification data into the volume.
+    # Include only the app, shortcut, and hidden layout assets: never package build reports
+    # or temporary verification data into the volume.
     dmg = out / f'pipkin-{version}-{target}-experimental.dmg'
-    with tempfile.TemporaryDirectory(prefix='dmg-', dir=out) as scratch:
+    layout_path = ROOT / 'packaging/dmg-layout.json'
+    background = ROOT / 'packaging/dmg-background.tiff'
+    dmg_layout.read_layout(layout_path)
+    if not background.is_file():
+        raise RuntimeError('DMG instructional background is missing')
+    with dmg_layout.private_tools(ROOT / 'packaging/dmg-layout-tools.json') as tools, \
+            tempfile.TemporaryDirectory(prefix='dmg-', dir=out) as scratch:
         scratch = Path(scratch)
         payload = scratch / 'payload'
         payload.mkdir()
         shutil.copytree(bundle, payload / 'Pipkin.app', symlinks=True)
         (payload / 'Applications').symlink_to('/Applications', target_is_directory=True)
+        # Include artwork in srcfolder sizing before image creation; a minimal image
+        # sized only for the app might not leave enough free space for the TIFF.
+        (payload / '.background').mkdir()
+        shutil.copy2(background, payload / '.background/install.tiff')
         # Finder's mounted-volume icon is a root-level .VolumeIcon.icns plus the volume's
         # custom-icon Finder flag. Set it on a writable image, then convert to the read-only
         # distributable; do not modify the already signed app or rely on upload xattrs.
         editable = scratch / 'editable.dmg'
         subprocess.run(['hdiutil', 'create', '-volname', 'Pipkin', '-srcfolder', str(payload),
-                        '-format', 'UDRW', '-ov', str(editable)], check=True)
+                        '-format', 'UDRW', '-fs', 'HFS+', '-ov', str(editable)], check=True)
         writable = scratch / 'writable'
         writable.mkdir()
         try:
@@ -160,6 +175,9 @@ def main():
         try:
             shutil.copy2(ROOT / 'packaging/pipkin.icns', writable / '.VolumeIcon.icns')
             subprocess.run(['xcrun', 'SetFile', '-a', 'C', str(writable)], check=True)
+            dmg_layout.run_layout(tools, 'write', writable, layout_path, background)
+            dmg_layout.run_layout(tools, 'verify', writable, layout_path, background)
+            dmg_layout.enable_auto_open(writable)
         finally:
             subprocess.run(['hdiutil', 'detach', str(writable)], check=True)
         subprocess.run(['hdiutil', 'convert', str(editable), '-format', 'UDZO', '-o',
@@ -175,6 +193,7 @@ def main():
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             raise
         try:
+            dmg_layout.run_layout(tools, 'verify', mount, layout_path, background)
             if sha256(mount / '.VolumeIcon.icns') != sha256(ROOT / 'packaging/pipkin.icns'):
                 raise RuntimeError('mounted DMG volume icon does not match Pipkin')
             flags = subprocess.check_output(['xcrun', 'GetFileInfo', '-a', str(mount)], text=True)

@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "canvas": [800, 520],
+  "windowOrigin": [100, 100],
+  "iconSize": 128,
+  "textSize": 14,
+  "icons": {
+    "Pipkin.app": [260, 322],
+    "Applications": [580, 322]
+  },
+  "background": ".background/install.tiff"
+}

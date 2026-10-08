@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bundle policy fixture tests, not a native macOS compilation/launch claim."""
 import importlib.util
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -25,6 +26,10 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
              'target/release/pipkin': 'fixture binary', 'LICENSE': 'MIT fixture',
              'SECURITY.md': 'security fixture', 'assets/PROVENANCE.md': 'asset fixture',
              'packaging/pipkin.icns': 'fixture app icon',
+             'packaging/dmg-background.tiff': 'fixture instructional background',
+             'packaging/dmg-layout.json': json.dumps({'canvas': [800, 520], 'windowOrigin': [100, 100],
+                 'iconSize': 128, 'textSize': 14, 'icons': {'Pipkin.app': [260, 322], 'Applications': [580, 322]},
+                 'background': '.background/install.tiff'}),
              'assets/fonts/example-OFL.txt': 'font fixture',
              'docs/macos-first-pass.md': 'experimental instructions',
              'packaging/pi-engine-revision': 'a' * 40,
@@ -46,6 +51,8 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             return 'b' * 40 + '\n'
         if args[:2] == ['git', 'status']:
             return b''
+        if args == ['/usr/sbin/bless', '--help']:
+            return 'fixture: unsupported open-folder metadata option'
         if args[0] == 'otool':
             return '/private/fixture/executable:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n'
         if args[:3] == ['xcrun', 'GetFileInfo', '-a']:
@@ -64,6 +71,37 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
     corrupt_volume_icon = False
     hide_volume_flag = False
     fail_setfile = False
+    corrupt_background = False
+    missing_background = False
+    fail_layout_write = False
+    missing_metadata = False
+    corrupt_metadata = False
+    tools_calls = []
+
+    @contextmanager
+    def tools_fixture(manifest):
+        tools_calls.append(manifest)
+        with tempfile.TemporaryDirectory() as tools:
+            yield Path(tools)
+
+    def layout_fixture(tools, action, mount, layout, source):
+        # Integration fixture only. Real binary DS_Store/alias semantics are tested
+        # separately by test-macos-dmg-layout.py against the pinned wheels.
+        assert Path(tools).is_dir()
+        mount = Path(mount)
+        if action == 'write':
+            if fail_layout_write:
+                raise RuntimeError('fixture layout write failure')
+            (mount / '.background').mkdir(exist_ok=True)
+            shutil.copy2(source, mount / '.background/install.tiff')
+            (mount / '.DS_Store').write_text(Path(layout).read_text())
+        elif action == 'verify':
+            if not (mount / '.DS_Store').is_file() or (mount / '.DS_Store').read_text() != Path(layout).read_text():
+                raise RuntimeError('mounted DMG Finder metadata missing or invalid')
+            if not (mount / '.background/install.tiff').is_file() or module.sha256(mount / '.background/install.tiff') != module.sha256(source):
+                raise RuntimeError('mounted DMG background checksum mismatch')
+        else:
+            raise AssertionError(action)
 
     def seal(contents):
         return {str(p.relative_to(contents)): module.sha256(p) for p in contents.rglob('*')
@@ -112,9 +150,10 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
                 (Path(args[4]) / 'Pipkin.app/Contents/Resources/README.md').write_text('tampered resource')
         elif args[:2] == ['hdiutil', 'create']:
             assert args[2:5] == ['-volname', 'Pipkin', '-srcfolder']
-            assert args[6:9] == ['-format', 'UDRW', '-ov']
+            assert args[6:11] == ['-format', 'UDRW', '-fs', 'HFS+', '-ov']
             payload = Path(args[5])
-            assert sorted(p.name for p in payload.iterdir()) == ['Applications', 'Pipkin.app']
+            assert sorted(p.name for p in payload.iterdir()) == ['.background', 'Applications', 'Pipkin.app']
+            assert module.sha256(payload / '.background/install.tiff') == module.sha256(root / 'packaging/dmg-background.tiff')
             assert (payload / 'Applications').is_symlink()
             assert (payload / 'Applications').readlink() == Path('/Applications')
             dmg_payload = payload
@@ -134,9 +173,20 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             shutil.copytree(dmg_payload / 'Pipkin.app', mount / 'Pipkin.app', symlinks=True)
             (mount / 'Applications').symlink_to('/Applications', target_is_directory=True)
             if writable:
+                shutil.copytree(dmg_payload / '.background', mount / '.background')
                 image_state['writable'] = mount
             else:
                 shutil.copy2(image_state['writable'] / '.VolumeIcon.icns', mount / '.VolumeIcon.icns')
+                shutil.copytree(image_state['writable'] / '.background', mount / '.background')
+                shutil.copy2(image_state['writable'] / '.DS_Store', mount / '.DS_Store')
+                if corrupt_background:
+                    (mount / '.background/install.tiff').write_text('tampered background')
+                if missing_background:
+                    (mount / '.background/install.tiff').unlink()
+                if missing_metadata:
+                    (mount / '.DS_Store').unlink()
+                if corrupt_metadata:
+                    (mount / '.DS_Store').write_text('tampered settings')
                 if corrupt_volume_icon:
                     (mount / '.VolumeIcon.icns').write_text('tampered volume icon')
             if corrupt_dmg and not writable:
@@ -168,7 +218,7 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         else:
             raise AssertionError(args)
 
-    with patch.object(module, 'ROOT', root), patch.object(module.sys, 'platform', 'darwin'), patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin']), patch.object(module.subprocess, 'check_output', side_effect=output), patch.object(module.subprocess, 'run', side_effect=command):
+    with patch.object(module, 'ROOT', root), patch.object(module.sys, 'platform', 'darwin'), patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin']), patch.object(module.subprocess, 'check_output', side_effect=output), patch.object(module.subprocess, 'run', side_effect=command), patch.object(module.dmg_layout, 'private_tools', side_effect=tools_fixture), patch.object(module.dmg_layout, 'run_layout', side_effect=layout_fixture):
         module.main()
         out = root / 'dist/macos'
         info = json.loads((out / 'build-info.json').read_text())
@@ -197,14 +247,39 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
         except RuntimeError as error:
             assert 'socket-path limit' in str(error)
         before = len(calls)
-        with patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin', '--app-only']):
+        tools_before = len(tools_calls)
+        with patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin', '--app-only']), \
+                patch.object(module.dmg_layout, 'read_layout', side_effect=AssertionError('app-only read DMG settings')):
             module.main()
         assert (out / 'Pipkin.app').exists()
         assert not list(out.glob('*.dmg'))
-        assert not any(args[0] == 'hdiutil' for args in calls[before:])
+        assert len(tools_calls) == tools_before  # No DMG tools fetch/settings for app-only.
+        assert not any(args[0] in ('hdiutil', 'xcrun', '/usr/sbin/bless') for args in calls[before:])
         assert sum('--probe' in args for args in calls[before:]) == 1
         assert sum(args[:2] == ['codesign', '--verify'] for args in calls[before:]) == 3
         module.main()  # An identified prior output can be replaced.
+        for failure in ('corrupt_background', 'missing_background', 'missing_metadata', 'corrupt_metadata'):
+            globals()[failure] = True
+            before_detach = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+            try:
+                module.main()
+                raise AssertionError('tampered/missing DMG layout accepted')
+            except RuntimeError as error:
+                assert 'background' in str(error) or 'Finder metadata' in str(error)
+                assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before_detach + 2
+                assert not (out / 'SHA256SUMS').exists()
+            finally:
+                globals()[failure] = False
+        fail_layout_write = True
+        before_detach = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
+        try:
+            module.main()
+            raise AssertionError('failed layout write accepted')
+        except RuntimeError as error:
+            assert 'layout write failure' in str(error)
+            assert sum(args[:2] == ['hdiutil', 'detach'] for args in calls) == before_detach + 1
+            assert not (out / 'SHA256SUMS').exists()
+        fail_layout_write = False
         corrupt_dmg = True
         before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)
         try:

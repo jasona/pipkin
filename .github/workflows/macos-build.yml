@@ -39,6 +39,12 @@ jobs:
           uname -a > qualification-logs/runner.txt
           rustc -vV > qualification-logs/rustc.txt
           xcodebuild -version > qualification-logs/xcode.txt
+      - name: Native Retina background decoder and Finder layout contracts
+        run: |
+          set -o pipefail
+          python3 scripts/test-dmg-background.py 2>&1 | tee qualification-logs/dmg-background.log
+          python3 scripts/test-macos-dmg-layout.py 2>&1 | tee qualification-logs/dmg-layout.log
+          python3 scripts/test-package-macos.py 2>&1 | tee qualification-logs/package-fixtures.log
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.23.3"
