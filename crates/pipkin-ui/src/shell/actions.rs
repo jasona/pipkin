@@ -8,6 +8,7 @@ actions!(
         OpenProject,
         ToggleNav,
         ToggleInspector,
+        ShowSubagents,
         FocusComposer,
         FocusTranscript,
         OpenPreferences,

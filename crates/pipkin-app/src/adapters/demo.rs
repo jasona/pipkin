@@ -94,6 +94,7 @@ impl DemoBackend {
             attempts: HashMap::new(),
             seen_ops: HashSet::new(),
             scripts: HashMap::new(),
+            subagent_sessions: HashMap::new(),
         };
         std::thread::Builder::new()
             .name("pi-demo-backend".into())
@@ -107,7 +108,15 @@ impl DemoBackend {
     }
 
     pub fn bootstrap(&self) -> Bootstrap {
-        self.fixtures.bootstrap()
+        let mut bootstrap = self.fixtures.bootstrap();
+        if self.scenario() == "subagents" {
+            for (id, _, title, _) in &mut bootstrap.conversations {
+                if *id == super::fixtures::STORY_CONVERSATION {
+                    *title = "Demo subagents · simulated counters".into();
+                }
+            }
+        }
+        bootstrap
     }
 
     /// Scenario that will answer the next Submit.
@@ -296,6 +305,9 @@ struct Worker {
     attempts: HashMap<ConversationId, usize>,
     seen_ops: HashSet<(ConversationId, OperationId)>,
     scripts: HashMap<String, Vec<Vec<Step>>>,
+    /// Only explicitly opened subagent fixtures may answer child requests. The generation
+    /// is the attachment identity, not a real-mode or engine-evidence override.
+    subagent_sessions: HashMap<ConversationId, (u64, bool)>,
 }
 
 impl Worker {
@@ -370,7 +382,16 @@ impl Worker {
                 conversation,
                 generation,
             } => {
-                let (items, has_older, changes) = self.fixtures.open(conversation);
+                let simulated = *self.shared.scenario.lock().unwrap() == "subagents"
+                    && conversation == super::fixtures::STORY_CONVERSATION;
+                self.subagent_sessions.remove(&conversation);
+                let (items, has_older, changes) = if simulated {
+                    self.subagent_sessions
+                        .insert(conversation, (generation, true));
+                    (demo_parent_items(self.fixtures.base), false, Vec::new())
+                } else {
+                    self.fixtures.open(conversation)
+                };
                 self.ctx.emit(
                     conversation,
                     generation,
@@ -381,13 +402,76 @@ impl Worker {
                         changes,
                     },
                 );
+                if simulated {
+                    self.ctx.emit(
+                        conversation,
+                        generation,
+                        None,
+                        EventKind::SubagentsSynced {
+                            enabled: true,
+                            children: demo_subagent_directory(),
+                        },
+                    );
+                }
+            }
+            BackendRequest::OpenSubagent {
+                conversation,
+                generation,
+                child,
+            } => {
+                let attached = self
+                    .subagent_sessions
+                    .get(&conversation)
+                    .is_some_and(|(current, _)| *current == generation);
+                let kind = if attached && (1..=3).contains(&child) {
+                    EventKind::SubagentView {
+                        child,
+                        items: demo_child_items(child, self.fixtures.base),
+                        // These are frozen snapshots, not a live child subscription.
+                        live: false,
+                    }
+                } else {
+                    EventKind::SubagentViewFailed {
+                        child,
+                        reason: "Demo child snapshot unavailable for this attachment.".into(),
+                    }
+                };
+                self.ctx.emit(conversation, generation, None, kind);
+            }
+            BackendRequest::SetSubagentsEnabled {
+                conversation,
+                generation,
+                enabled,
+            } => {
+                if let Some((current, setting)) = self.subagent_sessions.get_mut(&conversation)
+                    && *current == generation
+                {
+                    *setting = enabled;
+                    self.ctx.emit(
+                        conversation,
+                        generation,
+                        None,
+                        EventKind::SubagentsSynced {
+                            enabled,
+                            children: demo_subagent_directory(),
+                        },
+                    );
+                }
             }
             BackendRequest::LoadOlder {
                 conversation,
                 generation,
                 before,
             } => {
-                let (items, has_older) = self.fixtures.older(conversation, before);
+                let (items, has_older) = if self
+                    .subagent_sessions
+                    .get(&conversation)
+                    .is_some_and(|(current, _)| *current == generation)
+                {
+                    (Vec::new(), false)
+                } else {
+                    self.fixtures.older(conversation, before)
+                };
                 self.ctx.emit(
                     conversation,
                     generation,
@@ -438,10 +522,8 @@ impl Worker {
                     ended: false,
                 });
             }
-            // Real-mode requests: the demo's core never issues them.
+            // Unsupported real-mode requests never perform any work in the demo.
             BackendRequest::Queue { .. }
-            | BackendRequest::OpenSubagent { .. }
-            | BackendRequest::SetSubagentsEnabled { .. }
             | BackendRequest::RemoveSignIn(_)
             | BackendRequest::StartSignIn(_)
             | BackendRequest::ReuseSignIn(_)
@@ -536,6 +618,94 @@ impl Worker {
     }
 }
 
+/// Synthetic backend-owned directory. IDs are local to each demo parent attachment;
+/// no real call IDs, usage ledger, tool results or execution evidence are fabricated.
+fn demo_subagent_directory() -> Vec<SubagentInfo> {
+    [
+        (1, "Counter A", "running"),
+        (2, "Counter B", "done"),
+        (3, "Counter C", "failed"),
+    ]
+    .into_iter()
+    .map(|(id, label, status)| SubagentInfo {
+        id,
+        task_id: id,
+        call_id: format!("demo-simulated-counter-{id}"),
+        task: format!("{label} · simulated: count from 1 to 5"),
+        status: status.into(),
+    })
+    .collect()
+}
+
+fn demo_item(id: u64, at: i64, kind: ItemKind) -> TranscriptItem {
+    TranscriptItem {
+        id: ItemId(id),
+        at,
+        kind,
+    }
+}
+
+fn demo_parent_items(at: i64) -> Vec<TranscriptItem> {
+    vec![
+        demo_item(100_001, at - 60, ItemKind::User {
+            text: "Show the simulated counter task snapshots for visual testing.".into(),
+            attachments: Vec::new(), delivery: Delivery::Sent, steer: false,
+        }),
+        demo_item(100_002, at, ItemKind::Assistant {
+            text: "Demo · simulated agent\n\nVisual-only synthetic directory: Counter A running, Counter B completed, Counter C failed. Select a task to inspect its frozen child snapshot. Nothing was executed and no provider was contacted.".into(),
+            streaming: false,
+        }),
+    ]
+}
+
+/// Small plain-text payloads through the normal child-view event contract. Core prepares
+/// the bounded SubagentPreview outside rendering. Even the running row is deliberately frozen.
+fn demo_child_items(child: u64, at: i64) -> Vec<TranscriptItem> {
+    let (label, text) = match child {
+        1 => (
+            "Counter A",
+            "Synthetic running snapshot: 1, 2, 3.\nPaused here for visual testing; no background counter is executing.",
+        ),
+        2 => (
+            "Counter B",
+            "Synthetic completed snapshot: 1, 2, 3, 4, 5.\nSimulated result: counted five numbers. This is not real execution evidence.",
+        ),
+        _ => (
+            "Counter C",
+            "Synthetic failed snapshot: 1, 2.\nSimulated failure: counter stopped before 3. No real process failed.",
+        ),
+    };
+    let base = 900_000 + child * 10;
+    vec![
+        demo_item(
+            base,
+            at - 30,
+            ItemKind::Notice {
+                text: "Demo · simulated agent — frozen child snapshot, visual testing only.".into(),
+                level: NoticeLevel::Info,
+            },
+        ),
+        demo_item(
+            base + 1,
+            at - 20,
+            ItemKind::User {
+                text: format!("{label}: count from 1 to 5 (simulated task)."),
+                attachments: Vec::new(),
+                delivery: Delivery::Sent,
+                steer: false,
+            },
+        ),
+        demo_item(
+            base + 2,
+            at - 10,
+            ItemKind::Assistant {
+                text: text.into(),
+                streaming: false,
+            },
+        ),
+    ]
+}
+
 /// Collapse whitespace, neutralize backticks and cap the length, for echoing user text as
 /// inert, single-line Markdown.
 fn single_line(text: &str, max_chars: usize) -> String {
@@ -556,6 +726,200 @@ fn single_line(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod unit {
     use super::*;
+
+    fn receive(rx: &async_channel::Receiver<BackendEvent>) -> BackendEvent {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(event) = rx.try_recv() {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "demo event timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn subagents_backend() -> (DemoBackend, async_channel::Receiver<BackendEvent>) {
+        let (tx, rx) = async_channel::unbounded();
+        (
+            DemoBackend::new(
+                tx,
+                DemoOptions {
+                    scenario: "subagents".into(),
+                    speed: 0.0,
+                    ..Default::default()
+                },
+            ),
+            rx,
+        )
+    }
+
+    fn snapshot() -> String {
+        let (backend, rx) = subagents_backend();
+        assert_eq!(backend.scenario(), "subagents");
+        assert!(backend.bootstrap().conversations[0].2.contains("simulated"));
+        let conversation = super::super::fixtures::STORY_CONVERSATION;
+        backend.request(BackendRequest::Open {
+            conversation,
+            generation: 7,
+        });
+        let opened = receive(&rx);
+        assert_eq!(
+            (opened.conversation, opened.generation, opened.op),
+            (conversation, 7, None)
+        );
+        let EventKind::Opened {
+            ref items,
+            has_older,
+            ref changes,
+        } = opened.kind
+        else {
+            panic!("expected opened")
+        };
+        assert!(!has_older && changes.is_empty());
+        assert!(format!("{items:?}").contains("Demo · simulated agent"));
+        let directory = receive(&rx);
+        let EventKind::SubagentsSynced {
+            enabled,
+            ref children,
+        } = directory.kind
+        else {
+            panic!("expected directory")
+        };
+        assert!(enabled);
+        assert_eq!(
+            children
+                .iter()
+                .map(|c| c.status.as_str())
+                .collect::<Vec<_>>(),
+            ["running", "done", "failed"]
+        );
+        let mut snapshot = format!("{opened:?}\n{directory:?}");
+        for child in 1..=3 {
+            backend.request(BackendRequest::OpenSubagent {
+                conversation,
+                generation: 7,
+                child,
+            });
+            let event = receive(&rx);
+            assert_eq!(
+                (event.conversation, event.generation, event.op),
+                (conversation, 7, None)
+            );
+            let EventKind::SubagentView {
+                child: returned,
+                ref items,
+                live,
+            } = event.kind
+            else {
+                panic!("expected child view")
+            };
+            assert_eq!(returned, child);
+            assert!(!live, "fixture must not claim a real live subscription");
+            assert_eq!(items.len(), 3);
+            for item in items {
+                let text = match &item.kind {
+                    ItemKind::User {
+                        text, attachments, ..
+                    } => {
+                        assert!(attachments.is_empty());
+                        text
+                    }
+                    ItemKind::Assistant { text, streaming } => {
+                        assert!(!streaming);
+                        text
+                    }
+                    ItemKind::Notice { text, .. } => text,
+                    ItemKind::Tool(_) => panic!("no fabricated tool evidence"),
+                };
+                assert!(text.len() < 1024);
+                assert!(!text.contains('`'));
+            }
+            snapshot.push_str(&format!("\n{event:?}"));
+        }
+        snapshot
+    }
+
+    #[test]
+    fn subagents_snapshots_are_deterministic_honest_and_bounded() {
+        assert_eq!(snapshot(), snapshot());
+    }
+
+    #[test]
+    fn subagents_reject_unknown_children_and_stale_attachments() {
+        let (backend, rx) = subagents_backend();
+        let conversation = super::super::fixtures::STORY_CONVERSATION;
+        backend.request(BackendRequest::Open {
+            conversation,
+            generation: 9,
+        });
+        receive(&rx);
+        receive(&rx);
+        for (generation, child) in [(8, 1), (9, 99)] {
+            backend.request(BackendRequest::OpenSubagent {
+                conversation,
+                generation,
+                child,
+            });
+            let event = receive(&rx);
+            assert_eq!(event.generation, generation);
+            assert!(
+                matches!(event.kind, EventKind::SubagentViewFailed { child: id, .. } if id == child)
+            );
+        }
+        backend.request(BackendRequest::SetSubagentsEnabled {
+            conversation,
+            generation: 9,
+            enabled: false,
+        });
+        assert!(matches!(
+            receive(&rx).kind,
+            EventKind::SubagentsSynced { enabled: false, .. }
+        ));
+        assert!(backend.set_scenario("normal"));
+        backend.request(BackendRequest::Open {
+            conversation,
+            generation: 10,
+        });
+        receive(&rx);
+        backend.request(BackendRequest::OpenSubagent {
+            conversation,
+            generation: 10,
+            child: 1,
+        });
+        assert!(matches!(
+            receive(&rx).kind,
+            EventKind::SubagentViewFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn subagents_submit_uses_visual_only_script() {
+        let (backend, rx) = subagents_backend();
+        backend.request(BackendRequest::Submit {
+            conversation: ConversationId(1),
+            generation: 4,
+            op: OperationId(2),
+            text: "do not execute anything".into(),
+            model: None,
+            // Use the existing request contract without real-mode setup.
+            request: RequestId("demo-subagents-test".into()),
+            attachments: Vec::new(),
+        });
+        let mut text = String::new();
+        loop {
+            let event = receive(&rx);
+            assert_eq!(event.generation, 4);
+            assert_eq!(event.op, Some(OperationId(2)));
+            match event.kind {
+                EventKind::Accepted => {}
+                EventKind::Token(chunk) => text.push_str(&chunk),
+                EventKind::Completed => break,
+                other => panic!("unexpected execution-like event: {other:?}"),
+            }
+        }
+        assert!(text.contains("Demo · simulated agent"));
+        assert!(text.contains("No agents, tools, or paid providers were executed"));
+    }
 
     #[test]
     fn single_line_is_inert_and_bounded() {

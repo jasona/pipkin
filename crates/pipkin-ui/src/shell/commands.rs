@@ -10,6 +10,7 @@ use crate::model::DemoControls;
 pub enum Run {
     Action(Box<dyn Action>),
     Dispatch(Command),
+    InspectSubagent(Option<u64>),
     CopyDiagnostics,
     DemoScenario(&'static str),
     ToggleSaveFailure,
@@ -214,6 +215,13 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::Action(Box::new(ToggleInspector)),
         ),
         cmd(
+            "Show subagent tasks",
+            "View",
+            None,
+            has_conv,
+            Run::Action(Box::new(ShowSubagents)),
+        ),
+        cmd(
             "Copy diagnostics",
             "Support (metadata only; no logs, paths or conversation text)",
             None,
@@ -356,6 +364,27 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
         }
     }
     let theme = state.prefs.theme;
+    if let Some(conv) = state
+        .current()
+        .filter(|conv| conv.subagents.enabled.is_some())
+    {
+        v.push(cmd(
+            "Show all subagent tasks",
+            "Subagents",
+            None,
+            true,
+            Run::InspectSubagent(None),
+        ));
+        for child in conv.subagents.children.iter().take(100) {
+            v.push(cmd(
+                &format!("Inspect subagent {}: {}", child.id, child.task),
+                "Subagents",
+                None,
+                true,
+                Run::InspectSubagent(Some(child.id)),
+            ));
+        }
+    }
     let mut c = cmd(
         "Theme: Dark",
         "Preferences",
@@ -528,6 +557,33 @@ mod removal_tests {
             assert!(matches!(command.run, Run::CopyDiagnostics));
             assert!(command.group.contains("metadata only"));
         }
+    }
+
+    #[test]
+    fn task_activity_is_keyboard_reachable_only_for_an_advertised_directory() {
+        let mut state = state_with_queue_and_attachments();
+        assert!(
+            !build(&state, None)
+                .iter()
+                .any(|c| matches!(c.run, Run::InspectSubagent(_)))
+        );
+        state.conversations[0].subagents.enabled = Some(false);
+        state.conversations[0].subagents.children = vec![SubagentInfo {
+            id: 9,
+            task_id: 1,
+            call_id: "call".into(),
+            task: "Review Rust tests.".into(),
+            status: "done".into(),
+        }];
+        let commands = build(&state, None);
+        assert!(matches!(
+            find(&commands, "Inspect subagent 9: Review Rust tests.").run,
+            Run::InspectSubagent(Some(9))
+        ));
+        assert!(matches!(
+            find(&commands, "Show all subagent tasks").run,
+            Run::InspectSubagent(None)
+        ));
     }
 
     #[test]

@@ -318,7 +318,7 @@ impl Workspace {
         let insp_toggle = {
             Btn::new("toggle-inspector")
                 .icon("panel-right")
-                .aria("Toggle changes inspector")
+                .aria("Toggle workspace inspector")
                 .selected(insp_docked || self.temp_panel == Some(Panel::Inspector))
                 .on_click(move |window, cx| {
                     window.dispatch_action(Box::new(super::actions::ToggleInspector), cx)
@@ -372,6 +372,23 @@ impl Workspace {
                     ),
             )
             .children(demo.then(|| chip("Demo · simulated agent", c.text_muted, c.bg_active, cx)))
+            .when(self.subagent_rows.total > 0, |d| {
+                d.child(
+                    Btn::new("show-subagent-tasks")
+                        .label(format!("Subagents {}", self.subagent_rows.total))
+                        .aria(format!(
+                            "Show subagent tasks, {} active",
+                            self.subagent_rows.active
+                        ))
+                        .selected(
+                            self.inspector_tab == super::subagents::InspectorTab::Subagents
+                                && (insp_docked || self.temp_panel == Some(Panel::Inspector)),
+                        )
+                        .on_click(|window, cx| {
+                            window.dispatch_action(Box::new(super::actions::ShowSubagents), cx)
+                        }),
+                )
+            })
             .child(insp_toggle);
 
         let body = if has_conv {

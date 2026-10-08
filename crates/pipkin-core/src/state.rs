@@ -676,7 +676,15 @@ impl AppState {
                 out.notes.push(Note::SelectionChanged);
                 out.effects.push(Effect::SavePrefs(self.prefs.clone()));
             }
-            Command::SelectSubagent(child) if self.mode == Mode::Real => {
+            // Demo child reads require an explicitly advertised simulated service, not
+            // merely Demo mode. Keep real attachment/selection behavior unchanged.
+            Command::SelectSubagent(child)
+                if self.mode == Mode::Real
+                    || (self.mode == Mode::Demo
+                        && self
+                            .current()
+                            .is_some_and(|c| c.opened && c.subagents.enabled.is_some())) =>
+            {
                 let Some(c) = self.selected.and_then(|id| self.conv_mut(id)) else {
                     return out;
                 };

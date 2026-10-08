@@ -9,6 +9,7 @@ mod inspector;
 mod nav;
 mod onboarding;
 mod overlays;
+mod subagents;
 mod workspace;
 
 pub use workspace::Workspace;

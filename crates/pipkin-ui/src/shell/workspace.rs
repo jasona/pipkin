@@ -172,6 +172,10 @@ pub struct Workspace {
     pub(super) model_settings_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     pub(super) changes_scroll: ScrollHandle,
     pub(super) diff_rows: DiffRows,
+    pub(super) inspector_tab: super::subagents::InspectorTab,
+    pub(super) subagent_rows: super::subagents::SubagentRows,
+    pub(super) subagent_directory_scroll: ScrollHandle,
+    pub(super) subagent_activity_scroll: ScrollHandle,
     live_nav: Option<f32>,
     live_insp: Option<f32>,
     last_change_sel: Option<(ConversationId, Option<usize>)>,
@@ -265,6 +269,10 @@ impl Workspace {
             model_settings_bounds: None,
             changes_scroll: ScrollHandle::new(),
             diff_rows: DiffRows::default(),
+            inspector_tab: super::subagents::InspectorTab::default(),
+            subagent_rows: super::subagents::SubagentRows::default(),
+            subagent_directory_scroll: ScrollHandle::new(),
+            subagent_activity_scroll: ScrollHandle::new(),
             live_nav: None,
             live_insp: None,
             last_change_sel: None,
@@ -314,6 +322,7 @@ impl Workspace {
     // ------------------------------------------------------------ model → view
 
     fn on_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_subagent_rows(cx);
         let entry = self.model.read(cx).entry;
         let challenge = self
             .model
@@ -397,6 +406,11 @@ impl Workspace {
         if change_sel != self.last_change_sel {
             let was = self.last_change_sel;
             self.last_change_sel = change_sel;
+            if let (Some((id, Some(_))), Some((pid, _))) = (change_sel, was)
+                && id == pid
+            {
+                self.inspector_tab = super::subagents::InspectorTab::Changes;
+            }
             if let (Some((id, Some(_))), Some((pid, _))) = (change_sel, was)
                 && id == pid
                 && !self.can_dock_inspector(window, cx)
@@ -801,6 +815,11 @@ impl Workspace {
                 window.dispatch_action(a, cx);
             }
             Run::Dispatch(c) => self.dispatch(c.clone(), cx),
+            Run::InspectSubagent(child) => {
+                self.subagent_activity_scroll = ScrollHandle::new();
+                self.dispatch(Command::SelectSubagent(*child), cx);
+                window.dispatch_action(Box::new(ShowSubagents), cx);
+            }
             Run::CopyDiagnostics => {
                 let report = self.model.read(cx).support_report().map(str::to_owned);
                 if let Some(report) = report {
@@ -873,6 +892,20 @@ impl Workspace {
         } else {
             self.open_panel(Panel::Inspector, window, cx);
         }
+    }
+    fn on_show_subagents(
+        &mut self,
+        _: &ShowSubagents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.inspector_tab = super::subagents::InspectorTab::Subagents;
+        if self.can_dock_inspector(window, cx) {
+            self.dispatch(Command::SetInspectorOpen(true), cx);
+        } else {
+            self.open_panel(Panel::Inspector, window, cx);
+        }
+        cx.notify();
     }
     fn on_focus_composer(
         &mut self,
@@ -1318,6 +1351,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_conversation))
             .on_action(cx.listener(Self::on_toggle_nav))
             .on_action(cx.listener(Self::on_toggle_inspector))
+            .on_action(cx.listener(Self::on_show_subagents))
             .on_action(cx.listener(Self::on_focus_composer))
             .on_action(cx.listener(Self::on_focus_transcript))
             .on_action(cx.listener(Self::on_prefs))

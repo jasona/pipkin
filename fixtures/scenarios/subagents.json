@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "subagents",
+  "description": "Visual testing only. Static synthetic child states; no provider, child process or real engine execution.",
+  "variants": [
+    {
+      "label": "Simulated counter tasks",
+      "steps": [
+        { "op": "accepted" },
+        { "op": "stream", "text": "Demo · simulated agent\n\nThis is a visual-only fixture. Counter A is held at a synthetic running snapshot, Counter B is completed, and Counter C has a simulated failure. Select a task to inspect its bounded plain-text child snapshot. No agents, tools, or paid providers were executed.\n", "pace_ms": 20 },
+        { "op": "complete" }
+      ]
+    }
+  ]
+}

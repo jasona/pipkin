@@ -136,6 +136,11 @@ impl Subst {
 
 pub const SCENARIOS: &[(&str, &str, &str)] = &[
     (
+        "subagents",
+        "Visual-only synthetic child tasks: Counter A running, Counter B completed, Counter C failed",
+        include_str!("../../../../fixtures/scenarios/subagents.json"),
+    ),
+    (
         "normal",
         "Fix a failing test: streaming, tools, a failed then passing test run, three changed files",
         include_str!("../../../../fixtures/scenarios/normal.json"),
