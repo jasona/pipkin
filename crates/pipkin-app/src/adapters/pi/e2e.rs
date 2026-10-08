@@ -259,6 +259,7 @@ impl Harness {
                     text,
                     attachments,
                     model,
+                    ..
                 } => {
                     let tx = self.ack_tx.clone();
                     let key = request.clone();

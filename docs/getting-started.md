@@ -83,6 +83,12 @@ real first reply on a clean supported desktop remains an open qualification gate
   background scan detects external commits too. Session file scope excludes unrelated project files; if multiple
   tools edit the same session-owned file, its diff reflects that file's current combined uncommitted state.
   Refresh does not send agent input. Earlier session file paths are recovered from bounded engine history.
+- **Prompt history** is separate for each session. In the conversation input, Up recalls older prompts when the
+  caret is on the first visual line; Down moves toward newer prompts on the last visual line. Moving past the newest
+  prompt restores your unsent draft. Editing a recalled prompt starts a new draft rather than changing history.
+  The latest 200 journaled prompts survive app restarts; loaded conversation messages also populate recall history.
+  Recall changes text only: it never sends a prompt or reattaches old files. Selection, IME composition, and `@` path
+  completion retain their normal arrow-key behavior.
 - **Search** covers locally cached history, not all engine history. Older material may not yet be cached.
 - **`@` paths** are project-scoped references inserted into the text. Selecting one does **not** attach file contents.
   Use the attachment picker/drag-and-drop when you want an attachment; missing/deleted paths cannot become files by

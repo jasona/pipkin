@@ -54,6 +54,8 @@ pub struct ConversationState {
     /// A complete tool output has been asked for and is on its way.
     pub pending_output: Option<(String, OutputUse)>,
     pub draft: Draft,
+    pub prompt_history: crate::prompt_history::PromptHistory,
+    prompt_history_snapshot: Option<(usize, Option<ItemId>, Option<ItemId>)>,
     pub changes: Vec<FileChange>,
     pub changes_state: ChangesState,
     /// Invalidates cached diff rows even when paths and addition/removal counts are unchanged.
@@ -111,6 +113,8 @@ impl ConversationState {
             ui_error: None,
             pending_output: None,
             draft: Draft::default(),
+            prompt_history: crate::prompt_history::PromptHistory::default(),
+            prompt_history_snapshot: None,
             changes: Vec::new(),
             changes_state: ChangesState::Unscanned,
             changes_revision: 0,
@@ -124,6 +128,33 @@ impl ConversationState {
             streaming_item: None,
             adopted: None,
         }
+    }
+
+    fn import_prompt_history(&mut self, older: bool) {
+        // Streaming assistant updates must not repeatedly clone and merge every old prompt.
+        let mut signature = (0, None, None);
+        for item in &self.items {
+            if matches!(&item.kind, ItemKind::User { .. }) {
+                signature.0 += 1;
+                signature.1.get_or_insert(item.id);
+                signature.2 = Some(item.id);
+            }
+        }
+        if self.prompt_history_snapshot == Some(signature) {
+            return;
+        }
+        self.prompt_history_snapshot = Some(signature);
+        let prompts = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::User { text, .. } if !text.starts_with("Pursue this ongoing goal: ") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        self.prompt_history.import(prompts, older);
     }
 
     /// Short activity label for the navigation list.
@@ -240,6 +271,13 @@ impl AppState {
 
     pub fn set_now(&mut self, now: i64) {
         self.now = now;
+    }
+
+    /// Restore existing journal history after this conversation appears in the catalog.
+    pub fn restore_prompt_history(&mut self, id: ConversationId, prompts: Vec<String>) {
+        if let Some(c) = self.conv_mut(id) {
+            c.prompt_history.import(prompts, false);
+        }
     }
 
     pub fn conversation(&self, id: ConversationId) -> Option<&ConversationState> {
@@ -805,10 +843,38 @@ impl AppState {
                 }
             }
 
+            direction @ (Command::PreviousPrompt | Command::NextPrompt) => {
+                if let Some(id) = self.selected {
+                    let c = self.conv_mut(id).unwrap();
+                    if c.pending_intent.is_none()
+                        && !matches!(
+                            c.run,
+                            RunState::Submitting { .. } | RunState::OutcomeUnknown { .. }
+                        )
+                    {
+                        c.import_prompt_history(false);
+                        let text = if direction == Command::PreviousPrompt {
+                            c.prompt_history.previous(&c.draft.text)
+                        } else {
+                            c.prompt_history.next_prompt()
+                        };
+                        if let Some(text) = text
+                            && c.draft.text != text
+                        {
+                            c.draft.text = text;
+                            c.draft.rev += 1;
+                            c.draft.sync_epoch += 1;
+                            c.draft.save = SaveState::Dirty;
+                            out.notes.push(Note::Other);
+                        }
+                    }
+                }
+            }
             Command::EditDraft(text) => {
                 if let Some(id) = self.selected {
                     let c = self.conv_mut(id).unwrap();
                     if c.draft.text != text {
+                        c.prompt_history.reset_navigation();
                         c.draft.text = text;
                         c.draft.rev += 1;
                         c.draft.save = SaveState::Dirty;
@@ -1033,6 +1099,7 @@ impl AppState {
                     self.next_queue += 1;
                     let c = self.conv_mut(id).unwrap();
                     let text = std::mem::take(&mut c.draft.text);
+                    c.prompt_history.remember(text.clone());
                     c.draft.attachments.clear();
                     c.queue.push(QueuedPrompt {
                         id: qid,
@@ -1357,6 +1424,7 @@ impl AppState {
             c.stale_reason = refusal;
         }
         c.items = items;
+        c.import_prompt_history(true);
         c.has_older = has_older;
         c.cached_at = Some(synced_at);
         out.notes.push(Note::ItemsReset(id));
@@ -1448,6 +1516,7 @@ impl AppState {
             text,
             attachments: atts,
             model,
+            origin,
         });
         out.notes.push(Note::Other);
         out
@@ -1542,6 +1611,9 @@ impl AppState {
         let op = self.alloc_op();
         let now = self.now;
         let c = self.conv_mut(id).unwrap();
+        if intent.origin != IntentOrigin::Goal {
+            c.prompt_history.remember(intent.text.clone());
+        }
         let mut clear_draft = false;
         match intent.origin {
             IntentOrigin::Draft => {
@@ -1664,6 +1736,7 @@ impl AppState {
         let id = self.selected.unwrap();
         let c = self.conv_mut(id).unwrap();
         let text = std::mem::take(&mut c.draft.text).trim_end().to_string();
+        c.prompt_history.remember(text.clone());
         let op = c.run.op().unwrap();
         let generation = c.generation;
         c.streaming_item = None;
@@ -1850,6 +1923,7 @@ impl AppState {
                 changes,
             } => {
                 c.items = items;
+                c.import_prompt_history(true);
                 // Reattachment may land on an older engine with no child service. A prior
                 // session's capability or child selection must not masquerade as current.
                 c.subagents = SubagentState::default();
@@ -1905,6 +1979,7 @@ impl AppState {
             EventKind::Synced { items } => {
                 if c.opened {
                     c.items = items;
+                    c.import_prompt_history(false);
                     c.streaming_item = None;
                     out.notes.push(Note::ItemsReset(id));
                 }
@@ -1917,6 +1992,7 @@ impl AppState {
                 let mut v = items;
                 v.append(&mut c.items);
                 c.items = v;
+                c.import_prompt_history(true);
                 if let Some(s) = c.streaming_item.as_mut() {
                     *s += n;
                 }

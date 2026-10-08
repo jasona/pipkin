@@ -394,6 +394,18 @@ impl Workspace {
                 }
             }
         }
+        let history_enabled = self
+            .state(cx)
+            .current()
+            .is_some_and(|c| c.prompt_history.has_entries());
+        let history_browsing = self
+            .state(cx)
+            .current()
+            .is_some_and(|c| c.prompt_history.is_browsing());
+        self.composer.update(cx, |e, _| {
+            e.set_prompt_history_enabled(history_enabled);
+            e.set_prompt_history_browsing(history_browsing);
+        });
         let locked = matches!(
             run,
             Some(RunState::Submitting { .. } | RunState::OutcomeUnknown { .. }) | None
@@ -437,10 +449,20 @@ impl Workspace {
                 self.dispatch(Command::EditDraft(text), cx);
                 self.schedule_flush(cx);
             }
+            ComposerEvent::Up | ComposerEvent::Down => {
+                self.dispatch(
+                    if matches!(ev, ComposerEvent::Up) {
+                        Command::PreviousPrompt
+                    } else {
+                        Command::NextPrompt
+                    },
+                    cx,
+                );
+                self.schedule_flush(cx);
+            }
             ComposerEvent::Submit => self.submit_primary(window, cx),
             ComposerEvent::PasteImage(image) => self.paste_image(image.clone(), cx),
             ComposerEvent::Escape => {}
-            _ => {}
         }
     }
 
@@ -1242,6 +1264,71 @@ mod diagnostics_tests {
     use gpui::{TestAppContext, VisualTestContext};
 
     use super::*;
+
+    #[gpui::test]
+    fn composer_recalls_only_the_selected_sessions_prompts_and_restores_the_draft(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::text::init);
+        let window = cx.add_window(|window, cx| {
+            let mut state = AppState::new(
+                Bootstrap {
+                    projects: vec![Project {
+                        id: ProjectId(1),
+                        name: "test".into(),
+                        path: "/synthetic-project".into(),
+                    }],
+                    models: vec![],
+                    conversations: vec![
+                        (ConversationId(1), ProjectId(1), "one".into(), 1),
+                        (ConversationId(2), ProjectId(1), "two".into(), 2),
+                    ],
+                    now: 0,
+                },
+                Prefs::default(),
+            );
+            state.restore_prompt_history(ConversationId(1), vec!["alpha".into(), "beta".into()]);
+            state.restore_prompt_history(ConversationId(2), vec!["gamma".into()]);
+            state.dispatch(Command::SelectConversation(ConversationId(1)));
+            let model = cx.new(|_| Model::new(state));
+            Workspace::new(model, PathBuf::new(), window, cx)
+        });
+        let root = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        cx.run_until_parked();
+        cx.simulate_input("unsent");
+        for (key, expected) in [
+            ("up", "beta"),
+            ("up", "alpha"),
+            ("down", "beta"),
+            ("down", "unsent"),
+        ] {
+            cx.simulate_keystrokes(key);
+            cx.run_until_parked();
+            assert_eq!(
+                root.read_with(cx, |w, cx| w.composer.read(cx).text()),
+                expected
+            );
+        }
+        root.update(cx, |w, cx| {
+            w.dispatch(Command::SelectConversation(ConversationId(2)), cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        assert_eq!(
+            root.read_with(cx, |w, cx| w.composer.read(cx).text()),
+            "gamma"
+        );
+        root.update(cx, |w, cx| {
+            w.dispatch(Command::SelectConversation(ConversationId(1)), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            root.read_with(cx, |w, cx| w.composer.read(cx).text()),
+            "unsent"
+        );
+    }
 
     #[gpui::test]
     fn copies_controller_metadata_only_and_reports_unavailable_without_overwriting_clipboard(

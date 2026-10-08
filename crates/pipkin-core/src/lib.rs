@@ -7,6 +7,7 @@ pub mod backend;
 pub mod ids;
 pub mod model;
 pub mod onboarding;
+pub mod prompt_history;
 pub mod protocol;
 pub mod state;
 

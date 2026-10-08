@@ -343,6 +343,7 @@ pub(crate) struct Restore {
     conversations: Vec<DemoConversation>,
     drafts: Vec<StoredDraft>,
     requests: Vec<OpenRequest>,
+    prompt_histories: Vec<(ConversationId, Vec<String>)>,
     goals: Vec<(ConversationId, String, Option<String>)>,
 }
 
@@ -356,15 +357,28 @@ impl Restore {
             },
             drafts: loaded.drafts,
             requests: loaded.open_requests,
+            prompt_histories: loaded.prompt_histories,
             goals: loaded.goals,
         }
     }
 
-    pub(crate) fn apply(&mut self, state: &mut AppState) -> Outcome {
-        let mut out = Outcome::default();
+    fn restore_conversations(&mut self, state: &mut AppState) {
         for c in self.conversations.drain(..) {
             state.restore_conversation(c.id, c.project, c.title, c.updated_at);
         }
+        // Keep histories for real sessions whose catalog has not arrived yet.
+        self.prompt_histories.retain(|(id, prompts)| {
+            if state.conversation(*id).is_none() {
+                return true;
+            }
+            state.restore_prompt_history(*id, prompts.clone());
+            false
+        });
+    }
+
+    pub(crate) fn apply(&mut self, state: &mut AppState) -> Outcome {
+        let mut out = Outcome::default();
+        self.restore_conversations(state);
         self.drafts.retain(|d| {
             if state.conversation(d.conversation).is_none() {
                 return true;
@@ -536,6 +550,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
             drafts: vec![],
             conversations: vec![],
             open_requests: vec![],
+            prompt_histories: vec![],
             goals: vec![],
             projects: vec![],
         }
@@ -655,6 +670,7 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
     }
     .surface();
     let mut restore = Restore::new(loaded, options.mode == Mode::Demo);
+    restore.restore_conversations(&mut state);
 
     let model = cx.new(|_| {
         let mut model = Model::new(state);
@@ -695,15 +711,19 @@ pub fn start(cx: &mut App, options: Options) -> Entity<Model> {
                     text,
                     attachments,
                     model,
+                    origin,
                 } => {
                     let intent_tx = intent_tx.clone();
                     let key = request.clone();
-                    storage.journal_intent(
+                    storage.journal_intent_with_origin(
                         conversation,
-                        request,
-                        &text,
-                        &attachments,
-                        model.as_deref(),
+                        PendingIntent {
+                            request,
+                            origin,
+                            text,
+                            attachments,
+                            model,
+                        },
                         move |result| {
                             let _ = intent_tx.send_blocking((conversation, key, result));
                         },

@@ -27,6 +27,8 @@ pub enum Command {
     SetSearch(String),
 
     EditDraft(String),
+    PreviousPrompt,
+    NextPrompt,
     FlushDraft(ConversationId),
     AddAttachments(Vec<Attachment>),
     RemoveAttachment(usize),
@@ -451,6 +453,7 @@ pub enum Effect {
         text: String,
         attachments: Vec<Attachment>,
         model: Option<String>,
+        origin: IntentOrigin,
     },
     JournalState {
         conversation: ConversationId,

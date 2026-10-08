@@ -123,6 +123,10 @@ pub const SEARCH_LIMIT: usize = 40;
 /// States that still need reconciliation after a restart.
 const OPEN_STATES: &str = "'intent', 'unknown', 'accepted'";
 
+const PROMPT_HISTORY_LIMIT: usize = 200;
+/// Skip oversized prompts rather than restore partial text into the composer.
+const MAX_HISTORY_PROMPT_BYTES: usize = 64 * 1024;
+
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
 /// A read-only summary of a database for diagnostics: its schema version, size and integrity.
@@ -187,6 +191,8 @@ pub struct Loaded {
     pub conversations: Vec<DemoConversation>,
     /// Oldest first, so a later request for a conversation supersedes an earlier one.
     pub open_requests: Vec<OpenRequest>,
+    /// Submitted text per conversation, oldest first, including terminal requests.
+    pub prompt_histories: Vec<(ConversationId, Vec<String>)>,
     /// A restart never automatically resumes a goal: the last turn may be unresolved.
     pub goals: Vec<(ConversationId, String, Option<String>)>,
     /// Project folders the user opened, oldest first.
@@ -554,6 +560,55 @@ impl Storage {
                 })
             })
             .collect();
+        // rowid is submission order (timestamps have only second precision). Rank after
+        // filtering so autonomous/invalid/oversized entries cannot crowd out user prompts.
+        // Older payloads lack origin; retain them as user prompts for compatibility.
+        let mut stmt = conn
+            .prepare(
+                "WITH payloads AS (
+                    SELECT rowid AS sequence, conversation_id,
+                        CASE WHEN json_valid(payload) THEN payload ELSE '{}' END AS body
+                    FROM request_journal WHERE namespace = ?1
+                 ), prompts AS (
+                    SELECT sequence, conversation_id, json_extract(body, '$.text') AS text,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY conversation_id ORDER BY sequence DESC
+                        ) AS position
+                    FROM payloads
+                    WHERE json_type(body, '$.text') = 'text'
+                        AND COALESCE(json_extract(body, '$.origin'), '') != 'Goal'
+                        AND length(CAST(json_extract(body, '$.text') AS BLOB)) <= ?2
+                 )
+                 SELECT conversation_id, text FROM prompts WHERE position <= ?3
+                 ORDER BY conversation_id, sequence",
+            )
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map(
+                params![
+                    self.namespace,
+                    MAX_HISTORY_PROMPT_BYTES as i64,
+                    PROMPT_HISTORY_LIMIT as i64
+                ],
+                |r| {
+                    Ok((
+                        ConversationId(r.get::<_, i64>(0)? as u64),
+                        r.get::<_, String>(1)?,
+                    ))
+                },
+            )
+            .map_err(sql_err)?;
+        let mut prompt_histories: Vec<(ConversationId, Vec<String>)> = vec![];
+        for row in rows {
+            let (conversation, text) = row.map_err(sql_err)?;
+            if let Some((id, prompts)) = prompt_histories.last_mut()
+                && *id == conversation
+            {
+                prompts.push(text);
+            } else {
+                prompt_histories.push((conversation, vec![text]));
+            }
+        }
         let goals = conn
             .prepare(
                 "SELECT key, value FROM session_prefs WHERE namespace = ?1 AND key LIKE 'goal:%'",
@@ -589,6 +644,7 @@ impl Storage {
             drafts,
             conversations,
             open_requests,
+            prompt_histories,
             goals,
             projects,
         })
@@ -628,6 +684,8 @@ impl Storage {
 
     /// Queue a journal entry for a submission. `ack` runs on the writer thread only after the
     /// transaction has committed (or with the error); nothing may be sent before it reports Ok.
+    /// Legacy callers are treated as Draft-origin user submissions.
+    #[cfg(test)]
     pub fn journal_intent(
         &self,
         conversation: ConversationId,
@@ -637,10 +695,36 @@ impl Storage {
         model: Option<&str>,
         ack: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
+        self.journal_intent_with_origin(
+            conversation,
+            PendingIntent {
+                request,
+                origin: IntentOrigin::Draft,
+                text: text.into(),
+                attachments: attachments.to_vec(),
+                model: model.map(str::to_string),
+            },
+            ack,
+        );
+    }
+
+    /// Journal the origin along with the immutable submission payload, so autonomous Goal
+    /// prompts can be excluded from restored user history. Commit/ack semantics are unchanged.
+    pub fn journal_intent_with_origin(
+        &self,
+        conversation: ConversationId,
+        intent: PendingIntent,
+        ack: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
         let msg = Msg::Intent {
             conversation,
-            request,
-            payload: encode_payload(text, attachments, model),
+            request: intent.request,
+            payload: encode_payload(
+                &intent.text,
+                &intent.attachments,
+                intent.model.as_deref(),
+                Some(intent.origin),
+            ),
             ack: Box::new(ack),
         };
         if let Err(Msg::Intent { ack, .. }) = self.send(msg) {
@@ -1023,16 +1107,31 @@ fn write_draft(
     tx.commit().map_err(sql_err)
 }
 
-fn encode_payload(text: &str, attachments: &[Attachment], model: Option<&str>) -> String {
-    json!({
+fn encode_payload(
+    text: &str,
+    attachments: &[Attachment],
+    model: Option<&str>,
+    origin: Option<IntentOrigin>,
+) -> String {
+    let mut payload = json!({
         "text": text,
         "attachments": attachments
             .iter()
             .map(|a| json!({"path": a.path, "name": a.name, "size": a.size}))
             .collect::<Vec<_>>(),
         "model": model,
-    })
-    .to_string()
+    });
+    if let Some(origin) = origin {
+        payload["origin"] = json!(match origin {
+            IntentOrigin::Draft => "Draft",
+            IntentOrigin::Retry => "Retry",
+            IntentOrigin::Queue => "Queue",
+            IntentOrigin::Goal => "Goal",
+            IntentOrigin::Steer => "Steer",
+            IntentOrigin::FollowUp => "FollowUp",
+        });
+    }
+    payload.to_string()
 }
 
 fn decode_payload(payload: &str) -> Option<(String, Vec<Attachment>)> {
@@ -1762,12 +1861,15 @@ mod tests {
         attachments: &[Attachment],
     ) -> Result<(), String> {
         let (tx, rx) = mpsc::channel();
-        s.journal_intent(
+        s.journal_intent_with_origin(
             ConversationId(conv),
-            RequestId(request.into()),
-            text,
-            attachments,
-            Some("pi-sonnet"),
+            PendingIntent {
+                request: RequestId(request.into()),
+                origin: IntentOrigin::Draft,
+                text: text.into(),
+                attachments: attachments.to_vec(),
+                model: Some("pi-sonnet".into()),
+            },
             move |r| tx.send(r).unwrap(),
         );
         rx.recv_timeout(Duration::from_secs(10)).unwrap()
@@ -1834,6 +1936,203 @@ mod tests {
             .load_all()
             .unwrap();
         assert!(other.open_requests.is_empty());
+    }
+
+    #[test]
+    fn prompt_history_survives_terminal_states_and_is_scoped() {
+        let (_dir, path) = tmp_db();
+        {
+            let s = Storage::open(&path, "pi:first").unwrap();
+            for (request, text, state) in [
+                ("r1", "submitted", JournalState::Completed),
+                ("r2", "retry", JournalState::Rejected),
+                ("r3", "steer", JournalState::Cancelled),
+            ] {
+                journal_and_wait(&s, 1, request, text, &[]).unwrap();
+                s.journal_state(RequestId(request.into()), state);
+            }
+            journal_and_wait(&s, 2, "r4", "other session", &[]).unwrap();
+            journal_and_wait(&s, 1, "r5", "unsettled", &[]).unwrap();
+            s.shutdown();
+        }
+        {
+            let s = Storage::open(&path, "pi:second").unwrap();
+            journal_and_wait(&s, 1, "r1", "other namespace", &[]).unwrap();
+            settle_journal(&s, "r1", JournalState::Completed);
+        }
+        let loaded = Storage::open(&path, "pi:first")
+            .unwrap()
+            .load_all()
+            .unwrap();
+        assert_eq!(
+            loaded.prompt_histories,
+            vec![
+                (
+                    ConversationId(1),
+                    vec![
+                        "submitted".into(),
+                        "retry".into(),
+                        "steer".into(),
+                        "unsettled".into()
+                    ]
+                ),
+                (ConversationId(2), vec!["other session".into()]),
+            ]
+        );
+        assert_eq!(loaded.open_requests.len(), 2);
+        let other = Storage::open(&path, "pi:second")
+            .unwrap()
+            .load_all()
+            .unwrap();
+        assert_eq!(
+            other.prompt_histories,
+            vec![(ConversationId(1), vec!["other namespace".into()])]
+        );
+        assert!(other.open_requests.is_empty());
+    }
+
+    #[test]
+    fn journaled_origins_restore_user_prompts_but_not_goals() {
+        let (_dir, path) = tmp_db();
+        let s = Storage::open(&path, DEMO_NAMESPACE).unwrap();
+        let origins = [
+            IntentOrigin::Draft,
+            IntentOrigin::Retry,
+            IntentOrigin::Queue,
+            IntentOrigin::Steer,
+            IntentOrigin::FollowUp,
+            IntentOrigin::Goal,
+        ];
+        let states = [
+            JournalState::Unknown,
+            JournalState::Accepted,
+            JournalState::Rejected,
+            JournalState::Completed,
+            JournalState::Failed,
+            JournalState::Cancelled,
+            JournalState::Queued,
+            JournalState::Superseded,
+        ];
+        let mut expected = vec![];
+        for origin in origins {
+            for state in states {
+                let text = format!("{origin:?}-{state:?}");
+                let request = RequestId(text.clone());
+                let (tx, rx) = mpsc::channel();
+                s.journal_intent_with_origin(
+                    ConversationId(1),
+                    PendingIntent {
+                        request: request.clone(),
+                        origin,
+                        text: text.clone(),
+                        attachments: vec![],
+                        model: Some("pi-sonnet".into()),
+                    },
+                    move |r| tx.send(r).unwrap(),
+                );
+                rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+                s.journal_state(request, state);
+                if origin != IntentOrigin::Goal {
+                    expected.push(text);
+                }
+            }
+        }
+        s.shutdown();
+        let conn = Connection::open(&path).unwrap();
+        let payload: String = conn
+            .query_row(
+                "SELECT payload FROM request_journal WHERE request_id = 'Goal-Completed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["origin"], "Goal");
+        assert_eq!(payload["model"], "pi-sonnet");
+        drop(conn);
+        let loaded = Storage::open(&path, DEMO_NAMESPACE)
+            .unwrap()
+            .load_all()
+            .unwrap();
+        assert_eq!(loaded.prompt_histories, vec![(ConversationId(1), expected)]);
+        // Origin filtering applies only to prompt recall, not request reconciliation.
+        assert_eq!(loaded.open_requests.len(), origins.len() * 2);
+        assert!(
+            loaded
+                .open_requests
+                .iter()
+                .any(|r| r.text == "Goal-Unknown")
+        );
+    }
+
+    #[test]
+    fn prompt_history_is_recent_bounded_and_chronological() {
+        let (_dir, path) = tmp_db();
+        Storage::open(&path, DEMO_NAMESPACE).unwrap().shutdown();
+        let mut conn = Connection::open(&path).unwrap();
+        for i in 0..205 {
+            let origin = ["Draft", "Retry", "Steer", "FollowUp"][i % 4];
+            write_intent(
+                &mut conn,
+                DEMO_NAMESPACE,
+                ConversationId(1),
+                &RequestId(format!("r{i}")),
+                &json!({"text": format!("prompt {i}"), "origin": origin}).to_string(),
+            )
+            .unwrap();
+        }
+        // These newer rows must not displace valid user entries. The byte cap is UTF-8,
+        // not a character count; no partial prompt should be restored.
+        for (request, payload) in [
+            (
+                "goal",
+                json!({"text": "autonomous", "origin": "Goal"}).to_string(),
+            ),
+            (
+                "large",
+                json!({"text": "é".repeat(MAX_HISTORY_PROMPT_BYTES / 2 + 1)}).to_string(),
+            ),
+            ("broken", "not json".into()),
+            ("no-text", json!({"attachments": []}).to_string()),
+        ] {
+            write_intent(
+                &mut conn,
+                DEMO_NAMESPACE,
+                ConversationId(1),
+                &RequestId(request.into()),
+                &payload,
+            )
+            .unwrap();
+        }
+        // Submission order, not terminal-update order (or coarse timestamps), is authoritative.
+        conn.execute(
+            "UPDATE request_journal SET created_at = 0, updated_at = 999, state = 'completed'",
+            [],
+        )
+        .unwrap();
+        write_intent(
+            &mut conn,
+            DEMO_NAMESPACE,
+            ConversationId(2),
+            &RequestId("session2".into()),
+            &encode_payload("legacy payload", &[], None, None),
+        )
+        .unwrap();
+        drop(conn);
+        let loaded = Storage::open(&path, DEMO_NAMESPACE)
+            .unwrap()
+            .load_all()
+            .unwrap();
+        assert_eq!(
+            loaded.prompt_histories,
+            vec![
+                (
+                    ConversationId(1),
+                    (5..205).map(|i| format!("prompt {i}")).collect()
+                ),
+                (ConversationId(2), vec!["legacy payload".into()]),
+            ]
+        );
     }
 
     #[test]

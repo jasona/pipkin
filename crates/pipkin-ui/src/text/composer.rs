@@ -27,7 +27,7 @@ pub enum ComposerEvent {
     /// Enter was pressed with no IME composition active.
     Submit,
     Escape,
-    /// Single-line mode only: Up / Down arrow (lets a host move a list selection).
+    /// Single-line list navigation, or multiline prompt recall at a visual text boundary.
     Up,
     Down,
     /// Clipboard image data, handled by the workspace as a durable draft attachment.
@@ -143,6 +143,8 @@ pub struct ComposerEditor {
     label: SharedString,
     disabled: bool,
     single_line: bool,
+    prompt_history_enabled: bool,
+    prompt_history_browsing: bool,
     max_lines: usize,
     layout: Option<Rc<TextLayout>>,
     scroll_y: Pixels,
@@ -195,6 +197,8 @@ impl ComposerEditor {
             label: "Message".into(),
             disabled: false,
             single_line,
+            prompt_history_enabled: false,
+            prompt_history_browsing: false,
             max_lines: if single_line { 1 } else { DEFAULT_MAX_LINES },
             layout: None,
             scroll_y: px(0.),
@@ -219,6 +223,15 @@ impl ComposerEditor {
     }
 
     // ------------------------------------------------------------- public API
+
+    /// Only the conversation composer opts in; search/setup inputs retain their usual keys.
+    pub fn set_prompt_history_enabled(&mut self, enabled: bool) {
+        self.prompt_history_enabled = enabled;
+    }
+
+    pub fn set_prompt_history_browsing(&mut self, browsing: bool) {
+        self.prompt_history_browsing = browsing;
+    }
 
     /// Index off the UI thread. Dropping the task and checking the root prevents
     /// an old project's results from appearing after a conversation switch.
@@ -685,12 +698,34 @@ impl ComposerEditor {
             }
             return;
         }
+        let recall = self.prompt_history_enabled
+            && (dir < 0. || self.prompt_history_browsing)
+            && !page
+            && !extend
+            && !self.model.is_composing()
+            && !self.model.has_selection();
+        if recall && self.model.text().is_empty() {
+            cx.emit(if dir < 0. {
+                ComposerEvent::Up
+            } else {
+                ComposerEvent::Down
+            });
+            return;
+        }
         let Some(layout) = self.layout.clone() else {
             return;
         };
         let lh = layout.line_height;
         let head = self.model.head();
         let p = layout.point_for_offset(head);
+        if recall && (p.y + lh * dir < px(0.) || p.y + lh * dir >= layout.height) {
+            cx.emit(if dir < 0. {
+                ComposerEvent::Up
+            } else {
+                ComposerEvent::Down
+            });
+            return;
+        }
         let goal = *self.goal_x.get_or_insert(p.x);
         let step = if page {
             let vh = self.last_bounds.map(|b| b.size.height).unwrap_or(lh);
@@ -1638,6 +1673,78 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[gpui::test]
+    fn prompt_history_arrows_only_fire_at_multiline_boundaries(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        h.editor.update(cx, |e, cx| {
+            e.set_prompt_history_enabled(true);
+            e.set_text("first\nsecond", cx);
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("up");
+        assert!(!h.events.borrow().contains(&ComposerEvent::Up));
+        cx.simulate_keystrokes("up");
+        assert_eq!(h.events.borrow().as_slice(), &[ComposerEvent::Up]);
+        h.editor
+            .update(cx, |e, _| e.set_prompt_history_browsing(true));
+        h.events.borrow_mut().clear();
+        cx.simulate_keystrokes("down");
+        assert!(h.events.borrow().is_empty());
+        cx.simulate_keystrokes("down");
+        assert_eq!(h.events.borrow().as_slice(), &[ComposerEvent::Down]);
+        h.events.borrow_mut().clear();
+        cx.simulate_keystrokes("shift-up");
+        cx.simulate_keystrokes("up");
+        assert!(
+            h.events.borrow().is_empty(),
+            "selection must not be replaced by a prompt"
+        );
+    }
+
+    #[gpui::test]
+    fn down_in_a_fresh_draft_is_cursor_movement_not_history(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        h.editor.update(cx, |e, cx| {
+            e.set_prompt_history_enabled(true);
+            e.set_text("fresh draft", cx);
+            e.model.doc_start(false);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down");
+        assert!(h.events.borrow().is_empty());
+        assert_eq!(
+            h.editor.read_with(cx, |e, _| e.model.head()),
+            "fresh draft".len()
+        );
+    }
+
+    #[gpui::test]
+    fn prompt_recall_is_opt_in_and_never_runs_during_ime(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, false, 500.);
+        cx.simulate_keystrokes("up down");
+        assert!(h.events.borrow().is_empty());
+        h.editor.update(cx, |e, _| {
+            e.set_prompt_history_enabled(true);
+            e.set_prompt_history_browsing(true);
+        });
+        cx.simulate_keystrokes("up down");
+        assert_eq!(
+            h.events.borrow().as_slice(),
+            &[ComposerEvent::Up, ComposerEvent::Down]
+        );
+        cx.update(|window, cx| {
+            h.editor.update(cx, |e, cx| {
+                e.replace_and_mark_text_in_range(None, "候補", None, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        h.events.borrow_mut().clear();
+        cx.simulate_keystrokes("up down");
+        assert!(!h.events.borrow().contains(&ComposerEvent::Up));
+        assert!(!h.events.borrow().contains(&ComposerEvent::Down));
     }
 
     #[gpui::test]
