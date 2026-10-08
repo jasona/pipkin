@@ -375,7 +375,7 @@ impl Workspace {
             .when(self.subagent_rows.total > 0, |d| {
                 d.child(
                     Btn::new("show-subagent-tasks")
-                        .label(format!("Subagents {}", self.subagent_rows.total))
+                        .label(self.subagent_rows.tab_label())
                         .aria(format!(
                             "Show subagent tasks, {} active",
                             self.subagent_rows.active

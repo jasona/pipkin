@@ -190,7 +190,7 @@ impl Workspace {
             )
             .child(
                 Btn::new("inspector-subagents-tab")
-                    .label(format!("Subagents {}", self.subagent_rows.total))
+                    .label(self.subagent_rows.tab_label())
                     .selected(agents)
                     .aria(format!(
                         "Show subagent tasks, {} active, {} total",

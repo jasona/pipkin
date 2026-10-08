@@ -14,11 +14,18 @@ composer away from the main conversation.
   names. The engine currently provides only a bounded task excerpt, not a complete prompt.
 - Task rows wrap their descriptions. Running, Pending, Waiting, Completing, Completed,
   Failed and Stopped have explicit text and library icons; unknown statuses remain Unknown.
-- Counts cover the whole available directory. Active tasks come first, then stopped/failed
-  work, then completed work, preserving engine order within each group. At most 100 task
-  rows mount, with an explicit total/bound notice. This is not pagination.
+- Counts cover the whole available directory. Current work is visible by default; Completed,
+  Failed and Stopped tasks move into **Show finished tasks (N)** history, collapsed initially.
+  Unknown statuses stay visible rather than being mistaken for success. The header/tab badge
+  counts active tasks, not accumulated history, and has no number when none are active.
+- History is a UI projection, not deletion of engine records. Expanding it shows the latest
+  available directory entries first (reverse engine order), bounded to 100 finished rows.
+  Current work has a separate 100-row bound, so old history cannot crowd it out. A bound
+  notice explains either limit. History resets to collapsed on conversation/generation
+  changes, not routine status updates or selection changes. This is not pagination.
 - Selecting a task replaces the directory with its focused read-only activity view.
-  **All tasks** returns to the directory. Task execution status is independent of activity
+  **All tasks** returns to the directory. A selected task remains readable when it finishes,
+  even with history collapsed or outside its bound. Task execution status is independent of activity
   transport: Loading, Live, Snapshot, and unavailable/disconnected are not conflated.
 - The activity view retains the adapter's bounded plain-text previews and shortening
   notices. It is not a full-history browser or a Markdown editor. Changes remain one tab
@@ -72,3 +79,25 @@ proof of a 280px docked inspector. Long-content/many-child behavior has pure tes
 complete native visual matrix. No owner profile, credentials, clipboard, compositor config
 or unrelated window was changed. Local captures/logs are in
 `/tmp/pipkin-subagents-visual.UjBulA/` (temporary, not tracked release artifacts).
+
+### Finished-history follow-up — 2026-10-08
+
+The owner reported that the new tab looks great, but completed agents accumulated.
+The current-work/history split addresses that without deleting durable engine results.
+Workspace tests, all-target Clippy and formatting passed for an isolated tree containing
+only this follow-up's changes; release build and native checks passed before separate
+concurrent session-Changes work began. That in-progress work is not part of this change.
+Added tests cover
+running → completed removal from default rows, retained selected detail, history expansion/
+collapse, history bounds and reverse directory order, disabled-by-default history after
+scope changes, and failed/stopped/unknown classification. Existing backend guards are unchanged.
+
+An owned disposable demo window was tested using PID-pinned guarded keyboard input only.
+Dark desktop and light Large-text 720px drawer captures/OCR show only Counter A in the
+current directory, **Show finished tasks (2)**, and an active-only **Subagents 1** badge.
+The palette still opened completed Counter B's Snapshot with history collapsed, then
+returned to the collapsed directory. The window was closed and guard unpinned.
+Captures: `/tmp/pipkin-history-native.yTQDou/`. PNG visual inspection is still unavailable
+in this harness; the disclosure click path, actual engine completion transitions and Mac
+interaction were not natively exercised. History visibility/order and completion transitions
+are covered by pure presentation tests, not claimed as real-engine/native interaction evidence.

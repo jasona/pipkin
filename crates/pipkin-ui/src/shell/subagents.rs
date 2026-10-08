@@ -42,6 +42,9 @@ impl TaskStatus {
             Self::Pending | Self::Running | Self::Waiting | Self::Completing
         )
     }
+    fn finished(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Aborted)
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Pending => "Pending",
@@ -79,6 +82,8 @@ pub(super) struct SubagentRows {
     key: Option<(ConversationId, u64)>,
     source: Vec<SubagentInfo>,
     pub rows: Vec<TaskRow>,
+    pub finished_rows: Vec<TaskRow>,
+    pub show_finished: bool,
     pub selected_row: Option<TaskRow>,
     pub total: usize,
     pub active: usize,
@@ -86,6 +91,25 @@ pub(super) struct SubagentRows {
     pub attention: usize,
 }
 impl SubagentRows {
+    pub fn tab_label(&self) -> String {
+        if self.active == 0 {
+            "Subagents".into()
+        } else {
+            format!("Subagents {}", self.active)
+        }
+    }
+    fn finished_count(&self) -> usize {
+        self.completed + self.attention
+    }
+    fn visible_rows(&self) -> impl Iterator<Item = &TaskRow> {
+        self.rows
+            .iter()
+            .chain(
+                self.finished_rows
+                    .iter()
+                    .take(if self.show_finished { 100 } else { 0 }),
+            )
+    }
     pub fn refresh(
         &mut self,
         key: Option<(ConversationId, u64)>,
@@ -104,6 +128,9 @@ impl SubagentRows {
         if self.key == key && self.source == children {
             return;
         }
+        if self.key != key {
+            self.show_finished = false;
+        }
         self.key = key;
         self.source = children.to_vec();
         self.total = children.len();
@@ -118,15 +145,21 @@ impl SubagentRows {
                 _ => {}
             }
         }
-        // Active/attention tasks first, preserving engine order within each group. The bound
-        // applies after grouping, so old finished work cannot hide every active task.
-        let mut ordered = children.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|row| match TaskStatus::from_engine(&row.status) {
-            status if status.active() => 0,
-            TaskStatus::Failed | TaskStatus::Aborted => 1,
-            _ => 2,
-        });
-        self.rows = ordered.into_iter().take(100).map(task_row).collect();
+        // Keep current work separate from collapsed history. Unknown statuses remain visible
+        // rather than being mistaken for a terminal outcome. Each group has its own bound.
+        self.rows = children
+            .iter()
+            .filter(|child| !TaskStatus::from_engine(&child.status).finished())
+            .take(100)
+            .map(task_row)
+            .collect();
+        self.finished_rows = children
+            .iter()
+            .rev()
+            .filter(|child| TaskStatus::from_engine(&child.status).finished())
+            .take(100)
+            .map(task_row)
+            .collect();
     }
 }
 
@@ -442,7 +475,51 @@ impl Workspace {
                 directory = directory.child(div().p(px(12.0)).flex().flex_col().gap(px(8.0)).child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("No delegated tasks yet"))
                     .child(div().text_size(t.small_size()).text_color(c.text_muted).child("When Pi delegates work, follow each task here. Ask it to use subagents for independent work.")));
             }
-            for row in &self.subagent_rows.rows {
+            if self.subagent_rows.finished_count() > 0 {
+                let toggle = this.clone();
+                directory = directory.child(
+                    Btn::new("subagents-finished-toggle")
+                        .icon(if self.subagent_rows.show_finished {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        })
+                        .label(format!(
+                            "{} finished tasks ({})",
+                            if self.subagent_rows.show_finished {
+                                "Hide"
+                            } else {
+                                "Show"
+                            },
+                            self.subagent_rows.finished_count()
+                        ))
+                        .aria(format!(
+                            "{} finished subagent history",
+                            if self.subagent_rows.show_finished {
+                                "Hide"
+                            } else {
+                                "Show"
+                            }
+                        ))
+                        .on_click(move |_, cx| {
+                            toggle.update(cx, |w, cx| {
+                                w.subagent_rows.show_finished = !w.subagent_rows.show_finished;
+                                cx.notify();
+                            });
+                        }),
+                );
+                if self.subagent_rows.rows.is_empty() {
+                    directory = directory.child(
+                        div()
+                            .id("subagents-idle")
+                            .role(Role::Status)
+                            .p(px(12.0))
+                            .text_color(c.text_muted)
+                            .child("No active tasks. Finished work is kept in history."),
+                    );
+                }
+            }
+            for row in self.subagent_rows.visible_rows() {
                 let id = row.id;
                 let click = this.clone();
                 let key = this.clone();
@@ -505,15 +582,18 @@ impl Workspace {
                         .child(separator(cx)),
                 );
             }
-            if self.subagent_rows.total > 100 {
+            let current_count = self.subagent_rows.total - self.subagent_rows.finished_count();
+            if current_count > 100
+                || (self.subagent_rows.show_finished && self.subagent_rows.finished_count() > 100)
+            {
                 directory = directory.child(
                     div()
                         .p(px(12.0))
                         .text_size(t.small_size())
                         .text_color(c.warning)
                         .child(format!(
-                            "Showing 100 of {} tasks; active work is listed first.",
-                            self.subagent_rows.total
+                            "Showing up to 100 current tasks and 100 finished tasks when history is open ({} current, {} finished).",
+                            current_count, self.subagent_rows.finished_count()
                         )),
                 );
             }
@@ -622,12 +702,84 @@ mod tests {
         );
         assert_eq!(rows.selected_row.as_ref().unwrap().id, 110);
         assert_eq!(rows.rows[0].id, 111);
-        assert_eq!(rows.rows[1].id, 112);
+        assert_eq!(rows.rows.len(), 1);
+        assert_eq!(rows.finished_rows[0].id, 112);
+        assert_eq!(rows.finished_rows.len(), 100);
+        assert_eq!(rows.visible_rows().count(), 1);
+        children.extend((201..321).map(|id| task(id, "Current work.", "running")));
+        rows.refresh(Some((ConversationId(1), 2)), &children, Some(110));
+        assert_eq!(rows.active, 121);
         assert_eq!(rows.rows.len(), 100);
+        assert_eq!(rows.finished_rows.len(), 100);
+        rows.show_finished = true;
+        assert_eq!(rows.visible_rows().count(), 200);
         rows.refresh(Some((ConversationId(2), 1)), &[], None);
         assert!(rows.rows.is_empty());
         assert_eq!(rows.active, 0);
     }
+    #[test]
+    fn finished_tasks_leave_current_work_without_discarding_selected_detail() {
+        let key = Some((ConversationId(1), 2));
+        let mut children = vec![
+            task(1, "Count slowly.", "running"),
+            task(2, "Old result.", "done"),
+        ];
+        let mut rows = SubagentRows::default();
+        rows.refresh(key, &children, Some(1));
+        assert_eq!(rows.tab_label(), "Subagents 1");
+        assert_eq!(
+            rows.visible_rows().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1]
+        );
+        children[0].status = "done".into();
+        rows.refresh(key, &children, Some(1));
+        assert!(rows.visible_rows().next().is_none());
+        assert_eq!(rows.tab_label(), "Subagents");
+        assert_eq!(rows.selected_row.as_ref().unwrap().id, 1);
+        assert_eq!(rows.selected_row.as_ref().unwrap().status, TaskStatus::Done);
+        rows.show_finished = true;
+        assert_eq!(
+            rows.visible_rows().map(|r| r.id).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        rows.refresh(key, &children, None);
+        assert!(
+            rows.show_finished,
+            "selection changes must not collapse history"
+        );
+        rows.show_finished = false;
+        assert!(rows.visible_rows().next().is_none());
+        assert_eq!(
+            children.len(),
+            2,
+            "presentation must not delete engine history"
+        );
+        rows.show_finished = true;
+        rows.refresh(Some((ConversationId(2), 1)), &children, None);
+        assert!(
+            !rows.show_finished,
+            "history starts collapsed in a new scope"
+        );
+    }
+
+    #[test]
+    fn stopped_failed_and_unknown_are_not_mistaken_for_running_work() {
+        let children = vec![
+            task(1, "Unknown.", "new-status"),
+            task(2, "Stopped.", "aborted"),
+            task(3, "Failed.", "failed"),
+        ];
+        let mut rows = SubagentRows::default();
+        rows.refresh(Some((ConversationId(1), 1)), &children, None);
+        assert_eq!(
+            rows.visible_rows().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(rows.finished_count(), 2);
+        assert_eq!(rows.attention, 2);
+        assert_eq!(rows.active, 0);
+    }
+
     #[test]
     fn loading_live_snapshot_and_disconnection_are_not_conflated() {
         assert_eq!(
