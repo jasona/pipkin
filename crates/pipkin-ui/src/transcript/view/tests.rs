@@ -210,6 +210,89 @@ fn tail_follow_pauses_when_reading_above_and_resumes_on_jump(cx: &mut TestAppCon
     assert!(stats(&h, cx).following);
 }
 
+fn sync_snapshot(h: &Harness, items: Vec<TranscriptItem>, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        h.model.update(cx, |m, cx| {
+            let c = m.state.current().unwrap();
+            let event = BackendEvent {
+                conversation: c.id,
+                generation: c.generation,
+                op: None,
+                kind: EventKind::Synced { items },
+            };
+            m.apply_event(event, cx);
+        });
+    });
+    frame(h, cx);
+}
+
+#[gpui::test]
+fn engine_snapshots_preserve_reading_position_and_resume_at_the_bottom(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 200);
+    list_of(&h, 1, cx).scroll_by(px(-3000.));
+    frame(&h, cx);
+    let before = anchor(&h, 1, cx);
+    assert!(!stats(&h, cx).following);
+    for n in 201..206 {
+        sync_snapshot(&h, items(0..n), cx);
+        assert_eq!(anchor(&h, 1, cx), before);
+        assert!(!stats(&h, cx).following);
+    }
+    // A same-length snapshot can also grow the last message.
+    let mut snapshot = items(0..205);
+    snapshot.last_mut().unwrap().kind = ItemKind::Assistant {
+        text: "New output below the reader.\n\n".repeat(100),
+        streaming: true,
+    };
+    sync_snapshot(&h, snapshot, cx);
+    assert_eq!(anchor(&h, 1, cx), before);
+    assert!(!stats(&h, cx).following);
+
+    list_of(&h, 1, cx).scroll_by(px(1_000_000.));
+    frame(&h, cx);
+    assert!(stats(&h, cx).following);
+    sync_snapshot(&h, items(0..206), cx);
+    assert!(stats(&h, cx).following);
+}
+
+#[gpui::test]
+fn snapshot_with_earlier_history_keeps_the_same_message_visible(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 0);
+    open(&h.model, 1, items(100..300), false, cx);
+    frame(&h, cx);
+    list_of(&h, 1, cx).scroll_by(px(-3000.));
+    frame(&h, cx);
+    let (ix, offset) = anchor(&h, 1, cx);
+    assert!(ix > 1);
+    sync_snapshot(&h, items(50..301), cx);
+    assert_eq!(anchor(&h, 1, cx), (ix + 50, offset));
+    assert!(!stats(&h, cx).following);
+}
+
+#[gpui::test]
+fn missed_append_note_does_not_resume_following(cx: &mut TestAppContext) {
+    let (h, cx) = setup(cx, 200);
+    list_of(&h, 1, cx).scroll_by(px(-3000.));
+    frame(&h, cx);
+    let before = anchor(&h, 1, cx);
+    cx.update(|_, cx| {
+        h.model.update(cx, |m, cx| {
+            // Model notification without a structural note exercises ensure_conv's fallback.
+            m.state
+                .conversations
+                .iter_mut()
+                .find(|c| c.id == ConversationId(1))
+                .unwrap()
+                .items
+                .push(item(200));
+            cx.notify();
+        });
+    });
+    frame(&h, cx);
+    assert_eq!(anchor(&h, 1, cx), before);
+    assert!(!stats(&h, cx).following);
+}
+
 #[gpui::test]
 fn prepending_history_keeps_the_viewport_anchored(cx: &mut TestAppContext) {
     let (h, cx) = setup(cx, 0);

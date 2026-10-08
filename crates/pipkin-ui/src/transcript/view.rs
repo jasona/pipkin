@@ -85,6 +85,8 @@ pub struct TranscriptStats {
 
 struct ConvView {
     list: ListState,
+    /// Message identities for restoring the reading anchor after an engine snapshot.
+    item_ids: Vec<ItemId>,
     doc: Document,
     expanded: HashSet<ItemId>,
     /// Runs of tool steps shown in full, by the id of the run's first step. A run not in here
@@ -92,6 +94,31 @@ struct ConvView {
     steps_open: HashSet<ItemId>,
     selection: Option<Selection>,
     last_used: u64,
+}
+
+impl ConvView {
+    fn reset_items(&mut self, item_ids: Vec<ItemId>) {
+        let following = self.list.is_following_tail();
+        let top = self.list.logical_scroll_top();
+        let anchored_item = top
+            .item_ix
+            .checked_sub(1)
+            .and_then(|i| self.item_ids.get(i));
+        let item_ix = anchored_item
+            .and_then(|id| item_ids.iter().position(|candidate| candidate == id))
+            .map(|i| i + 1)
+            .unwrap_or_else(|| top.item_ix.min(item_ids.len()));
+        self.list.reset(item_ids.len() + 1);
+        if following {
+            self.list.scroll_to_end();
+        } else {
+            self.list.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item: top.offset_in_item,
+            });
+        }
+        self.item_ids = item_ids;
+    }
 }
 
 struct Drag {
@@ -410,6 +437,15 @@ impl TranscriptView {
             .map_or(1, |c| c.items.len() + 1)
     }
 
+    fn item_ids(&self, conv: ConversationId, cx: &App) -> Vec<ItemId> {
+        self.model
+            .read(cx)
+            .state
+            .conversation(conv)
+            .map(|c| c.items.iter().map(|item| item.id).collect())
+            .unwrap_or_default()
+    }
+
     fn make_list(&mut self, conv: ConversationId, cx: &mut Context<Self>) -> ListState {
         let total = self.total_rows(conv, cx);
         let list = ListState::new(total, ListAlignment::Bottom, px(OVERDRAW));
@@ -449,10 +485,12 @@ impl TranscriptView {
                 }
             }
             let list = self.make_list(conv, cx);
+            let item_ids = self.item_ids(conv, cx);
             self.convs.insert(
                 conv,
                 ConvView {
                     list,
+                    item_ids,
                     doc: Document::default(),
                     expanded: HashSet::new(),
                     steps_open: HashSet::new(),
@@ -461,31 +499,31 @@ impl TranscriptView {
                 },
             );
         }
+        let needs_reset = self.convs[&conv].list.item_count() != total;
+        let item_ids = needs_reset.then(|| self.item_ids(conv, cx));
         let cv = self.convs.get_mut(&conv).unwrap();
         cv.last_used = self.tick;
-        if cv.list.item_count() != total {
-            // Safety net if a note was missed: resync and follow the tail.
-            cv.list.reset(total);
-            cv.list.set_follow_mode(gpui::FollowMode::Tail);
-            cv.list.scroll_to_end();
+        if let Some(item_ids) = item_ids {
+            // A missed note must not take the reader back to the tail either.
+            cv.reset_items(item_ids);
         }
     }
 
     fn on_note(&mut self, note: &Note, cx: &mut Context<Self>) {
         match note {
             Note::ItemsReset(c) => {
-                let total = self.total_rows(*c, cx);
+                let item_ids = self.item_ids(*c, cx);
                 if let Some(cv) = self.convs.get_mut(c) {
-                    cv.list.reset(total);
-                    cv.list.set_follow_mode(gpui::FollowMode::Tail);
-                    cv.list.scroll_to_end();
+                    cv.reset_items(item_ids);
                     cv.selection = None;
                     cv.doc = Document::default();
                 }
             }
             Note::ItemsAppended(c, _) => {
-                let total = self.total_rows(*c, cx);
+                let item_ids = self.item_ids(*c, cx);
+                let total = item_ids.len() + 1;
                 if let Some(cv) = self.convs.get_mut(c) {
+                    cv.item_ids = item_ids;
                     let old = cv.list.item_count();
                     if total > old {
                         cv.list.splice(old..old, total - old);
@@ -504,8 +542,10 @@ impl TranscriptView {
                 }
             }
             Note::ItemsPrepended(c, _) => {
-                let total = self.total_rows(*c, cx);
+                let item_ids = self.item_ids(*c, cx);
+                let total = item_ids.len() + 1;
                 if let Some(cv) = self.convs.get_mut(c) {
+                    cv.item_ids = item_ids;
                     let top = cv.list.logical_scroll_top();
                     let old = cv.list.item_count();
                     if total > old {
