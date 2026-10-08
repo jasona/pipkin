@@ -93,19 +93,38 @@ editing, selection and accessibility tree.
 
 The working qualification scope is **x86_64 Arch/Omarchy, Hyprland/Wayland** with a Vulkan-capable GPU driver.
 The current package includes a private, checksum-pinned Node 22 runtime and paired Pi engine; no system Node installation or global npm changes are needed to run it. Git and the desktop/runtime libraries listed in
-[`packaging/PKGBUILD`](packaging/PKGBUILD) are still needed. Building a package from source needs Node/npm and other build tools.
+[`packaging/PKGBUILD`](packaging/PKGBUILD) are still needed. Source setup bootstraps its own private Node/npm; only native build tools are prerequisites.
 Other desktops/distributions and X11 remain experimental. Each artifact's native ABI requirements depend on its
 build inputs; see [runtime inventory and limitations](docs/bundled-licenses.md#native-runtime-inspection).
 Your Pi credentials in `~/.pi/agent` are used unless an alternate agent directory is explicitly selected.
 
-### Arch / Omarchy
+### Build and use it from source (Mac or Linux)
+
+Install your platform's [native build prerequisites](docs/source-setup.md#1-install-native-build-prerequisites-once)
+once, then:
 
 ```sh
 git clone https://github.com/last-refuge/pipkin.git && cd pipkin
-# Prepare the clean, pinned engine and install build dependencies first:
-# follow docs/getting-started.md, then run makepkg with PI_CHECKOUT pointing to that engine.
-pipkin --diagnose --probe            # after installation: offline handshake, not provider authentication
+scripts/setup.sh --run       # fetch pinned tools/engine, include subagents, build, check, launch
 ```
+
+**No manual Pi checkout, patches, npm install or server startup. Subagents are included by default.**
+The launcher selects this checkout as the project so you can use Pipkin to build Pipkin.
+
+```sh
+scripts/run.sh              # run the last successful paired build again
+scripts/setup.sh --install  # install for your user: Linux ~/.local; Mac ~/Applications/Pipkin.app
+scripts/setup.sh --check    # check prerequisites only; no downloads or installation
+```
+
+Mac source builds support Apple Silicon/Intel. Linux source setup targets glibc x86_64 (Arch/Omarchy,
+Debian/Ubuntu/Fedora prerequisites are documented; other desktops remain experimental). The script never
+runs sudo or changes global Node/npm. Each rebuild stages immutable app/engine/runtime files, so you can
+build while the old app runs; **Quit and relaunch to use the new build**. See the
+[complete source setup and self-development guide](docs/source-setup.md).
+
+For a pacman-managed Arch package instead of the per-user installer, see the advanced instructions in
+[getting started](docs/getting-started.md).
 
 ### Experimental generic Linux installer
 
@@ -120,17 +139,12 @@ user-data locations; application database migrations and schema-compatible rollb
 procedure. Verify a download with `scripts/verify-release.sh`. Details:
 [`docs/packaging.md`](docs/packaging.md).
 
-### From source
+### Advanced external engine
 
-```sh
-# Rust is pinned by rust-toolchain.toml
-cargo run -p pipkin-app --release -- --pi-repo ../pi-fork/pi --pi-agent-dir ~/.pi/agent --project .
-```
-
-`--pi-repo` points at a checkout of the Pi engine with its dependencies installed (`npm ci`). Without it (and
-without `--pi-dir` / `--pi-server-id`), Pipkin looks for an installed engine, then for a running server.
-The checkout must have validated generated model inputs as well as dependencies; see
-[the pinned-engine build and first-run guide](docs/getting-started.md).
+`--pi-repo` / `--pi-dir` remain available for engine development or separately managed servers. A vanilla
+Pi checkout does **not** contain Pipkin's staged authentication/subagent patches; rebuilding only the Rust
+client cannot add those capabilities to an attached old engine. Prefer `scripts/setup.sh` / `scripts/run.sh`
+for normal source use. See [getting started](docs/getting-started.md) for advanced package preparation.
 
 Provider setup, missing/expired credentials and model refresh are documented in
 [getting started](docs/getting-started.md). Data ownership, quitting, uncertain work and diagnostic privacy are in
@@ -142,7 +156,7 @@ not a public bug report.
 
 | You want to | Run |
 | --- | --- |
-| Talk to a real model | `pipkin` (installed), or the `cargo run` line above with your `~/.pi/agent` |
+| Talk to a real model | `scripts/run.sh` (source build), or `pipkin` / the installed Mac app; configure the provider in Pipkin |
 | Try it with no keys and no network | `scripts/try-m2.sh` (a real engine with a scripted offline provider; a prompt containing "slow" holds the run so you can steer, queue and stop it) |
 | Look around with fake data | `pipkin --demo normal` (also: `followup`, `failure`, `unknown`, `stressed`, `large`, `persist-fail`) |
 | Check an installation | `pipkin --version`, `pipkin --diagnose [--probe]` |
@@ -206,7 +220,7 @@ flowchart LR
 
 **Not done or not verified yet:** a screen reader does not yet speak typed characters in the composer; input methods
 are verified with one engine; 150% scale, minimize / suspend / resume, a clean `pacman -U` install and a long soak are
-for a person to run; macOS and Windows are not supported; there is no published release or update channel. The
+for a person to run; macOS has experimental native builds but Windows remains deferred; there is no published release or update channel. The
 owner-run checks are written up in [`docs/native-gate-testing.md`](docs/native-gate-testing.md) and the full plan, with
 what each milestone really covers, is in [`docs/rust-desktop-client-plan.md`](docs/rust-desktop-client-plan.md).
 
@@ -215,7 +229,8 @@ what each milestone really covers, is in [`docs/rust-desktop-client-plan.md`](do
 | Arch / Omarchy, Wayland (Hyprland) | **Alpha** |
 | X11 / Xwayland | Builds and starts; seen under Xwayland only |
 | GNOME, KDE, other distributions | Unverified |
-| macOS, Windows | Not supported ([why](docs/platforms.md)) |
+| macOS Apple Silicon / Intel | Experimental source setup; Apple Silicon native CI/artifacts verified, interactive acceptance partial |
+| Windows | Deferred ([platform status](docs/platforms.md)) |
 
 ## Developing
 

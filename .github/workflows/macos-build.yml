@@ -44,7 +44,7 @@ jobs:
           node-version: "22.23.3"
       - name: Provision a separate pinned engine on the disposable runner
         run: |
-          brew install coreutils gnu-tar findutils zstd
+          brew install coreutils gnu-tar findutils zstd cmake pkg-config
           echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$(brew --prefix findutils)/libexec/gnubin" >> "$GITHUB_PATH"
           revision=$(<packaging/pi-engine-revision)
@@ -69,6 +69,11 @@ jobs:
           cargo test -p pipkin-app --locked fresh_ids_are_distinct_canonical_protocol_uuid_v4 2>&1 | tee qualification-logs/identity.log
           cargo test -p pipkin-app --locked managed_engine_remembers_a_portable_id 2>&1 | tee qualification-logs/managed-identity.log
           cargo fmt --all --check
+      - name: One-command source build with private Node/npm and default subagents
+        run: |
+          set -o pipefail
+          python3 scripts/test-source-setup.py
+          scripts/setup.sh 2>&1 | tee qualification-logs/source-setup.log
       - name: Build actual native app and retain dependency notices
         run: |
           set -o pipefail

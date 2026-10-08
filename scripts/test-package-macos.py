@@ -196,6 +196,14 @@ with tempfile.TemporaryDirectory(prefix='pipkin-mac-bundle-test-') as temporary:
             raise AssertionError('oversized Pi socket path accepted')
         except RuntimeError as error:
             assert 'socket-path limit' in str(error)
+        before = len(calls)
+        with patch.object(module.sys, 'argv', [str(script), 'aarch64-apple-darwin', '--app-only']):
+            module.main()
+        assert (out / 'Pipkin.app').exists()
+        assert not list(out.glob('*.dmg'))
+        assert not any(args[0] == 'hdiutil' for args in calls[before:])
+        assert sum('--probe' in args for args in calls[before:]) == 1
+        assert sum(args[:2] == ['codesign', '--verify'] for args in calls[before:]) == 3
         module.main()  # An identified prior output can be replaced.
         corrupt_dmg = True
         before = sum(args[:2] == ['hdiutil', 'detach'] for args in calls)

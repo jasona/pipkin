@@ -127,6 +127,11 @@ def main():
             subprocess.run([str(restored / 'Contents/MacOS/pipkin'), '--diagnose', '--probe',
                             '--data-dir', str(Path(profile) / 'app-data')], env=environment, check=True)
         subprocess.run(verify + [str(restored)], check=True)  # Engine startup must not mutate sealed resources.
+    if '--app-only' in sys.argv[2:]:
+        # Local source install should not depend on Finder/DMG creation or mount availability.
+        (out / 'SHA256SUMS').write_text(f'{sha256(archive)}  {archive.name}\n')
+        print(f'local macOS app: {bundle}; verified ZIP {archive.name}')
+        return
     # Build the drag-to-Applications image from the same sealed bundle, before removing it.
     # The source folder must contain only the app and shortcut: never package build reports or
     # temporary verification data into the volume.

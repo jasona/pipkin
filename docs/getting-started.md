@@ -4,7 +4,16 @@ Pipkin is still an unsigned, unpublished **0.0.1 qualification build**, not an a
 release target is x86_64 Arch/Omarchy with Hyprland/Wayland. Other desktops and pure X11 remain experimental.
 See [release gates](v1-release-gates.md) for automated, observed, failed and unverified results.
 
-## Build an identified package
+## Recommended: one-command source setup
+
+After the [native prerequisites](source-setup.md#1-install-native-build-prerequisites-once), run
+`scripts/setup.sh --run` from this checkout. It obtains private Node/npm, fetches the pinned Pi source,
+includes Pipkin's OAuth and default-enabled subagent patches, builds and offline-checks the paired app,
+then launches with this checkout as the project. `scripts/run.sh` starts the last successful build;
+`scripts/setup.sh --install` adds a per-user installation on Mac or Linux. No manual engine/server setup
+or global Node installation is needed. See [source setup/self-development](source-setup.md).
+
+## Advanced: build a pacman-managed Arch package
 
 Before starting, ensure Git, Node.js 22.19+, npm and zstd are available; install the Arch build dependencies listed
 in `packaging/PKGBUILD` through your normal package-management workflow. The preparation commands need these tools
