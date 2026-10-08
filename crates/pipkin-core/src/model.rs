@@ -188,14 +188,16 @@ pub struct FileChange {
     pub hunks: Vec<Hunk>,
 }
 
-/// Whether the workspace diff is current. A failed/in-flight scan keeps the last successful
-/// result in memory, but it must not be presented as a current empty or clean workspace.
+/// Collection status and coverage of a conversation's displayed change evidence.
+/// A failed/in-flight collection preserves the last successful result, not a claim of no changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ChangesState {
     #[default]
     Unscanned,
     Loading,
     Ready,
+    /// Session tool evidence, with an explicit description of its coverage.
+    Recorded(String),
     NotARepository,
     Unavailable(String),
 }

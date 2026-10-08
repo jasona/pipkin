@@ -91,7 +91,7 @@ impl Workspace {
                 .child(
                     Btn::new("refresh-changes")
                         .icon("refresh-cw")
-                        .aria("Refresh workspace changes")
+                        .aria("Refresh this session's recorded changes")
                         .disabled(!avail.refresh_changes)
                         .on_click(move |_, cx| {
                             refresh_this.update(cx, |t, cx| t.dispatch(Command::RefreshChanges, cx))
@@ -138,7 +138,7 @@ impl Workspace {
                     } else if demo {
                         "Workspace changes, demo"
                     } else {
-                        "Workspace changes"
+                        "Session changes"
                     })
                     .flex_1()
                     .truncate()
@@ -148,7 +148,7 @@ impl Workspace {
                     } else if demo {
                         "Workspace changes · Demo"
                     } else {
-                        "Workspace changes"
+                        "Session changes"
                     }),
             )
             .children(launch_buttons)
@@ -180,7 +180,7 @@ impl Workspace {
                 Btn::new("inspector-changes-tab")
                     .label("Changes")
                     .selected(!agents)
-                    .aria("Show workspace changes")
+                    .aria("Show this session's recorded changes")
                     .on_click(move |_, cx| {
                         change_tab.update(cx, |w, cx| {
                             w.inspector_tab = InspectorTab::Changes;
@@ -281,7 +281,11 @@ impl Workspace {
                         .h(px(188.0 * t.scale.max(1.0)))
                         .object_fit(gpui::ObjectFit::Contain),
                 )
-                .child(div().text_color(c.text_muted).child("No changes yet"))
+                .child(div().text_color(c.text_muted).child(if demo {
+                    "No changes yet"
+                } else {
+                    "No recorded file edits"
+                }))
                 .child(
                     div()
                         .text_size(t.small_size())
@@ -289,7 +293,7 @@ impl Workspace {
                         .child(if demo {
                             "Simulated file edits appear here with their diffs."
                         } else {
-                            "Changes in this project appear here after Pi starts working, or when you refresh."
+                            "Recorded file edits from this session appear here. Other sessions' changes are not included."
                         }),
                 )
                 .into_any_element()
@@ -564,6 +568,7 @@ fn changes_status(state: &ChangesState, has_changes: bool) -> Option<(&'static s
             "Changes unavailable",
             format!("{reason}\n{previous} Fix the problem, then retry the scan."),
         )),
+        ChangesState::Recorded(detail) => Some(("Recorded session changes", detail.clone())),
         ChangesState::Loading => Some(("Refreshing changes…", previous.into())),
         ChangesState::NotARepository => Some((
             "Not a Git repository",

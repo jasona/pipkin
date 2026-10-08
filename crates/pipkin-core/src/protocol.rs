@@ -328,9 +328,9 @@ pub enum EventKind {
         ok: bool,
     },
     ChangesReported(Vec<FileChange>),
-    /// The workspace's current changes, independent of any run. Replaces what is shown.
+    /// Changes belonging to this conversation. Replaces its displayed file evidence.
     ChangesSynced(Vec<FileChange>),
-    /// Progress or failure of a project scan; failure does not erase the last successful diff.
+    /// Collection progress, coverage, or failure; failure preserves the last successful result.
     ChangesScanState(ChangesState),
     /// Pi's authoritative, per-conversation thinking setting and supported levels.
     ThinkingState {

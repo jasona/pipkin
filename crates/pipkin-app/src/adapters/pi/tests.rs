@@ -1771,7 +1771,7 @@ fn a_failed_creation_is_reported_as_a_notice() {
 }
 
 #[test]
-fn explicit_changes_refresh_reports_failure_non_git_and_recovers_without_engine_input() {
+fn session_changes_refresh_ignores_global_git_state_and_does_not_send_engine_input() {
     let root = tempfile::tempdir().unwrap();
     let project = root.path().join("project");
     std::fs::create_dir(&project).unwrap();
@@ -1828,51 +1828,37 @@ fn explicit_changes_refresh_reports_failure_non_git_and_recovers_without_engine_
     let EventKind::ChangesSynced(files) = success.kind else {
         unreachable!()
     };
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0].path, "notes.txt");
+    assert!(
+        files.is_empty(),
+        "unrelated workspace files must not enter the session inspector"
+    );
 
-    // A missing working directory is a scan failure, not a clean/non-Git project.
+    // Recorded session evidence does not depend on today's working directory.
     let moved = root.path().join("moved");
     std::fs::rename(&project, &moved).unwrap();
     refresh();
-    let failed = event_where(&env, |kind| {
-        matches!(
-            kind,
-            EventKind::ChangesScanState(ChangesState::Unavailable(_))
-        )
-    });
-    assert_eq!((failed.conversation, failed.generation), (conv, 7));
+    let recorded = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    assert!(matches!(recorded.kind, EventKind::ChangesSynced(files) if files.is_empty()));
+    assert_eq!((recorded.conversation, recorded.generation), (conv, 7));
     std::fs::rename(&moved, &project).unwrap();
     refresh();
     event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
 
-    // Git itself exiting unsuccessfully must also remain an explicit failure.
+    // Repository configuration cannot contaminate recorded session changes.
     let config_path = project.join(".git/config");
     let original_config = std::fs::read(&config_path).unwrap();
     std::fs::write(&config_path, "[broken\n").unwrap();
     refresh();
-    let git_failed = event_where(&env, |kind| {
-        matches!(
-            kind,
-            EventKind::ChangesScanState(ChangesState::Unavailable(_))
-        )
-    });
-    let EventKind::ChangesScanState(ChangesState::Unavailable(reason)) = git_failed.kind else {
-        unreachable!()
-    };
-    assert!(reason.contains("config"), "{reason}");
+    let recorded = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    assert!(matches!(recorded.kind, EventKind::ChangesSynced(files) if files.is_empty()));
     std::fs::write(&config_path, original_config).unwrap();
     refresh();
     event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
 
     std::fs::rename(project.join(".git"), root.path().join("saved-git")).unwrap();
     refresh();
-    event_where(&env, |kind| {
-        matches!(
-            kind,
-            EventKind::ChangesScanState(ChangesState::NotARepository)
-        )
-    });
+    let recorded = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    assert!(matches!(recorded.kind, EventKind::ChangesSynced(files) if files.is_empty()));
     let agent = agent.lock().unwrap();
     assert!(
         agent.prompts.is_empty() && agent.queued.is_empty() && agent.aborts == 0,
@@ -1915,11 +1901,13 @@ fn automatic_empty_scans_are_quiet_but_file_changes_and_explicit_refresh_are_pub
     let finish_tools = |count: usize| {
         let entries: Vec<_> = (0..count).flat_map(|i| {
             let call_id = format!("c{i}");
+            let name = if i == 3 { "write" } else { "read" };
+            let arguments = if i == 3 { json!({"path": "new.txt", "content": "hello\n"}) } else { json!({"path": "notes.txt"}) };
             [json!({ "id": 2*i+1, "kind": "pi.assistant", "model": [{
                 "role": "assistant", "stopReason": "toolUse", "timestamp": 0,
-                "content": [{ "type": "toolCall", "id": call_id, "name": "write", "arguments": {} }],
+                "content": [{ "type": "toolCall", "id": call_id, "name": name, "arguments": arguments }],
             }] }), json!({ "id": 2*i+2, "kind": "pi.tool-result", "model": [{
-                "role": "toolResult", "toolCallId": call_id, "toolName": "write", "isError": false,
+                "role": "toolResult", "toolCallId": call_id, "toolName": name, "isError": false,
                 "timestamp": 0, "content": [{ "type": "text", "text": "done" }],
             }] })]
         }).collect();
@@ -2041,33 +2029,96 @@ two
     )
     .unwrap();
     let call = json!({ "role": "assistant", "stopReason": "toolUse", "timestamp": 0,
-        "content": [{ "type": "toolCall", "id": "c1", "name": "write", "arguments": {} }] });
-    let result = json!({ "role": "toolResult", "toolCallId": "c1", "toolName": "write", "isError": false,
-        "timestamp": 0, "content": [{ "type": "text", "text": "Successfully wrote" }] });
+        "content": [
+            { "type": "toolCall", "id": "c1", "name": "edit", "arguments": {"path": "notes.txt", "edits": [{"oldText": "one", "newText": "one\ntwo"}]} },
+            { "type": "toolCall", "id": "c2", "name": "write", "arguments": {"path": "new.txt", "content": "hello\n"} },
+        ] });
+    let result = json!({ "role": "toolResult", "toolCallId": "c1", "toolName": "edit", "isError": false,
+        "timestamp": 0, "content": [{ "type": "text", "text": "Successfully replaced" }],
+        "details": {"patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n one\n+two\n"} });
+    let write_result =
+        json!({"role": "toolResult", "toolCallId": "c2", "toolName": "write", "isError": false});
     env.pi.publish(
         "pi.transcript",
         vec![Op::Replace(
             json!({ "conversation": { "id": 1 }, "docs": {}, "entries": [
                 { "id": 1, "kind": "pi.assistant", "model": [call] },
-                { "id": 2, "kind": "pi.tool-result", "model": [result] },
+                { "id": 2, "kind": "pi.tool-result", "model": [result, write_result] },
             ]}),
         )],
     );
     let files = changes(&env);
     let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-    assert_eq!(names, ["notes.txt", "new.txt"], "{files:?}");
-    assert_eq!((files[0].added, files[0].removed), (1, 0));
+    assert_eq!(names, ["new.txt", "notes.txt"], "{files:?}");
+    assert_eq!((files[1].added, files[1].removed), (1, 0));
     assert!(
-        files[1].hunks[0]
+        files[0].hunks[0]
             .lines
             .iter()
-            .all(|l| l.kind == pipkin_core::DiffKind::Add)
+            .all(|l| l.kind == pipkin_core::DiffKind::Context)
+    );
+    assert!(
+        files[0].hunks[0]
+            .header
+            .contains("previous contents unavailable")
     );
     // A transcript change that finishes no tool and ends no run does not rescan.
     let _ = ItemKind::Notice {
         text: String::new(),
         level: pipkin_core::NoticeLevel::Info,
     };
+}
+
+#[test]
+fn changing_sessions_keeps_recorded_changes_separate_even_in_the_same_folder() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(
+        repo.path().join("shared.txt"),
+        "unrelated later workspace edit",
+    )
+    .unwrap();
+    let recorded = |text: &str| {
+        json!({ "conversation": {"id": 1}, "docs": {}, "entries": [
+            {"id": 1, "kind": "pi.assistant", "model": [{"role": "assistant", "content": [
+                {"type": "toolCall", "id": "c", "name": "write", "arguments": {"path": "shared.txt", "content": text}}
+            ]}]},
+            {"id": 2, "kind": "pi.tool-result", "model": [{"role": "toolResult", "toolCallId": "c", "toolName": "write", "isError": false}]}
+        ]})
+    };
+    let (pi, _, _) = agent_mock(
+        &[],
+        vec![("a", recorded("session A")), ("b", recorded("session B"))],
+    );
+    pi.publish("pi.session-directory", vec![Op::Replace(json!({"revision": 2, "sessions": [
+        {"serverId": SERVER_ID, "sessionId": "a", "createdAt": 10, "cwd": repo.path().to_str().unwrap()},
+        {"serverId": SERVER_ID, "sessionId": "b", "createdAt": 5, "cwd": repo.path().to_str().unwrap()},
+    ]}))]);
+    let env = start(pi, true);
+    env.wait_ready();
+    let a = ConversationId(pipkin_core::stable_id("a"));
+    let b = ConversationId(pipkin_core::stable_id("b"));
+    for (conversation, generation, expected) in [
+        (a, 1, "session A"),
+        (b, 1, "session B"),
+        (a, 2, "session A"),
+    ] {
+        env.open(conversation, generation);
+        let event = loop {
+            let event = env.next_event();
+            if event.conversation == conversation
+                && event.generation == generation
+                && matches!(event.kind, EventKind::ChangesSynced(_))
+            {
+                break event;
+            }
+        };
+        let EventKind::ChangesSynced(files) = event.kind else {
+            unreachable!()
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "shared.txt");
+        assert_eq!(files[0].hunks[0].lines[0].text, expected);
+    }
 }
 
 // -------------------------------------------------------------------- steer, queue, stop
@@ -2400,6 +2451,29 @@ fn history_mock(sessions: &[(&str, i64)], view: Value, all: Vec<Value>) -> (Mock
 
 fn view_of(entries: Vec<Value>) -> Value {
     json!({ "conversation": { "id": 1 }, "entries": entries, "docs": {} })
+}
+
+#[test]
+fn session_changes_recover_recorded_edits_from_before_compaction() {
+    let all = vec![
+        json!({"id": 1, "kind": "pi.assistant", "model": [{"role": "assistant", "content": [
+            {"type": "toolCall", "id": "c", "name": "edit", "arguments": {"path": "old.rs", "oldText": "before", "newText": "after"}}
+        ]}]}),
+        json!({"id": 2, "kind": "pi.tool-result", "model": [{"role": "toolResult", "toolCallId": "c", "toolName": "edit", "isError": false}]}),
+        user_entry(3, "continue after compaction"),
+    ];
+    let (pi, _) = history_mock(&[("s", 1)], view_of(vec![all[2].clone()]), all);
+    let env = start(pi, true);
+    let conv = env.conversation(0);
+    env.open(conv, 1);
+    let event = event_where(&env, |kind| matches!(kind, EventKind::ChangesSynced(_)));
+    let EventKind::ChangesSynced(files) = event.kind else {
+        unreachable!()
+    };
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "old.rs");
+    assert_eq!(files[0].hunks[0].lines[0].text, "before");
+    assert_eq!(files[0].hunks[0].lines[1].text, "after");
 }
 
 #[test]

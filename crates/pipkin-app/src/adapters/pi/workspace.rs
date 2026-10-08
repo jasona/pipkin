@@ -1,35 +1,48 @@
-//! Read-only workspace changes for a project directory, from Git.
+//! Bounded unified-diff parsing and change-collection results.
 //!
-//! Everything is an argument array run in the project directory (no shell, no path
-//! interpolation), with a timeout and bounded output. Nothing here writes to the repository:
-//! `GIT_OPTIONAL_LOCKS=0` keeps `git status` from touching the index. These are *workspace*
-//! changes, which can include the user's own edits and other tools' work, so callers must not
-//! present them as the result of one run.
+//! The legacy global Git collector is retained only for parser/collector regression tests.
+//! Production Changes uses session tool evidence, never this directory-wide scan.
 
-use std::io::Read;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::{
+    io::Read,
+    path::Path,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
 use pipkin_core::{DiffKind, DiffLine, FileChange, Hunk};
 
 /// Total bytes of diff text read from `git diff`; more is cut and flagged.
+#[cfg(test)]
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 /// Untracked files shown, and how much of each is read.
+#[cfg(test)]
 const MAX_UNTRACKED_FILES: usize = 50;
+#[cfg(test)]
 const MAX_UNTRACKED_BYTES: usize = 64 * 1024;
 /// Lines kept per file before the rest is summarized.
 const MAX_LINES_PER_FILE: usize = 2000;
+#[cfg(test)]
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The well-known hash of Git's empty tree, for a repository with no commits yet.
+#[cfg(test)]
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Workspace {
+    /// Historical tool evidence belonging to one session, not today's repository diff.
+    Recorded {
+        files: Vec<FileChange>,
+        detail: String,
+    },
     /// The directory is not inside a Git repository (or Git is not installed).
+    #[cfg(test)]
     NotARepository,
     /// Git ran but could not answer.
+    #[cfg(test)]
     Unavailable(String),
+    #[cfg(test)]
     Changes {
         files: Vec<FileChange>,
         /// Output was cut to stay bounded.
@@ -39,6 +52,7 @@ pub enum Workspace {
 
 /// Run `git` with `args` in `dir`; stdout up to `limit` bytes. `Err` on spawn failure, timeout
 /// or a non-zero exit (with stderr's first line).
+#[cfg(test)]
 fn git(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), String> {
     let mut child = Command::new("git")
         .args(args)
@@ -99,6 +113,7 @@ fn git(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), Strin
 }
 
 /// The workspace's current changes: staged and unstaged edits against HEAD, plus untracked files.
+#[cfg(test)]
 pub fn collect(dir: &Path) -> Workspace {
     match git(dir, &["rev-parse", "--is-inside-work-tree"], 64) {
         Ok((out, _)) if out.starts_with(b"true") => {}
@@ -168,6 +183,7 @@ pub fn collect(dir: &Path) -> Workspace {
 }
 
 /// An untracked file shown as an all-added change, bounded and never read if it is not a plain file.
+#[cfg(test)]
 fn untracked_file(dir: &Path, name: &str) -> FileChange {
     let path = dir.join(name);
     // A symlink or special file is listed but never followed or read.
@@ -217,6 +233,7 @@ fn untracked_file(dir: &Path, name: &str) -> FileChange {
     }
 }
 
+#[cfg(test)]
 fn marker(name: &str, why: &str) -> FileChange {
     FileChange {
         path: name.to_owned(),

@@ -77,9 +77,13 @@ real first reply on a clean supported desktop remains an open qualification gate
   remain. It is not undo. A raced successful completion may remain completed.
 - **Steer/queue** are engine-authoritative. If settlement is unknown, wait for reconciliation rather than copying
   and resending the prompt. Timeout does not prove a tool stopped.
-- **Changes** describes the project's current Git working tree, not only edits attributed to the selected chat.
-  Other chats, your editor, and external commands in the same project can affect it. Refresh failures preserve a
-  stale previous result with a reason; a stale result is not a new successful scan.
+- **Changes** shows recorded `edit`/`write` operations from the selected session, not the project's global Git
+  working tree. Switching sessions restores that session's evidence, even when both sessions edited the same file;
+  later changes from your editor or other sessions do not rewrite it. Edit patches/replacements are shown in execution
+  order, not combined into a net diff. Writes show recorded content, without claiming it was an entirely new file.
+  The coverage banner explains missing history, shell/custom-tool changes without recorded file diffs, and unavailable
+  previous contents. Older evidence is loaded from bounded session history; transcript paging can reveal more.
+  Refresh only re-reads session evidence—it does not send agent input or scan unrelated workspace changes.
 - **Search** covers locally cached history, not all engine history. Older material may not yet be cached.
 - **`@` paths** are project-scoped references inserted into the text. Selecting one does **not** attach file contents.
   Use the attachment picker/drag-and-drop when you want an attachment; missing/deleted paths cannot become files by

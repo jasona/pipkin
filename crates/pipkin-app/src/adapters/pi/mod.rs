@@ -25,6 +25,7 @@ pub mod attach;
 mod auth;
 pub mod engine;
 pub mod session;
+mod session_changes;
 mod subagents;
 pub mod transcript;
 pub mod workspace;
@@ -701,6 +702,10 @@ struct Current {
     workspace_ready: bool,
     /// Last scan published for this attachment; unchanged background results do not repaint.
     last_workspace: Option<Workspace>,
+    publish_empty_changes: bool,
+    /// Raw durable entries retain tool edit evidence even after live-view compaction.
+    change_entries: std::collections::BTreeMap<u64, Value>,
+    changes_history_complete: bool,
     /// The oldest entry the live view held last time, to notice a compaction or reset moving it.
     oldest_entry: Option<u64>,
 }
@@ -1160,6 +1165,7 @@ impl Live {
                     // Only explicit refreshes expose progress. Routine scans keep the current
                     // inspector body mounted, including its empty state.
                     current.last_workspace = None;
+                    current.publish_empty_changes = true;
                     worker.emit(
                         conversation,
                         generation,
@@ -1749,6 +1755,16 @@ impl Live {
         };
         match self.history_page(&target, Some(entry), HISTORY_PAGE) {
             Ok((entries, more)) => {
+                if let Some(current) = self.current.as_mut().filter(|current| {
+                    current.conversation == conversation && current.generation == generation
+                }) {
+                    for entry in &entries {
+                        if let Some(id) = entry.get("id").and_then(Value::as_u64) {
+                            current.change_entries.insert(id, entry.clone());
+                        }
+                    }
+                    current.changes_history_complete |= !more;
+                }
                 let mapped = transcript::map_history_page(&entries);
                 worker.emit(
                     conversation,
@@ -1758,6 +1774,7 @@ impl Live {
                         has_older: more,
                     },
                 );
+                self.schedule_changes(worker, conversation, generation);
             }
             Err(message) => fail(
                 worker,
@@ -1954,8 +1971,8 @@ impl Live {
         }
     }
 
-    /// Scan the open session's working directory for changes, off this thread, one scan at a
-    /// time (a request during a scan asks for one more afterwards).
+    /// Collect the open session's recorded tool changes off this thread, one scan at a
+    /// time (a request during a scan asks for one more afterwards). Never read global Git state.
     fn schedule_changes(&mut self, worker: &Worker, conversation: ConversationId, generation: u64) {
         let Some(current) = self
             .current
@@ -1967,16 +1984,8 @@ impl Live {
         if !current.workspace_ready {
             return;
         }
-        let Some(cwd) = current.cwd.clone() else {
-            worker.emit(
-                current.conversation,
-                current.generation,
-                EventKind::ChangesScanState(ChangesState::Unavailable(
-                    "The engine did not report a project folder.".into(),
-                )),
-            );
-            return;
-        };
+        let entries: Vec<_> = current.change_entries.values().cloned().collect();
+        let history_complete = current.changes_history_complete;
         if self.scanning {
             self.rescan = Some((conversation, generation));
             return;
@@ -1985,7 +1994,7 @@ impl Live {
         let (conversation, generation) = (current.conversation, current.generation);
         let tx = worker.tx.clone();
         thread::spawn(move || {
-            let workspace = workspace::collect(Path::new(&cwd));
+            let workspace = session_changes::collect(&entries, history_complete);
             let _ = tx.send(Msg::Changes {
                 conversation,
                 generation,
@@ -2003,6 +2012,9 @@ impl Live {
     ) {
         self.scanning = false;
         // Only the conversation that is still open may show the result.
+        let had_files = self.current.as_ref().is_some_and(|current| {
+            matches!(&current.last_workspace, Some(Workspace::Recorded { files, .. }) if !files.is_empty())
+        });
         let changed = self
             .current
             .as_mut()
@@ -2016,10 +2028,23 @@ impl Live {
             });
         if changed {
             let kind = match workspace {
+                Workspace::Recorded { files, detail } => {
+                    let explicit = self
+                        .current
+                        .as_mut()
+                        .is_some_and(|current| std::mem::take(&mut current.publish_empty_changes));
+                    if explicit || had_files || !files.is_empty() {
+                        worker.emit(conversation, generation, EventKind::ChangesSynced(files));
+                    }
+                    EventKind::ChangesScanState(ChangesState::Recorded(detail))
+                }
+                #[cfg(test)]
                 Workspace::Changes { files, .. } => EventKind::ChangesSynced(files),
+                #[cfg(test)]
                 Workspace::NotARepository => {
                     EventKind::ChangesScanState(ChangesState::NotARepository)
                 }
+                #[cfg(test)]
                 Workspace::Unavailable(reason) => {
                     log::warn!("workspace changes unavailable: {reason}");
                     EventKind::ChangesScanState(ChangesState::Unavailable(reason))
@@ -2149,7 +2174,7 @@ impl Live {
         let oldest_entry = transcript::oldest_entry_id(&view);
         let mapped = transcript::map_view(&view);
         let (tools_done, busy) = (tools_done(&mapped), mapped.busy);
-        let workspace_ready = !mapped.items.is_empty();
+        let workspace_ready = tools_done > 0 || has_older;
         let queue = mapped.queue.clone();
         let kind = if initial {
             EventKind::Opened {
@@ -2200,6 +2225,45 @@ impl Live {
                 },
             );
         }
+        let mut change_entries = std::collections::BTreeMap::new();
+        let mut changes_history_complete = !has_older;
+        if has_older {
+            let mut before = oldest_entry;
+            // Bound history retrieval. Missing older evidence is disclosed, never inferred
+            // from today's working tree. Normal transcript paging remains independent.
+            for _ in 0..8 {
+                let Ok((entries, more)) = self.history_page(&target, before, HISTORY_PAGE) else {
+                    break;
+                };
+                let next = entries
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_u64))
+                    .min();
+                for entry in entries {
+                    if let Some(id) = entry.get("id").and_then(Value::as_u64) {
+                        change_entries.insert(id, entry);
+                    }
+                }
+                if !more {
+                    changes_history_complete = true;
+                    break;
+                }
+                if next.is_none() || next == before {
+                    break;
+                }
+                before = next;
+            }
+        }
+        for entry in view
+            .get("entries")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(id) = entry.get("id").and_then(Value::as_u64) {
+                change_entries.insert(id, entry.clone());
+            }
+        }
         self.current = Some(Current {
             conversation,
             session_id,
@@ -2215,6 +2279,9 @@ impl Live {
             busy,
             workspace_ready,
             last_workspace: None,
+            publish_empty_changes: false,
+            change_entries,
+            changes_history_complete,
             oldest_entry,
         });
         self.refresh_subagents(worker);
@@ -2558,6 +2625,18 @@ impl Live {
                     .map(|v| (c.conversation, c.generation, c.session_id.clone(), v))
             });
             if let Some((conversation, generation, session_id, view)) = view {
+                if let Some(current) = self.current.as_mut() {
+                    for entry in view
+                        .get("entries")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(id) = entry.get("id").and_then(Value::as_u64) {
+                            current.change_entries.insert(id, entry.clone());
+                        }
+                    }
+                }
                 // A compaction or reset moves where the live view starts; what lies before it
                 // is then history to offer.
                 let oldest = transcript::oldest_entry_id(&view);
