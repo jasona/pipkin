@@ -218,7 +218,7 @@ impl Workspace {
             }
             Overlay::Project => self.render_menu_overlay(window, cx).into_any_element(),
             Overlay::Rename(_) => self.render_rename(cx).into_any_element(),
-            Overlay::Prefs => self.render_prefs(cx).into_any_element(),
+            Overlay::Prefs => self.render_prefs(window, cx).into_any_element(),
             Overlay::Session => self.render_session(window, cx).into_any_element(),
             Overlay::About => self.render_about(cx).into_any_element(),
             Overlay::Question => self.render_question(cx).into_any_element(),
@@ -285,6 +285,14 @@ impl Workspace {
                 .absolute()
                 .left(px(8.0))
                 .top(px(52.0))
+                .child(panel)
+                .into_any_element(),
+            Overlay::Prefs => div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
                 .child(panel)
                 .into_any_element(),
             _ => div()
@@ -1067,184 +1075,6 @@ impl Workspace {
                     .text_size(t.small_size())
                     .text_color(c.text_faint)
                     .child("Cost is Pi’s reported estimate, not a billing balance."),
-            )
-    }
-
-    fn render_prefs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.theme().clone();
-        let c = &t.colors;
-        let prefs = self.state(cx).prefs.clone();
-        let subagent_setting = self
-            .state(cx)
-            .current()
-            .and_then(|conv| conv.subagents.enabled);
-        let subagent_ready = self.state(cx).connection.is_ready();
-        let this = cx.entity();
-        let seg = |id: &'static str,
-                   label: &'static str,
-                   on: bool,
-                   cmd: Command,
-                   this: gpui::Entity<Workspace>| {
-            Btn::new(id)
-                .label(label)
-                .kind(if on { BtnKind::Subtle } else { BtnKind::Ghost })
-                .selected(on)
-                .on_click(move |_, cx| this.update(cx, |t, cx| t.dispatch(cmd.clone(), cx)))
-        };
-        let row = |label: &'static str, ctrls: Vec<Btn>| {
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(12.0))
-                .child(div().text_color(c.text_muted).child(label))
-                .child(div().flex().gap(px(4.0)).children(ctrls))
-        };
-        elevated(cx)
-            .id("prefs")
-            .key_context("Overlay")
-            .track_focus(&self.menu_focus)
-            .role(Role::Dialog)
-            .aria_label("Preferences")
-            .w(px(440.0 * t.scale.max(1.0)))
-            .max_w_full()
-            .p(px(16.0))
-            .flex()
-            .flex_col()
-            .gap(px(14.0))
-            .occlude()
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Preferences"),
-            )
-            .child(
-                Btn::new("prefs-connections")
-                    .label("Model connections…")
-                    .kind(BtnKind::Subtle)
-                    .on_click({
-                        let this = this.clone();
-                        move |window, cx| {
-                            this.update(cx, |w, cx| {
-                                w.close_overlay(window, cx);
-                                w.model.update(cx, |m, cx| m.manage_connections(cx));
-                            });
-                        }
-                    }),
-            )
-            .child(div().flex().flex_col().gap(px(4.0))
-                .child(row("Allow subagents", vec![
-                    Btn::new("subagents-off").label("Off")
-                        .aria("Block new subagent calls in this session")
-                        .selected(subagent_setting == Some(false))
-                        .disabled(subagent_setting.is_none() || !subagent_ready)
-                        .on_click({
-                            let this = this.clone();
-                            move |_, cx| this.update(cx, |w, cx| w.dispatch(Command::SetSubagentsEnabled(false), cx))
-                        }),
-                    Btn::new("subagents-on").label("On")
-                        .aria("Allow new subagent calls in this session")
-                        .selected(subagent_setting == Some(true))
-                        .disabled(subagent_setting.is_none() || !subagent_ready)
-                        .on_click({
-                            let this = this.clone();
-                            move |_, cx| this.update(cx, |w, cx| w.dispatch(Command::SetSubagentsEnabled(true), cx))
-                        }),
-                ]))
-                .child(div().text_size(t.small_size()).text_color(c.text_muted)
-                    .child(if subagent_setting.is_none() {
-                        "Unavailable in this session or engine."
-                    } else if !subagent_ready {
-                        "Reconnect to change this session's engine setting."
-                    } else {
-                        "Per session. Turning off blocks new calls; running children continue."
-                    })))
-            .child(row(
-                "Theme",
-                vec![
-                    seg(
-                        "theme-dark",
-                        "Dark",
-                        prefs.theme == Theme::Dark,
-                        Command::SetTheme(Theme::Dark),
-                        this.clone(),
-                    ),
-                    seg(
-                        "theme-light",
-                        "Light",
-                        prefs.theme == Theme::Light,
-                        Command::SetTheme(Theme::Light),
-                        this.clone(),
-                    ),
-                ],
-            ))
-            .child(row(
-                "Text size",
-                vec![
-                    seg(
-                        "size-small",
-                        "Small",
-                        prefs.text_size == TextSize::Small,
-                        Command::SetTextSize(TextSize::Small),
-                        this.clone(),
-                    ),
-                    seg(
-                        "size-normal",
-                        "Normal",
-                        prefs.text_size == TextSize::Normal,
-                        Command::SetTextSize(TextSize::Normal),
-                        this.clone(),
-                    ),
-                    seg(
-                        "size-large",
-                        "Large",
-                        prefs.text_size == TextSize::Large,
-                        Command::SetTextSize(TextSize::Large),
-                        this.clone(),
-                    ),
-                ],
-            ))
-            .child(row(
-                "Reduced motion",
-                vec![
-                    seg(
-                        "motion-off",
-                        "Off",
-                        !prefs.reduced_motion,
-                        Command::SetReducedMotion(false),
-                        this.clone(),
-                    ),
-                    seg(
-                        "motion-on",
-                        "On",
-                        prefs.reduced_motion,
-                        Command::SetReducedMotion(true),
-                        this.clone(),
-                    ),
-                ],
-            ))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child({
-                        let this = this.clone();
-                        Btn::new("prefs-about")
-                            .label("About")
-                            .on_click(move |window, cx| {
-                                this.update(cx, |t, cx| t.open_overlay(Overlay::About, window, cx))
-                            })
-                    })
-                    .child({
-                        let this = this.clone();
-                        Btn::new("prefs-close")
-                            .label("Done")
-                            .kind(BtnKind::Primary)
-                            .on_click(move |window, cx| {
-                                this.update(cx, |t, cx| t.close_overlay(window, cx))
-                            })
-                    }),
             )
     }
 

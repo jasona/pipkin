@@ -147,6 +147,7 @@ pub struct Workspace {
     pub(super) last_entry: onboarding::EntrySurface,
     pub(super) overlay: Overlay,
     pub(super) overlay_sel: usize,
+    pub(super) settings_section: super::settings::SettingsSection,
     /// Questions the person put aside; they are not offered again on their own.
     pub(super) question_dismissed: Vec<String>,
     pub(super) restore_focus: Option<FocusHandle>,
@@ -249,6 +250,7 @@ impl Workspace {
             last_entry: initial_entry,
             overlay: Overlay::None,
             overlay_sel: 0,
+            settings_section: super::settings::SettingsSection::default(),
             question_dismissed: Vec::new(),
             restore_focus: None,
             temp_panel: None,
@@ -653,6 +655,9 @@ impl Workspace {
             self.restore_focus = window.focused(cx);
         }
         let previous = self.overlay;
+        if o == Overlay::Prefs && previous == Overlay::None {
+            self.settings_section = super::settings::SettingsSection::default();
+        }
         if o == Overlay::ModelSettings && !matches!(previous, Overlay::Model | Overlay::Effort) {
             self.model_settings_bounds = None;
         }

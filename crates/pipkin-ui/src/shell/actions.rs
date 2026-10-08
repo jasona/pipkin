@@ -54,6 +54,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-up", PrevConversation, None),
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new("escape", CloseOverlay, Some("Overlay")),
+        KeyBinding::new("escape", CloseOverlay, Some("Preferences")),
         KeyBinding::new("escape", CloseOverlay, Some("Panel")),
         KeyBinding::new("up", MenuUp, Some("Overlay")),
         KeyBinding::new("down", MenuDown, Some("Overlay")),

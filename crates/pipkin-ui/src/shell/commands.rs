@@ -229,7 +229,7 @@ pub fn build(state: &AppState, demo: Option<&DemoControls>) -> Vec<Cmd> {
             Run::CopyDiagnostics,
         ),
         cmd(
-            "Preferences…",
+            "Settings…",
             "View",
             Some("Ctrl+,"),
             true,

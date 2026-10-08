@@ -9,6 +9,7 @@ mod inspector;
 mod nav;
 mod onboarding;
 mod overlays;
+mod settings;
 mod subagents;
 mod workspace;
 
